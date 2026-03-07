@@ -67,6 +67,15 @@ use zed::{
 
 use crate::zed::{OpenRequestKind, eager_load_active_theme_and_icon_theme};
 
+#[cfg(target_os = "macos")]
+use cocoa::{
+    appkit::NSApplication,
+    base::{id, nil},
+    foundation::NSString,
+};
+#[cfg(target_os = "macos")]
+use objc::{class, msg_send, sel, sel_impl};
+
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -175,6 +184,72 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
     }
 }
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+unsafe fn ns_string(string: &str) -> id {
+    unsafe { NSString::alloc(nil).init_str(string) }
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_application_icon() {
+    use release_channel::RELEASE_CHANNEL_NAME;
+
+    fn icon_filename() -> &'static str {
+        match RELEASE_CHANNEL_NAME.as_str() {
+            "stable" => "app-icon.png",
+            "preview" => "app-icon-preview.png",
+            "nightly" => "app-icon-nightly.png",
+            "dev" => "app-icon-dev.png",
+            _ => "app-icon-dev.png",
+        }
+    }
+
+    fn bundled_resource_path(filename: &str) -> Option<PathBuf> {
+        let exe = env::current_exe().ok()?;
+        let resources_dir = exe.parent()?.parent()?.join("Resources");
+        let path = resources_dir.join(filename);
+        path.exists().then_some(path)
+    }
+
+    fn source_resource_path(filename: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(filename)
+    }
+
+    let icon_path = bundled_resource_path(icon_filename())
+        .or_else(|| {
+            let path = source_resource_path(icon_filename());
+            path.exists().then_some(path)
+        })
+        .or_else(|| {
+            let fallback = source_resource_path("app-icon-dev.png");
+            fallback.exists().then_some(fallback)
+        });
+
+    let Some(icon_path) = icon_path else {
+        log::warn!("Could not find macOS app icon resource to set at runtime");
+        return;
+    };
+
+    let Some(icon_path) = icon_path.to_str() else {
+        log::warn!("Could not convert macOS app icon path to UTF-8");
+        return;
+    };
+
+    unsafe {
+        let app = NSApplication::sharedApplication(nil);
+        let image: id = msg_send![class!(NSImage), alloc];
+        let image: id = msg_send![image, initWithContentsOfFile: ns_string(icon_path)];
+        if image == nil {
+            log::warn!("Failed to load macOS app icon image from {}", icon_path);
+            return;
+        }
+
+        let _: () = msg_send![app, setApplicationIconImage: image];
+        let _: () = msg_send![image, release];
+    }
+}
 
 fn main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
@@ -462,6 +537,8 @@ fn main() {
         zed_actions::init();
 
         release_channel::init(app_version, cx);
+        #[cfg(target_os = "macos")]
+        set_macos_application_icon();
         gpui_tokio::init(cx);
         if let Some(app_commit_sha) = app_commit_sha {
             AppCommitSha::set_global(app_commit_sha, cx);
