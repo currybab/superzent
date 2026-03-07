@@ -735,17 +735,39 @@ impl TerminalPanel {
             let terminal = project.update(cx, create_terminal)?.await?;
 
             workspace.update_in(cx, |workspace, window, cx| {
-                let terminal_view = cx.new(|cx| {
+                let weak_workspace = workspace.weak_handle();
+                let database_id = workspace.database_id();
+                let project = workspace.project().downgrade();
+                let terminal_view = Box::new(cx.new(|cx| {
                     TerminalView::new(
                         terminal.clone(),
-                        workspace.weak_handle(),
-                        workspace.database_id(),
-                        workspace.project().downgrade(),
+                        weak_workspace.clone(),
+                        database_id,
+                        project.clone(),
                         window,
                         cx,
                     )
-                });
-                workspace.add_item_to_active_pane(Box::new(terminal_view), None, true, window, cx);
+                }));
+
+                if !workspace.add_item_to_center(terminal_view, window, cx) {
+                    let terminal_view = Box::new(cx.new(|cx| {
+                        TerminalView::new(
+                            terminal.clone(),
+                            weak_workspace,
+                            database_id,
+                            project,
+                            window,
+                            cx,
+                        )
+                    }));
+                    workspace.add_item_to_active_pane(
+                        terminal_view,
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                }
             })?;
             Ok(terminal.downgrade())
         })
@@ -819,6 +841,7 @@ impl TerminalPanel {
         self.add_terminal_shell_internal(false, cwd, reveal_strategy, window, cx)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn add_local_terminal_shell(
         &mut self,
         reveal_strategy: RevealStrategy,

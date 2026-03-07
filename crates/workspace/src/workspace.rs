@@ -1367,30 +1367,42 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         if let Some(trusted_worktrees) = TrustedWorktrees::try_get_global(cx) {
-            cx.subscribe(&trusted_worktrees, |_, worktrees_store, e, cx| {
-                if let TrustedWorktreesEvent::Trusted(..) = e {
-                    // Do not persist auto trusted worktrees
-                    if !ProjectSettings::get_global(cx).session.trust_all_worktrees {
-                        worktrees_store.update(cx, |worktrees_store, cx| {
-                            worktrees_store.schedule_serialization(
-                                cx,
-                                |new_trusted_worktrees, cx| {
-                                    let timeout =
-                                        cx.background_executor().timer(SERIALIZATION_THROTTLE_TIME);
-                                    cx.background_spawn(async move {
-                                        timeout.await;
-                                        persistence::DB
-                                            .save_trusted_worktrees(new_trusted_worktrees)
-                                            .await
-                                            .log_err();
-                                    })
-                                },
-                            )
-                        });
+            cx.subscribe_in(
+                &trusted_worktrees,
+                window,
+                |this, worktrees_store, e, window, cx| match e {
+                    TrustedWorktreesEvent::Trusted(..) => {
+                        // Do not persist auto trusted worktrees
+                        if !ProjectSettings::get_global(cx).session.trust_all_worktrees {
+                            worktrees_store.update(cx, |worktrees_store, cx| {
+                                worktrees_store.schedule_serialization(
+                                    cx,
+                                    |new_trusted_worktrees, cx| {
+                                        let timeout = cx
+                                            .background_executor()
+                                            .timer(SERIALIZATION_THROTTLE_TIME);
+                                        cx.background_spawn(async move {
+                                            timeout.await;
+                                            persistence::DB
+                                                .save_trusted_worktrees(new_trusted_worktrees)
+                                                .await
+                                                .log_err();
+                                        })
+                                    },
+                                )
+                            });
+                        }
                     }
-                }
-            })
+                    TrustedWorktreesEvent::Restricted(..) => {
+                        this.show_worktree_trust_security_modal(false, window, cx);
+                    }
+                },
+            )
             .detach();
+
+            cx.defer_in(window, |this, window, cx| {
+                this.show_worktree_trust_security_modal(false, window, cx);
+            });
 
             cx.observe_global::<SettingsStore>(|_, cx| {
                 if ProjectSettings::get_global(cx).session.trust_all_worktrees {

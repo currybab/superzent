@@ -1,46 +1,76 @@
-# Zed
+# superzet
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+<p align="center">
+  <img src="assets/branding/logo_default.png" alt="superzet" width="180" />
+</p>
 
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+`superzet` is a native workspace shell for coding agents.
 
----
+It is built on top of a Zed fork, but the product direction is different: a Superset-inspired shell for managing local repositories, git worktrees, terminals, diffs, and file navigation in one app.
 
-### Installation
+## Status
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+This repository is in early alpha.
 
-Other platforms are not yet available:
+Current focus:
 
-- Web ([tracking issue](https://github.com/zed-industries/zed/issues/5396))
+- single-user, local-first workflow
+- repository and worktree navigation in the left sidebar
+- native editor, terminal, split panes, and diff views from Zed
+- changes and file explorer surfaces in the right sidebar
+- terminal-first use of CLI agents such as Claude Code and Codex
 
-### Developing Zed
+Not in scope right now:
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+- team features
+- login or cloud collaboration
+- custom hosted agent surface inside the app
 
-### Contributing
+## Build From Source
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+### macOS
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+```bash
+git clone git@github.com:nerdface-ai/superzed.git
+cd superzed
+cargo run -p superzet
+```
 
-### Licensing
+If the build complains about the Metal toolchain, install it once:
 
-License information for third party dependencies must be correctly provided for CI to pass.
+```bash
+xcodebuild -downloadComponent MetalToolchain
+```
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+### Release build
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+```bash
+cargo build -p superzet --release
+```
 
-## Sponsorship
+## Project Config
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+`superzet` reads optional per-project automation from `.superzet/config.json`.
 
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+```json
+{
+  "setup": ["./.superzet/setup.sh"],
+  "teardown": ["./.superzet/teardown.sh"]
+}
+```
+
+## Notes
+
+- The app brand is `superzet`, but extension downloads continue to use the upstream Zed marketplace.
+- Much of the editor, terminal, settings infrastructure, and platform integration still come from upstream Zed code and are intentionally kept close for easier maintenance.
+- A lot of the upstream docs in `docs/` are still Zed-oriented and have not been fully reworked yet.
+
+## Development Docs
+
+- [macOS build notes](./docs/src/development/macos.md)
+- [Linux build notes](./docs/src/development/linux.md)
+- [Windows build notes](./docs/src/development/windows.md)
+
+## License
+
+This repository remains GPL-3.0-or-later, consistent with the current fork base.

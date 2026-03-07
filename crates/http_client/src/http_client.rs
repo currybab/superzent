@@ -226,6 +226,26 @@ impl HttpClientWithUrl {
         )?)
     }
 
+    /// Builds the extension marketplace URL using the given path.
+    ///
+    /// superzet keeps its own app/server surface, but extensions still come from the
+    /// upstream Zed marketplace by default. Custom or local server URLs keep their
+    /// existing override behavior.
+    pub fn build_extension_api_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url> {
+        let base_url = self.base_url();
+        let base_api_url = match base_url.as_ref() {
+            "https://zed.dev" | "https://superzet.dev" => "https://api.zed.dev",
+            "https://staging.zed.dev" => "https://api-staging.zed.dev",
+            "http://localhost:3000" => "http://localhost:8080",
+            other => other,
+        };
+
+        Ok(Url::parse_with_params(
+            &format!("{}{}", base_api_url, path),
+            query,
+        )?)
+    }
+
     /// Builds a Zed Cloud URL using the given path.
     pub fn build_zed_cloud_url(&self, path: &str) -> Result<Url> {
         let base_url = self.base_url();
@@ -346,6 +366,49 @@ impl HttpClient for BlockedHttpClient {
     #[cfg(feature = "test-support")]
     fn as_fake(&self) -> &FakeHttpClient {
         panic!("called as_fake on {}", type_name::<Self>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(base_url: &str) -> HttpClientWithUrl {
+        HttpClientWithUrl::new(Arc::new(BlockedHttpClient::new()), base_url, None)
+    }
+
+    #[test]
+    fn extension_api_uses_zed_marketplace_for_superzet_default() {
+        let url = client("https://superzet.dev")
+            .build_extension_api_url("/extensions", &[])
+            .unwrap();
+
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("api.zed.dev"));
+        assert_eq!(url.path(), "/extensions");
+    }
+
+    #[test]
+    fn extension_api_keeps_local_dev_override() {
+        let url = client("http://localhost:3000")
+            .build_extension_api_url("/extensions", &[])
+            .unwrap();
+
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.host_str(), Some("localhost"));
+        assert_eq!(url.port_or_known_default(), Some(8080));
+        assert_eq!(url.path(), "/extensions");
+    }
+
+    #[test]
+    fn extension_api_keeps_custom_server_override() {
+        let url = client("https://example.internal")
+            .build_extension_api_url("/extensions", &[])
+            .unwrap();
+
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("example.internal"));
+        assert_eq!(url.path(), "/extensions");
     }
 }
 

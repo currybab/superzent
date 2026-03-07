@@ -155,16 +155,6 @@ impl Render for MultibufferHint {
                             .child(Label::new(
                                 "Edit and save files directly in the results multibuffer!",
                             )),
-                    )
-                    .child(
-                        Button::new("open_docs", "Learn More")
-                            .icon(IconName::ArrowUpRight)
-                            .icon_size(IconSize::Small)
-                            .icon_color(Color::Muted)
-                            .icon_position(IconPosition::End)
-                            .on_click(move |_event, _, cx| {
-                                cx.open_url("https://zed.dev/docs/multibuffers")
-                            }),
                     ),
             )
             .child(

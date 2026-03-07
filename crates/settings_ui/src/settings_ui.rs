@@ -3021,6 +3021,7 @@ impl SettingsWindow {
         self.render_sub_page_items_in(page_content, items, false, window, cx)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn render_sub_page_items_section<'a, Items>(
         &self,
         items: Items,

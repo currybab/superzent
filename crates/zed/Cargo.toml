@@ -2,7 +2,7 @@
 description = "The terminal for coding agents."
 edition.workspace = true
 name = "superzet"
-version = "0.228.0"
+version = "0.1.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Zed Team <hi@zed.dev>"]
@@ -17,6 +17,7 @@ test-support = [
     "gpui/test-support",
     "gpui_platform/screen-capture",
     "dep:image",
+    "settings_ui/test-support",
     "workspace/test-support",
     "project/test-support",
     "editor/test-support",
@@ -34,6 +35,7 @@ visual-tests = [
     "dep:tempfile",
     "dep:action_log",
     "dep:agent_servers",
+    "settings_ui/test-support",
     "workspace/test-support",
     "project/test-support",
     "editor/test-support",

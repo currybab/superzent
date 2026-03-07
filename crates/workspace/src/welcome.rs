@@ -12,9 +12,9 @@ use gpui::{
 use menu::{SelectNext, SelectPrevious};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prelude::*};
+use ui::{ButtonLike, Divider, DividerColor, KeyBinding, prelude::*};
 use util::ResultExt;
-use zed_actions::{Extensions, OpenOnboarding, OpenSettings, agent, command_palette};
+use zed_actions::{Extensions, OpenKeymap, OpenOnboarding, OpenSettings, command_palette};
 
 #[derive(PartialEq, Clone, Debug, Deserialize, Serialize, JsonSchema, Action)]
 #[action(namespace = welcome)]
@@ -26,7 +26,7 @@ pub struct OpenRecentProject {
 actions!(
     zed,
     [
-        /// Show the Zed welcome screen
+        /// Show the superzet welcome screen
         ShowWelcome
     ]
 );
@@ -150,7 +150,7 @@ const CONTENT: (Section<4>, Section<3>) = (
             },
             SectionEntry {
                 icon: IconName::FolderOpen,
-                title: "Open Project",
+                title: "Add Repository",
                 action: &Open::DEFAULT,
             },
             SectionEntry {
@@ -174,9 +174,9 @@ const CONTENT: (Section<4>, Section<3>) = (
                 action: &OpenSettings,
             },
             SectionEntry {
-                icon: IconName::ZedAssistant,
-                title: "View AI Settings",
-                action: &agent::OpenSettings,
+                icon: IconName::Command,
+                title: "Edit Keymap",
+                action: &OpenKeymap,
             },
             SectionEntry {
                 icon: IconName::Blocks,
@@ -374,9 +374,9 @@ impl Render for WelcomePage {
         };
 
         let welcome_label = if self.fallback_to_recent_projects {
-            "Welcome back to Zed"
+            "Welcome back to superzet"
         } else {
-            "Welcome to Zed"
+            "Welcome to superzet"
         };
 
         h_flex()
@@ -409,10 +409,14 @@ impl Render for WelcomePage {
                                     .justify_center()
                                     .mb_4()
                                     .gap_4()
-                                    .child(Vector::square(VectorName::ZedLogo, rems_from_px(45.)))
+                                    .child(
+                                        Icon::new(IconName::Terminal)
+                                            .size(IconSize::XLarge)
+                                            .color(Color::Muted),
+                                    )
                                     .child(
                                         v_flex().child(Headline::new(welcome_label)).child(
-                                            Label::new("The editor for what's next")
+                                            Label::new("Local workspaces for coding agents")
                                                 .size(LabelSize::Small)
                                                 .color(Color::Muted)
                                                 .italic(),
