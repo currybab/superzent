@@ -460,6 +460,8 @@
     "show_sign_in": false,
     // Whether to show the menus in the titlebar.
     "show_menus": false,
+    // Whether to show the resource monitor in the titlebar.
+    "show_resource_monitor": true,
   },
   "audio": {
     // Opt into the new audio system.

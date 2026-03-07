@@ -351,6 +351,10 @@ pub struct TitleBarSettingsContent {
     ///
     /// Default: false
     pub show_menus: Option<bool>,
+    /// Whether to show the resource monitor in the title bar.
+    ///
+    /// Default: true
+    pub show_resource_monitor: Option<bool>,
 }
 
 /// Configuration of audio in Zed.

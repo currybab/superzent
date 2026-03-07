@@ -11,6 +11,7 @@ pub struct TitleBarSettings {
     pub show_sign_in: bool,
     pub show_user_menu: bool,
     pub show_menus: bool,
+    pub show_resource_monitor: bool,
 }
 
 impl Settings for TitleBarSettings {
@@ -25,6 +26,31 @@ impl Settings for TitleBarSettings {
             show_sign_in: content.show_sign_in.unwrap(),
             show_user_menu: content.show_user_menu.unwrap(),
             show_menus: content.show_menus.unwrap(),
+            show_resource_monitor: content.show_resource_monitor.unwrap(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_settings_reads_resource_monitor_flag() {
+        let mut settings = SettingsContent::default();
+        let title_bar = settings.title_bar.get_or_insert_default();
+        title_bar.show_branch_icon = Some(false);
+        title_bar.show_onboarding_banner = Some(false);
+        title_bar.show_user_picture = Some(false);
+        title_bar.show_branch_name = Some(true);
+        title_bar.show_project_items = Some(true);
+        title_bar.show_sign_in = Some(false);
+        title_bar.show_user_menu = Some(false);
+        title_bar.show_menus = Some(false);
+        title_bar.show_resource_monitor = Some(true);
+
+        let title_bar_settings = TitleBarSettings::from_settings(&settings);
+
+        assert!(title_bar_settings.show_resource_monitor);
     }
 }

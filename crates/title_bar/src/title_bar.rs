@@ -3,6 +3,7 @@ mod application_menu;
 pub mod collab;
 mod onboarding_banner;
 mod plan_chip;
+mod resource_monitor;
 mod title_bar_settings;
 mod update_version;
 
@@ -11,6 +12,7 @@ mod stories;
 
 use crate::application_menu::{ApplicationMenu, show_menus};
 use crate::plan_chip::PlanChip;
+use crate::resource_monitor::ResourceMonitor;
 pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
     ShowNextWindowTab, ShowPreviousWindowTab,
@@ -152,6 +154,7 @@ pub struct TitleBar {
     user_store: Entity<UserStore>,
     client: Arc<Client>,
     workspace: WeakEntity<Workspace>,
+    resource_monitor: Entity<ResourceMonitor>,
     application_menu: Option<Entity<ApplicationMenu>>,
     _subscriptions: Vec<Subscription>,
     #[allow(dead_code)]
@@ -284,6 +287,8 @@ impl TitleBar {
 
         let update_version = cx.new(|cx| UpdateVersion::new(cx));
         let platform_titlebar = cx.new(|cx| PlatformTitleBar::new(id, cx));
+        let resource_monitor =
+            cx.new(|cx| ResourceMonitor::new(workspace.weak_handle(), window, cx));
 
         // Set up observer to sync sidebar state from MultiWorkspace to PlatformTitleBar.
         {
@@ -331,6 +336,7 @@ impl TitleBar {
             platform_titlebar,
             application_menu,
             workspace: workspace.weak_handle(),
+            resource_monitor,
             project,
             superzet_store,
             user_store,
@@ -350,7 +356,7 @@ impl TitleBar {
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-        _title_bar_settings: TitleBarSettings,
+        title_bar_settings: TitleBarSettings,
     ) -> AnyElement {
         let workspace = self.workspace.clone();
         let is_details_sidebar_open = workspace
@@ -374,7 +380,10 @@ impl TitleBar {
                     .w(px(120.))
                     .items_center()
                     .gap_1()
-                    .children(self.render_workspace_sidebar_toggle(window, cx)),
+                    .children(self.render_workspace_sidebar_toggle(window, cx))
+                    .when(title_bar_settings.show_resource_monitor, |header| {
+                        header.child(self.resource_monitor.clone())
+                    }),
             )
             .child(
                 h_flex().flex_1().justify_center().px_4().child(
@@ -405,13 +414,15 @@ impl TitleBar {
                                 if let Some(workspace) = workspace.upgrade() {
                                     workspace.update(cx, |workspace, cx| {
                                         if workspace.right_dock().read(cx).is_open() {
-                                            workspace.close_panel::<superzet_ui::SuperzetRightSidebar>(
-                                                window, cx,
-                                            );
+                                            workspace
+                                                .close_panel::<superzet_ui::SuperzetRightSidebar>(
+                                                    window, cx,
+                                                );
                                         } else {
-                                            workspace.open_panel::<superzet_ui::SuperzetRightSidebar>(
-                                                window, cx,
-                                            );
+                                            workspace
+                                                .open_panel::<superzet_ui::SuperzetRightSidebar>(
+                                                    window, cx,
+                                                );
                                         }
                                     });
                                 }

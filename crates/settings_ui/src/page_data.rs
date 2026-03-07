@@ -3396,7 +3396,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn title_bar_section() -> [SettingsPageItem; 9] {
+    fn title_bar_section() -> [SettingsPageItem; 10] {
         [
             SettingsPageItem::SectionHeader("Title Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -3558,6 +3558,28 @@ fn window_and_layout_page() -> SettingsPage {
                             .title_bar
                             .get_or_insert_default()
                             .show_menus = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Resource Monitor",
+                description: "Show the resource monitor in the titlebar.",
+                field: Box::new(SettingField {
+                    json_path: Some("title_bar.show_resource_monitor"),
+                    pick: |settings_content| {
+                        settings_content
+                            .title_bar
+                            .as_ref()?
+                            .show_resource_monitor
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .title_bar
+                            .get_or_insert_default()
+                            .show_resource_monitor = value;
                     },
                 }),
                 metadata: None,
@@ -8195,7 +8217,6 @@ fn non_editor_language_settings_data() -> Box<[SettingsPageItem]> {
         prettier_section(),
     )
 }
-
 
 fn show_scrollbar_or_editor(
     settings_content: &SettingsContent,

@@ -121,6 +121,8 @@ pub fn insert_zed_terminal_env(
     env: &mut HashMap<String, String>,
     version: &impl std::fmt::Display,
 ) {
+    env.remove("ZED_RELEASE_CHANNEL");
+    env.remove("RELEASE_CHANNEL");
     env.insert("ZED_TERM".to_string(), "true".to_string());
     env.insert("TERM_PROGRAM".to_string(), "zed".to_string());
     env.insert("TERM".to_string(), "xterm-256color".to_string());
@@ -2553,6 +2555,20 @@ mod tests {
             cx.set_global(settings_store);
             theme::init(theme::LoadThemes::JustBase, cx);
         });
+    }
+
+    #[test]
+    fn insert_zed_terminal_env_clears_release_channel_overrides() {
+        let mut env = HashMap::from_iter([
+            ("ZED_RELEASE_CHANNEL".to_string(), "nightly".to_string()),
+            ("RELEASE_CHANNEL".to_string(), "nightly".to_string()),
+        ]);
+
+        insert_zed_terminal_env(&mut env, &"0.1.0");
+
+        assert_eq!(env.get("ZED_RELEASE_CHANNEL"), None);
+        assert_eq!(env.get("RELEASE_CHANNEL"), None);
+        assert_eq!(env.get("ZED_TERM").map(String::as_str), Some("true"));
     }
 
     /// Helper to build a test terminal running a shell command.

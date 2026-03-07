@@ -9,12 +9,12 @@ use semver::Version;
 
 /// stable | dev | nightly | preview
 pub static RELEASE_CHANNEL_NAME: LazyLock<String> = LazyLock::new(|| {
-    if cfg!(debug_assertions) {
-        env::var("ZED_RELEASE_CHANNEL")
-            .unwrap_or_else(|_| include_str!("../../zed/RELEASE_CHANNEL").trim().to_string())
-    } else {
-        include_str!("../../zed/RELEASE_CHANNEL").trim().to_string()
-    }
+    resolved_release_channel_name(
+        env::var("ZED_RELEASE_CHANNEL").ok(),
+        include_str!("../../zed/RELEASE_CHANNEL").trim(),
+        cfg!(debug_assertions),
+        env::var("ZED_TERM").is_ok_and(|value| value == "true"),
+    )
 });
 
 #[doc(hidden)]
@@ -228,5 +228,47 @@ impl FromStr for ReleaseChannel {
             "stable" => ReleaseChannel::Stable,
             _ => return Err(InvalidReleaseChannel),
         })
+    }
+}
+
+fn resolved_release_channel_name(
+    env_release_channel: Option<String>,
+    default_release_channel: &str,
+    debug_assertions_enabled: bool,
+    is_zed_terminal: bool,
+) -> String {
+    if debug_assertions_enabled && !is_zed_terminal {
+        env_release_channel.unwrap_or_else(|| default_release_channel.to_string())
+    } else {
+        default_release_channel.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_release_channel_name;
+
+    #[test]
+    fn debug_builds_use_repo_default_inside_zed_terminal() {
+        assert_eq!(
+            resolved_release_channel_name(Some("nightly".to_string()), "dev", true, true),
+            "dev"
+        );
+    }
+
+    #[test]
+    fn debug_builds_still_allow_explicit_channel_outside_zed_terminal() {
+        assert_eq!(
+            resolved_release_channel_name(Some("nightly".to_string()), "dev", true, false),
+            "nightly"
+        );
+    }
+
+    #[test]
+    fn non_debug_builds_ignore_runtime_override() {
+        assert_eq!(
+            resolved_release_channel_name(Some("nightly".to_string()), "stable", false, false),
+            "stable"
+        );
     }
 }
