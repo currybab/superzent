@@ -1,4 +1,4 @@
-const REPOSITORY = "nerdface-ai/superzet";
+const REPOSITORY = "currybab/superzet";
 const GITHUB_API_BASE_URL = `https://api.github.com/repos/${REPOSITORY}`;
 
 function jsonResponse(body, status = 200) {
@@ -51,16 +51,24 @@ function assetNameFromQuery(searchParams) {
   const os = searchParams.get("os");
   const arch = searchParams.get("arch");
 
-  if (asset !== "superzet") {
-    return null;
+  if (asset === "superzet") {
+    if (os === "macos" && arch === "aarch64") {
+      return "superzet-aarch64.dmg";
+    }
+
+    if (os === "macos" && arch === "x86_64") {
+      return "superzet-x86_64.dmg";
+    }
   }
 
-  if (os === "macos" && arch === "aarch64") {
-    return "superzet-aarch64.dmg";
-  }
+  if (asset === "superzet-remote-server") {
+    if (os === "linux" && arch === "x86_64") {
+      return "superzet-remote-server-linux-x86_64.gz";
+    }
 
-  if (os === "macos" && arch === "x86_64") {
-    return "superzet-x86_64.dmg";
+    if (os === "linux" && arch === "aarch64") {
+      return "superzet-remote-server-linux-aarch64.gz";
+    }
   }
 
   return null;

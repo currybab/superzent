@@ -12,7 +12,7 @@ on:
   workflow_call: {}
 jobs:
   orchestrate:
-    if: github.repository_owner == 'nerdface-ai'
+    if: github.repository_owner == 'currybab'
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
     - name: steps::checkout_repo
@@ -161,7 +161,7 @@ jobs:
     - orchestrate
     - check_rust
     - check_extension
-    if: github.repository_owner == 'nerdface-ai' && always()
+    if: github.repository_owner == 'currybab' && always()
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
     - name: run_tests::tests_pass

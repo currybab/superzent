@@ -12,14 +12,14 @@ actions!(
     ]
 );
 
-const SUPERZET_REPO_URL: &str = "https://github.com/nerdface-ai/superzet";
+const SUPERZET_REPO_URL: &str = "https://github.com/currybab/superzet";
 
-const REQUEST_FEATURE_URL: &str = "https://github.com/nerdface-ai/superzet/discussions/new/choose";
+const REQUEST_FEATURE_URL: &str = "https://github.com/currybab/superzet/discussions/new/choose";
 
 fn file_bug_report_url(specs: &SystemSpecs) -> String {
     format!(
         concat!(
-            "https://github.com/nerdface-ai/superzet/issues/new",
+            "https://github.com/currybab/superzet/issues/new",
             "?",
             "template=10_bug_report.yml",
             "&",

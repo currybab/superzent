@@ -1,4 +1,4 @@
-# This config is different from config.toml in this directory, as the latter is recognized by Cargo.
+# This config is different from config.toml in this directory, as the latter is recogni by Cargo.
 # This file is placed in ./../.cargo/config.toml on CI runs. Cargo then merges Zeds .cargo/config.toml with ./../.cargo/config.toml
 # with preference for settings from Zeds config.toml.
 # TL;DR: If a value is set in both ci-config.toml and config.toml, config.toml value takes precedence.

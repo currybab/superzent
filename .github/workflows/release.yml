@@ -10,7 +10,7 @@ on:
     - v*-pre
 jobs:
   bundle_mac_preview:
-    if: github.repository_owner == 'nerdface-ai'
+    if: github.repository_owner == 'currybab'
     runs-on: namespace-profile-mac-large
     env:
       SUPERZET_RELEASE_CHANNEL: preview
@@ -40,10 +40,86 @@ jobs:
         path: target/aarch64-apple-darwin/release/superzet-aarch64.dmg
         if-no-files-found: error
     timeout-minutes: 90
+  bundle_linux_remote_server_preview_x86_64:
+    if: github.repository_owner == 'currybab'
+    runs-on: namespace-profile-32x64-ubuntu-2004
+    env:
+      CARGO_INCREMENTAL: 0
+      SUPERZET_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
+      SUPERZET_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
+      ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
+      ZED_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
+      SUPERZET_RELEASE_CHANNEL: preview
+      CC: clang-18
+      CXX: clang++-18
+    steps:
+    - name: steps::checkout_repo
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        clean: false
+    - name: steps::setup_linux
+      run: ./script/linux
+    - name: steps::install_mold
+      run: ./script/install-mold
+    - name: steps::download_wasi_sdk
+      run: ./script/download-wasi-sdk
+    - name: release::bundle_linux_remote_server_preview
+      run: |
+        rustup target add "x86_64-unknown-linux-musl"
+        export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+        cargo build --release --target "x86_64-unknown-linux-musl" --package remote_server
+        objcopy --strip-debug "target/x86_64-unknown-linux-musl/release/remote_server"
+        gzip -f --stdout --best "target/x86_64-unknown-linux-musl/release/remote_server" > "target/superzet-remote-server-linux-x86_64.gz"
+    - name: '@actions/upload-artifact superzet-remote-server-linux-x86_64.gz'
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      with:
+        name: superzet-remote-server-linux-x86_64.gz
+        path: target/superzet-remote-server-linux-x86_64.gz
+        if-no-files-found: error
+    timeout-minutes: 60
+  bundle_linux_remote_server_preview_aarch64:
+    if: github.repository_owner == 'currybab'
+    runs-on: namespace-profile-8x32-ubuntu-2004-arm-m4
+    env:
+      CARGO_INCREMENTAL: 0
+      SUPERZET_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
+      SUPERZET_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
+      ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
+      ZED_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
+      SUPERZET_RELEASE_CHANNEL: preview
+      CC: clang-18
+      CXX: clang++-18
+    steps:
+    - name: steps::checkout_repo
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        clean: false
+    - name: steps::setup_linux
+      run: ./script/linux
+    - name: steps::install_mold
+      run: ./script/install-mold
+    - name: steps::download_wasi_sdk
+      run: ./script/download-wasi-sdk
+    - name: release::bundle_linux_remote_server_preview
+      run: |
+        rustup target add "aarch64-unknown-linux-musl"
+        export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+        cargo build --release --target "aarch64-unknown-linux-musl" --package remote_server
+        objcopy --strip-debug "target/aarch64-unknown-linux-musl/release/remote_server"
+        gzip -f --stdout --best "target/aarch64-unknown-linux-musl/release/remote_server" > "target/superzet-remote-server-linux-aarch64.gz"
+    - name: '@actions/upload-artifact superzet-remote-server-linux-aarch64.gz'
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      with:
+        name: superzet-remote-server-linux-aarch64.gz
+        path: target/superzet-remote-server-linux-aarch64.gz
+        if-no-files-found: error
+    timeout-minutes: 60
   publish_preview_release:
     needs:
     - bundle_mac_preview
-    if: github.repository_owner == 'nerdface-ai'
+    - bundle_linux_remote_server_preview_x86_64
+    - bundle_linux_remote_server_preview_aarch64
+    if: github.repository_owner == 'currybab'
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
     - name: release::download_workflow_artifacts
@@ -56,6 +132,8 @@ jobs:
       run: |
         mkdir -p release-artifacts
         cp "./artifacts/superzet-aarch64.dmg/superzet-aarch64.dmg" "release-artifacts/superzet-aarch64.dmg"
+        cp "./artifacts/superzet-remote-server-linux-x86_64.gz/superzet-remote-server-linux-x86_64.gz" "release-artifacts/superzet-remote-server-linux-x86_64.gz"
+        cp "./artifacts/superzet-remote-server-linux-aarch64.gz/superzet-remote-server-linux-aarch64.gz" "release-artifacts/superzet-remote-server-linux-aarch64.gz"
         shasum -a 256 "release-artifacts/superzet-aarch64.dmg" > "release-artifacts/sha256sums.txt"
 
         if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

@@ -4,5 +4,5 @@ compatibility_date = "2024-05-15"
 workers_dev = true
 
 [[routes]]
-pattern = "superzet.dev/releases*"
-zone_name = "superzet.dev"
+pattern = "releases.nangman.ai/releases*"
+zone_name = "nangman.ai"

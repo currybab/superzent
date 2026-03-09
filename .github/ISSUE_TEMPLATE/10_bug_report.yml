@@ -6,10 +6,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, please search existing issues: https://github.com/nerdface-ai/superzet/issues
+        Before filing, please search existing issues: https://github.com/currybab/superzet/issues
 
         Feature request? Please use Discussions instead:
-        https://github.com/nerdface-ai/superzet/discussions/new/choose
+        https://github.com/currybab/superzet/discussions/new/choose
   - type: textarea
     attributes:
       label: Reproduction steps

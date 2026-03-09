@@ -7,7 +7,7 @@ on:
   workflow_dispatch: {}
 jobs:
   fetch_extension_repos:
-    if: github.repository_owner == 'nerdface-ai' && github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'currybab' && github.ref == 'refs/heads/main'
     runs-on: namespace-profile-2x4-ubuntu-2404
     steps:
     - id: list-repos

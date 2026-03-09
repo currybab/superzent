@@ -6,7 +6,7 @@ use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, Global, Task, Window,
     actions,
 };
-use http_client::{HttpClient, HttpClientWithUrl};
+use http_client::{HttpClient, HttpClientWithUrl, Url};
 use paths::{REMOTE_SERVER_BINARY_NAME_PREFIX, remote_servers_dir};
 use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
@@ -32,6 +32,7 @@ use workspace::Workspace;
 const SHOULD_SHOW_UPDATE_NOTIFICATION_KEY: &str = "auto-updater-should-show-updated-notification";
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REMOTE_SERVER_CACHE_LIMIT: usize = 5;
+const DEFAULT_RELEASES_URL: &str = "https://releases.nangman.ai";
 
 fn update_explanation_from_compile_env() -> Option<&'static str> {
     option_env!("SUPERZET_UPDATE_EXPLANATION").or(option_env!("ZED_UPDATE_EXPLANATION"))
@@ -41,6 +42,40 @@ fn update_explanation_from_env() -> Option<String> {
     env::var("SUPERZET_UPDATE_EXPLANATION")
         .ok()
         .or_else(|| env::var("ZED_UPDATE_EXPLANATION").ok())
+}
+
+fn releases_base_url() -> String {
+    env::var("SUPERZET_RELEASES_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| DEFAULT_RELEASES_URL.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn build_releases_url(path: &str) -> String {
+    format!("{}{}", releases_base_url(), path)
+}
+
+fn build_releases_url_with_query(path: &str, query: &AssetQuery<'_>) -> Result<Url> {
+    let mut url = Url::parse(&build_releases_url(path))?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("asset", query.asset);
+        pairs.append_pair("os", query.os);
+        pairs.append_pair("arch", query.arch);
+
+        if let Some(metrics_id) = query.metrics_id {
+            pairs.append_pair("metrics_id", metrics_id);
+        }
+        if let Some(system_id) = query.system_id {
+            pairs.append_pair("system_id", system_id);
+        }
+        if let Some(is_staff) = query.is_staff {
+            pairs.append_pair("is_staff", if is_staff { "true" } else { "false" });
+        }
+    }
+    Ok(url)
 }
 
 actions!(
@@ -273,12 +308,12 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
             let current_version = &auto_updater.current_version;
             let release_channel = release_channel.dev_name();
             let path = format!("/releases/{release_channel}/{current_version}");
-            auto_updater.client.http_client().build_url(&path)
+            build_releases_url(&path)
         }
         ReleaseChannel::Nightly => {
-            "https://github.com/nerdface-ai/superzet/commits/nightly/".to_string()
+            "https://github.com/currybab/superzet/commits/nightly/".to_string()
         }
-        ReleaseChannel::Dev => "https://github.com/nerdface-ai/superzet/commits/main/".to_string(),
+        ReleaseChannel::Dev => "https://github.com/currybab/superzet/commits/main/".to_string(),
     };
     Some(url)
 }
@@ -563,20 +598,19 @@ impl AutoUpdater {
         } else {
             "latest".to_string()
         };
-        let http_client = client.http_client();
-
         let path = format!("/releases/{}/{}/asset", release_channel.dev_name(), version,);
-        let url = http_client.build_zed_cloud_url_with_query(
+        let url = build_releases_url_with_query(
             &path,
-            AssetQuery {
+            &AssetQuery {
                 os,
                 arch,
                 asset,
                 metrics_id: metrics_id.as_deref(),
                 system_id: system_id.as_deref(),
-                is_staff: is_staff,
+                is_staff,
             },
         )?;
+        let http_client = client.http_client();
 
         let mut response = http_client
             .get(url.as_str(), Default::default(), true)
@@ -1097,6 +1131,7 @@ mod tests {
         sync::{
             Arc,
             atomic::{self, AtomicBool},
+            Mutex, OnceLock,
         },
     };
     use tempfile::tempdir;
@@ -1108,10 +1143,56 @@ mod tests {
 
     use super::*;
 
+    fn releases_url_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_releases_url_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = releases_url_env_lock().lock().unwrap();
+        let previous_value = env::var("SUPERZET_RELEASES_URL").ok();
+
+        match value {
+            Some(value) => unsafe {
+                env::set_var("SUPERZET_RELEASES_URL", value);
+            },
+            None => unsafe {
+                env::remove_var("SUPERZET_RELEASES_URL");
+            },
+        }
+
+        let result = f();
+
+        match previous_value {
+            Some(value) => unsafe {
+                env::set_var("SUPERZET_RELEASES_URL", value);
+            },
+            None => unsafe {
+                env::remove_var("SUPERZET_RELEASES_URL");
+            },
+        }
+
+        result
+    }
+
     pub(super) struct InstallOverride(
         pub Rc<dyn Fn(PathBuf, &AsyncApp) -> Result<Option<PathBuf>>>,
     );
     impl Global for InstallOverride {}
+
+    #[test]
+    fn test_build_releases_url_uses_default_host() {
+        let url = with_releases_url_env(None, || build_releases_url("/releases/stable/latest"));
+        assert_eq!(url, "https://releases.nangman.ai/releases/stable/latest");
+    }
+
+    #[test]
+    fn test_build_releases_url_honors_override() {
+        let url = with_releases_url_env(Some("https://preview.example.com/"), || {
+            build_releases_url("/releases/preview/latest")
+        });
+        assert_eq!(url, "https://preview.example.com/releases/preview/latest");
+    }
 
     #[gpui::test]
     fn test_auto_update_defaults_to_true(cx: &mut TestAppContext) {

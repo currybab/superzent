@@ -305,26 +305,26 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action(
                     "File Bug Report...",
                     super::OpenBrowser {
-                        url: "https://github.com/nerdface-ai/superzet/issues/new".into(),
+                        url: "https://github.com/currybab/superzet/issues/new".into(),
                     },
                 ),
                 MenuItem::action(
                     "Request Feature...",
                     super::OpenBrowser {
-                        url: "https://github.com/nerdface-ai/superzet/discussions".into(),
+                        url: "https://github.com/currybab/superzet/discussions".into(),
                     },
                 ),
                 MenuItem::separator(),
                 MenuItem::action(
                     "Documentation",
                     super::OpenBrowser {
-                        url: "https://github.com/nerdface-ai/superzet".into(),
+                        url: "https://github.com/currybab/superzet".into(),
                     },
                 ),
                 MenuItem::action(
                     "superzet repository",
                     super::OpenBrowser {
-                        url: "https://github.com/nerdface-ai/superzet".into(),
+                        url: "https://github.com/currybab/superzet".into(),
                     },
                 ),
             ],

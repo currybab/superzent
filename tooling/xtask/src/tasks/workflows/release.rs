@@ -3,12 +3,14 @@ use indoc::formatdoc;
 
 use crate::tasks::workflows::{
     run_bundling::upload_artifact,
-    runners::{self, Platform},
-    steps::{self, CommonJobConditions, NamedJob, dependant_job, named},
-    vars,
+    runners::{self, Arch, Platform},
+    steps::{self, CommonJobConditions, FluentBuilder, NamedJob, dependant_job, named},
+    vars::{self, assets, bundle_envs},
 };
 
 const RELEASE_ARTIFACT: &str = "superzet-aarch64.dmg";
+const REMOTE_SERVER_LINUX_AARCH64_ARTIFACT: &str = assets::REMOTE_SERVER_LINUX_AARCH64;
+const REMOTE_SERVER_LINUX_X86_64_ARTIFACT: &str = assets::REMOTE_SERVER_LINUX_X86_64;
 const CHECKSUM_ARTIFACT: &str = "sha256sums.txt";
 
 pub(crate) struct ReleaseBundleJobs {
@@ -34,15 +36,23 @@ impl ReleaseBundleJobs {
 }
 
 pub(crate) fn release() -> Workflow {
-    let bundle = bundle_mac_preview();
-    let publish = publish_preview_release(&[&bundle]);
+    let bundle_mac = bundle_mac_preview();
+    let bundle_linux_x86_64 = bundle_linux_remote_server_preview(Arch::X86_64);
+    let bundle_linux_aarch64 = bundle_linux_remote_server_preview(Arch::AARCH64);
+    let publish = publish_preview_release(&[
+        &bundle_mac,
+        &bundle_linux_x86_64,
+        &bundle_linux_aarch64,
+    ]);
 
     named::workflow()
         .on(Event::default().push(Push::default().tags(vec!["v*-pre".to_string()])))
         .concurrency(vars::one_workflow_per_non_main_branch())
         .add_env(("CARGO_TERM_COLOR", "always"))
         .add_env(("RUST_BACKTRACE", "1"))
-        .add_job(bundle.name, bundle.job)
+        .add_job(bundle_mac.name, bundle_mac.job)
+        .add_job(bundle_linux_x86_64.name, bundle_linux_x86_64.job)
+        .add_job(bundle_linux_aarch64.name, bundle_linux_aarch64.job)
         .add_job(publish.name, publish.job)
 }
 
@@ -94,11 +104,51 @@ fn bundle_mac_preview() -> NamedJob {
     }
 }
 
+fn bundle_linux_remote_server_preview(arch: Arch) -> NamedJob {
+    let remote_server_triple = match arch {
+        Arch::X86_64 => "x86_64-unknown-linux-musl",
+        Arch::AARCH64 => "aarch64-unknown-linux-musl",
+    };
+    let artifact_name = match arch {
+        Arch::X86_64 => REMOTE_SERVER_LINUX_X86_64_ARTIFACT,
+        Arch::AARCH64 => REMOTE_SERVER_LINUX_AARCH64_ARTIFACT,
+    };
+    let build_script = formatdoc!(
+        r#"
+        rustup target add "{remote_server_triple}"
+        export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-feature=+crt-static"
+        cargo build --release --target "{remote_server_triple}" --package remote_server
+        objcopy --strip-debug "target/{remote_server_triple}/release/remote_server"
+        gzip -f --stdout --best "target/{remote_server_triple}/release/remote_server" > "target/{artifact_name}"
+        "#,
+        remote_server_triple = remote_server_triple,
+        artifact_name = artifact_name,
+    );
+
+    NamedJob {
+        name: format!("bundle_linux_remote_server_preview_{arch}"),
+        job: dependant_job(&[])
+            .with_repository_owner_guard()
+            .runs_on(arch.linux_bundler())
+            .timeout_minutes(60u32)
+            .envs(bundle_envs(Platform::Linux))
+            .add_env(("SUPERZET_RELEASE_CHANNEL", "preview"))
+            .add_env(("CC", "clang-18"))
+            .add_env(("CXX", "clang++-18"))
+            .add_step(steps::checkout_repo())
+            .map(steps::install_linux_dependencies)
+            .add_step(named::bash(&build_script))
+            .add_step(upload_artifact(&format!("target/{artifact_name}"))),
+    }
+}
+
 fn publish_preview_release(deps: &[&NamedJob]) -> NamedJob {
     let publish_script = formatdoc!(
         r#"
         mkdir -p release-artifacts
         cp "./artifacts/{release_artifact}/{release_artifact}" "release-artifacts/{release_artifact}"
+        cp "./artifacts/{remote_server_linux_x86_64_artifact}/{remote_server_linux_x86_64_artifact}" "release-artifacts/{remote_server_linux_x86_64_artifact}"
+        cp "./artifacts/{remote_server_linux_aarch64_artifact}/{remote_server_linux_aarch64_artifact}" "release-artifacts/{remote_server_linux_aarch64_artifact}"
         shasum -a 256 "release-artifacts/{release_artifact}" > "release-artifacts/{checksum_artifact}"
 
         if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -115,6 +165,8 @@ fn publish_preview_release(deps: &[&NamedJob]) -> NamedJob {
           release-artifacts/*
         "#,
         release_artifact = RELEASE_ARTIFACT,
+        remote_server_linux_x86_64_artifact = REMOTE_SERVER_LINUX_X86_64_ARTIFACT,
+        remote_server_linux_aarch64_artifact = REMOTE_SERVER_LINUX_AARCH64_ARTIFACT,
         checksum_artifact = CHECKSUM_ARTIFACT,
     );
 

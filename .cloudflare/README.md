@@ -1,15 +1,17 @@
-We have three Cloudflare workers that let us serve some assets of this repo
-from Cloudflare.
+We keep three Cloudflare workers in this repo, but only the release worker is
+part of the current automated deployment path.
 
 - `open-source-website-assets` is used for static open-source assets such as install helpers
 - `docs-proxy` is used for `https://superzet.dev/docs`
-- `release-assets` is used for `https://superzet.dev/releases`
+- `release-assets` is used for `https://releases.nangman.ai/releases`
 
-On push to `main`, these workers and the docs build are uploaded to Cloudflare.
+On push to `main`, only the release worker is deployed by the
+`deploy_cloudflare.yml` workflow.
 
 ### Deployment
 
-These functions are deployed on push to main by the `deploy_cloudflare.yml` workflow. Worker rules in Cloudflare should route `superzet.dev/docs*` and `superzet.dev/releases*` to the corresponding workers.
+The current workflow deploys `release-assets` only. Cloudflare should route
+`releases.nangman.ai/releases*` to that worker.
 
 For the release worker, configure an optional `GITHUB_RELEASES_TOKEN` secret in Cloudflare if you want higher GitHub API rate limits for update checks.
 

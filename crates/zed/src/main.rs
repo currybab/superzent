@@ -145,7 +145,7 @@ fn fail_to_open_window_async(e: anyhow::Error, cx: &mut AsyncApp) {
 
 fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
     eprintln!(
-        "superzet failed to open a window: {e:?}. See https://github.com/nerdface-ai/superzet for troubleshooting steps."
+        "superzet failed to open a window: {e:?}. See https://github.com/currybab/superzet for troubleshooting steps."
     );
     #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
@@ -168,7 +168,7 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
                     Notification::new("superzet failed to launch")
                         .body(Some(
                             format!(
-                                "{e:?}. See https://github.com/nerdface-ai/superzet for troubleshooting steps."
+                                "{e:?}. See https://github.com/currybab/superzet for troubleshooting steps."
                             )
                             .as_str(),
                         ))
