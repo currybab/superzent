@@ -13,13 +13,17 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 editor.workspace = true
+git.workspace = true
 git_ui.workspace = true
 gpui.workspace = true
 log.workspace = true
 menu.workspace = true
 project.workspace = true
 project_panel.workspace = true
+recent_projects.workspace = true
+remote.workspace = true
 settings.workspace = true
 superzet_git.workspace = true
 superzet_agent.workspace = true
@@ -28,6 +32,7 @@ terminal.workspace = true
 terminal_view.workspace = true
 theme.workspace = true
 ui.workspace = true
+uuid.workspace = true
 util.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true

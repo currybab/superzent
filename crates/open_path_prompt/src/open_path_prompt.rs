@@ -42,6 +42,8 @@ pub struct OpenPathDelegate {
     render_footer:
         Arc<dyn Fn(&mut Window, &mut Context<Picker<Self>>) -> Option<AnyElement> + 'static>,
     hidden_entries: bool,
+    browse_directories_on_confirm: bool,
+    directories_only: bool,
 }
 
 impl OpenPathDelegate {
@@ -70,6 +72,8 @@ impl OpenPathDelegate {
             replace_prompt: Task::ready(()),
             render_footer: Arc::new(|_, _| None),
             hidden_entries: false,
+            browse_directories_on_confirm: false,
+            directories_only: false,
         }
     }
 
@@ -87,6 +91,17 @@ impl OpenPathDelegate {
         self.hidden_entries = true;
         self
     }
+
+    pub fn browse_directories_on_confirm(mut self) -> Self {
+        self.browse_directories_on_confirm = true;
+        self
+    }
+
+    pub fn directories_only(mut self) -> Self {
+        self.directories_only = true;
+        self
+    }
+
     fn get_entry(&self, selected_match_index: usize) -> Option<CandidateInfo> {
         match &self.directory_state {
             DirectoryState::List { entries, .. } => {
@@ -155,6 +170,23 @@ impl OpenPathDelegate {
             PathStyle::Posix => "./",
             PathStyle::Windows => ".\\",
         }
+    }
+
+    fn parent_dir(&self) -> &'static str {
+        match self.path_style {
+            PathStyle::Posix => "../",
+            PathStyle::Windows => "..\\",
+        }
+    }
+
+    fn parent_directory_query(&self, parent_path: &str) -> Option<String> {
+        if parent_path == self.prompt_root {
+            return None;
+        }
+
+        let trimmed_path = parent_path.trim_end_matches(self.path_style.separators_ch());
+        let (parent_directory, _) = get_dir_and_suffix(trimmed_path.to_string(), self.path_style);
+        Some(parent_directory)
     }
 }
 
@@ -313,6 +345,10 @@ impl PickerDelegate for OpenPathDelegate {
         let hidden_entries = self.hidden_entries;
         let parent_path_is_root = self.prompt_root == dir;
         let current_dir = self.current_dir();
+        let parent_dir = self.parent_dir().to_string();
+        let prompt_root = self.prompt_root.clone();
+        let browse_directories_on_confirm = self.browse_directories_on_confirm;
+        let directories_only = self.directories_only;
         cx.spawn_in(window, async move |this, cx| {
             if let Some(query) = query {
                 let paths = query.await;
@@ -407,6 +443,10 @@ impl PickerDelegate for OpenPathDelegate {
                 new_entries.retain(|entry| !entry.path.string.starts_with('.'));
             }
 
+            if directories_only {
+                new_entries.retain(|entry| entry.is_dir);
+            }
+
             let max_id = new_entries
                 .iter()
                 .map(|entry| entry.path.id)
@@ -428,6 +468,10 @@ impl PickerDelegate for OpenPathDelegate {
                 let current_dir_in_new_entries = new_entries
                     .iter()
                     .any(|entry| &entry.path.string == current_dir);
+                let parent_dir_in_new_entries = browse_directories_on_confirm
+                    && new_entries
+                        .iter()
+                        .any(|entry| entry.path.string == parent_dir);
 
                 if should_prepend_with_current_dir && !current_dir_in_new_entries {
                     new_entries.insert(
@@ -437,6 +481,24 @@ impl PickerDelegate for OpenPathDelegate {
                                 id: max_id + 1,
                                 string: current_dir.to_string(),
                                 char_bag: CharBag::from(current_dir),
+                            },
+                            is_dir: true,
+                        },
+                    );
+                }
+
+                let should_prepend_with_parent_dir = should_prepend_with_current_dir
+                    && browse_directories_on_confirm
+                    && dir != prompt_root;
+
+                if should_prepend_with_parent_dir && !parent_dir_in_new_entries {
+                    new_entries.insert(
+                        usize::from(should_prepend_with_current_dir),
+                        CandidateInfo {
+                            path: StringMatchCandidate {
+                                id: max_id + 2,
+                                string: parent_dir.clone(),
+                                char_bag: CharBag::from(parent_dir.as_str()),
                             },
                             is_dir: true,
                         },
@@ -577,6 +639,16 @@ impl PickerDelegate for OpenPathDelegate {
             return None;
         }
 
+        let parent_path = match &self.directory_state {
+            DirectoryState::Create { parent_path, .. } | DirectoryState::List { parent_path, .. } => {
+                parent_path
+            }
+            DirectoryState::None { .. } => return None,
+        };
+        if candidate.path.string == self.parent_dir() {
+            return self.parent_directory_query(parent_path);
+        }
+
         let path_style = self.path_style;
         Some(
             maybe!({
@@ -606,6 +678,38 @@ impl PickerDelegate for OpenPathDelegate {
             })
             .unwrap_or(query),
         )
+    }
+
+    fn confirm_update_query(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Picker<Self>>,
+    ) -> Option<String> {
+        if !self.browse_directories_on_confirm {
+            return None;
+        }
+
+        let candidate = self.get_entry(self.selected_index)?;
+        if !candidate.is_dir || candidate.path.string.is_empty() || candidate.path.string == self.current_dir() {
+            return None;
+        }
+
+        let parent_path = match &self.directory_state {
+            DirectoryState::List { parent_path, .. }
+            | DirectoryState::Create { parent_path, .. } => parent_path,
+            DirectoryState::None { .. } => return None,
+        };
+
+        if candidate.path.string == self.parent_dir() {
+            return self.parent_directory_query(parent_path);
+        }
+
+        Some(format!(
+            "{}{}{}",
+            parent_path,
+            candidate.path.string,
+            self.path_style.primary_separator(),
+        ))
     }
 
     fn confirm(&mut self, _: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
@@ -722,6 +826,7 @@ impl PickerDelegate for OpenPathDelegate {
         };
 
         let is_current_dir_candidate = candidate.path.string == self.current_dir();
+        let is_parent_dir_candidate = candidate.path.string == self.parent_dir();
 
         let file_icon = maybe!({
             if !settings.file_icons {
@@ -732,6 +837,8 @@ impl PickerDelegate for OpenPathDelegate {
             let icon = if candidate.is_dir {
                 if is_current_dir_candidate {
                     return Some(Icon::new(IconName::ReplyArrowRight).color(Color::Muted));
+                } else if is_parent_dir_candidate {
+                    return Some(Icon::new(IconName::ArrowUpRight).color(Color::Muted));
                 } else {
                     FileIcons::get_folder_icon(false, path, cx)?
                 }
@@ -745,6 +852,8 @@ impl PickerDelegate for OpenPathDelegate {
             DirectoryState::List { parent_path, .. } => {
                 let (label, indices) = if is_current_dir_candidate {
                     ("open this directory".to_string(), vec![])
+                } else if is_parent_dir_candidate {
+                    ("go to parent directory".to_string(), vec![])
                 } else if *parent_path == self.prompt_root {
                     match_positions.iter_mut().for_each(|position| {
                         *position += self.prompt_root.len();
@@ -867,7 +976,15 @@ impl PickerDelegate for OpenPathDelegate {
             return Vec::new();
         };
         if m.string == self.current_dir() {
-            vec![0]
+            if self
+                .string_matches
+                .get(1)
+                .is_some_and(|candidate| candidate.string == self.parent_dir())
+            {
+                vec![1]
+            } else {
+                vec![0]
+            }
         } else {
             Vec::new()
         }

@@ -116,7 +116,7 @@ pub fn spawn_for_workspace(
         command: Some(command),
         args,
         command_label,
-        cwd: Some(workspace.worktree_path.clone()),
+        cwd: Some(workspace.cwd_path()),
         env: environment,
         use_new_terminal: true,
         allow_concurrent_runs: true,
@@ -569,7 +569,7 @@ exit "$SUPERZET_CODEX_STATUS"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use superzet_model::{WorkspaceAttentionStatus, WorkspaceKind};
+    use superzet_model::{WorkspaceAttentionStatus, WorkspaceKind, WorkspaceLocation};
 
     #[test]
     fn maps_supported_event_types() {
@@ -637,7 +637,9 @@ mod tests {
             name: "feature-branch".to_string(),
             display_name: None,
             branch: "feature-branch".to_string(),
-            worktree_path: PathBuf::from("/tmp/feature-branch"),
+            location: WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/feature-branch"),
+            },
             agent_preset_id: "codex".to_string(),
             managed: true,
             git_summary: None,

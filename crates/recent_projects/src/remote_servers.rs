@@ -377,6 +377,16 @@ impl Focusable for ProjectPicker {
     }
 }
 
+fn project_picker_initial_query(home_dir: &RemotePathBuf) -> String {
+    let query = home_dir.to_string();
+    let separator = home_dir.path_style().primary_separator();
+    if query.ends_with(separator) {
+        query
+    } else {
+        format!("{query}{separator}")
+    }
+}
+
 impl ProjectPicker {
     fn new(
         create_new_window: bool,
@@ -390,13 +400,19 @@ impl ProjectPicker {
     ) -> Entity<Self> {
         let (tx, rx) = oneshot::channel();
         let lister = project::DirectoryLister::Project(project.clone());
-        let delegate = open_path_prompt::OpenPathDelegate::new(tx, lister, false, cx);
+        let delegate = open_path_prompt::OpenPathDelegate::new(tx, lister, false, cx)
+            .browse_directories_on_confirm()
+            .directories_only();
+        let initial_query = project_picker_initial_query(&home_dir);
+        let existing_window = (!create_new_window)
+            .then(|| window.window_handle().downcast::<MultiWorkspace>())
+            .flatten();
 
         let picker = cx.new(|cx| {
             let picker = Picker::uniform_list(delegate, window, cx)
                 .width(rems(34.))
                 .modal(false);
-            picker.set_query(&home_dir.to_string(), window, cx);
+            picker.set_query(&initial_query, window, cx);
             picker
         });
 
@@ -486,18 +502,21 @@ impl ProjectPicker {
                     })
                     .log_err();
 
-                    let options = cx
-                        .update(|_, cx| (app_state.build_window_options)(None, cx))
-                        .log_err()?;
-                    let window = cx
-                        .open_window(options, |window, cx| {
+                    let window = if let Some(window) = existing_window.clone() {
+                        window
+                    } else {
+                        let options = cx
+                            .update(|_, cx| (app_state.build_window_options)(None, cx))
+                            .log_err()?;
+                        cx.open_window(options, |window, cx| {
                             let workspace = cx.new(|cx| {
                                 telemetry::event!("SSH Project Created");
                                 Workspace::new(None, project.clone(), app_state.clone(), window, cx)
                             });
                             cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
                         })
-                        .log_err()?;
+                        .log_err()?
+                    };
 
                     let items = open_remote_project_with_existing_connection(
                         connection, project, paths, app_state, window, cx,

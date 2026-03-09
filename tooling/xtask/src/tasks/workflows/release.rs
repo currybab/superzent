@@ -68,7 +68,10 @@ fn bundle_mac_preview() -> NamedJob {
                 "SUPERZET_MACOS_CERTIFICATE_PASSWORD",
                 vars::MACOS_CERTIFICATE_PASSWORD,
             ))
-            .add_env(("SUPERZET_APPLE_NOTARIZATION_KEY", vars::APPLE_NOTARIZATION_KEY))
+            .add_env((
+                "SUPERZET_APPLE_NOTARIZATION_KEY",
+                vars::APPLE_NOTARIZATION_KEY,
+            ))
             .add_env((
                 "SUPERZET_APPLE_NOTARIZATION_KEY_ID",
                 vars::APPLE_NOTARIZATION_KEY_ID,

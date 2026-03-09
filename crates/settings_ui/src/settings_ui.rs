@@ -561,9 +561,10 @@ fn init_renderers(cx: &mut App) {
         ;
 
     #[cfg(feature = "ai")]
-    cx.default_global::<SettingFieldRenderer>().add_basic_renderer::<settings::OllamaModelName>(
-        crate::components::render_ollama_model_picker,
-    );
+    cx.default_global::<SettingFieldRenderer>()
+        .add_basic_renderer::<settings::OllamaModelName>(
+            crate::components::render_ollama_model_picker,
+        );
 }
 
 pub fn open_settings_editor(

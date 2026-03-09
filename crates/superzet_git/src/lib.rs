@@ -7,7 +7,8 @@ use std::{
     process::Command,
 };
 use superzet_model::{
-    GitChangeSummary, ProjectEntry, WorkspaceAttentionStatus, WorkspaceEntry, WorkspaceKind,
+    GitChangeSummary, ProjectEntry, ProjectLocation, WorkspaceAttentionStatus, WorkspaceEntry,
+    WorkspaceKind, WorkspaceLocation,
 };
 use uuid::Uuid;
 
@@ -57,7 +58,9 @@ pub fn register_project(repo_hint: &Path, preset_id: &str) -> Result<ProjectRegi
         name: name.clone(),
         display_name: None,
         branch: current_branch(&repo_root).unwrap_or_else(|| "HEAD".to_string()),
-        worktree_path: repo_root.clone(),
+        location: WorkspaceLocation::Local {
+            worktree_path: repo_root.clone(),
+        },
         agent_preset_id: preset_id.to_string(),
         managed: false,
         git_summary: git_change_summary(&repo_root).ok(),
@@ -71,7 +74,7 @@ pub fn register_project(repo_hint: &Path, preset_id: &str) -> Result<ProjectRegi
     let project = ProjectEntry {
         id: primary_workspace.project_id.clone(),
         name,
-        repo_root,
+        location: ProjectLocation::Local { repo_root },
         collapsed: false,
         created_at: now,
         last_opened_at: now,
@@ -88,9 +91,12 @@ pub fn create_workspace(
     preset_id: &str,
     options: CreateWorkspaceOptions,
 ) -> Result<WorkspaceCreateOutcome> {
-    ensure_clean_worktree(&project.repo_root)?;
+    let Some(project_repo_root) = project.local_repo_root() else {
+        bail!("cannot create a local workspace for a remote project");
+    };
+    ensure_clean_worktree(project_repo_root)?;
 
-    let repo_root = discover_repo_root(&project.repo_root)?;
+    let repo_root = discover_repo_root(project_repo_root)?;
     let repo_name = repo_root
         .file_name()
         .and_then(|name| name.to_str())
@@ -142,7 +148,7 @@ pub fn create_workspace(
             name: branch_name.clone(),
             display_name: None,
             branch: refresh.branch,
-            worktree_path,
+            location: WorkspaceLocation::Local { worktree_path },
             agent_preset_id: preset_id.to_string(),
             managed: true,
             git_summary: refresh.git_summary,
@@ -160,13 +166,16 @@ pub fn delete_workspace(workspace: &WorkspaceEntry, repo_root: &Path, force: boo
     if !workspace.managed || workspace.kind == WorkspaceKind::Primary {
         return Ok(());
     }
-    if !workspace.worktree_path.exists() {
+    let Some(worktree_path) = workspace.local_worktree_path() else {
+        bail!("cannot delete a local workspace for a remote project");
+    };
+    if !worktree_path.exists() {
         return Ok(());
     }
 
     run_repo_hooks(
         repo_root,
-        &workspace.worktree_path,
+        worktree_path,
         &workspace.name,
         HookPhase::Teardown,
     )?;
@@ -175,7 +184,7 @@ pub fn delete_workspace(workspace: &WorkspaceEntry, repo_root: &Path, force: boo
     if force {
         args.push("--force");
     }
-    let worktree_path = workspace.worktree_path.to_string_lossy().to_string();
+    let worktree_path = worktree_path.to_string_lossy().to_string();
     args.push(worktree_path.as_str());
 
     run_git(repo_root, &args)
@@ -551,10 +560,18 @@ mod tests {
             .join(".superzet-worktrees")
             .join("repo");
 
-        assert_eq!(registration.project.repo_root, repo.repo_path);
-        assert!(outcome.workspace.worktree_path.starts_with(expected_root));
+        assert_eq!(
+            registration.project.local_repo_root(),
+            Some(repo.repo_path.as_path())
+        );
+        assert!(
+            outcome
+                .workspace
+                .local_worktree_path()
+                .is_some_and(|worktree_path| worktree_path.starts_with(&expected_root))
+        );
 
-        delete_workspace(&outcome.workspace, &registration.project.repo_root, true).unwrap();
+        delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap();
     }
 
     #[test]
@@ -575,13 +592,14 @@ mod tests {
         assert_eq!(
             outcome
                 .workspace
-                .worktree_path
+                .local_worktree_path()
+                .expect("workspace should be local")
                 .file_name()
                 .and_then(|name| name.to_str()),
             Some("feature-superzet-test")
         );
 
-        delete_workspace(&outcome.workspace, &registration.project.repo_root, true).unwrap();
+        delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap();
     }
 
     #[test]
@@ -619,7 +637,8 @@ mod tests {
         assert!(
             outcome
                 .workspace
-                .worktree_path
+                .local_worktree_path()
+                .expect("workspace should be local")
                 .join(".superzet")
                 .join("setup.sh")
                 .exists()
@@ -627,13 +646,14 @@ mod tests {
         assert!(
             outcome
                 .workspace
-                .worktree_path
+                .local_worktree_path()
+                .expect("workspace should be local")
                 .join("templates")
                 .join("agent.txt")
                 .exists()
         );
 
-        delete_workspace(&outcome.workspace, &registration.project.repo_root, true).unwrap();
+        delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap();
     }
 
     #[test]
@@ -692,7 +712,7 @@ mod tests {
                 .is_some_and(|warning| warning.contains("missing-directory"))
         );
 
-        delete_workspace(&outcome.workspace, &registration.project.repo_root, true).unwrap();
+        delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap();
     }
 
     struct RepoFixture {

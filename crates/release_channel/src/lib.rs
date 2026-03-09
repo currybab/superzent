@@ -12,9 +12,7 @@ fn env_var(primary: &str, legacy: &str) -> Option<String> {
 }
 
 fn env_flag(primary: &str, legacy: &str, predicate: impl Fn(&str) -> bool) -> bool {
-    env_var(primary, legacy)
-        .as_deref()
-        .is_some_and(predicate)
+    env_var(primary, legacy).as_deref().is_some_and(predicate)
 }
 
 /// stable | dev | nightly | preview
@@ -97,12 +95,12 @@ impl AppVersion {
     ) -> Version {
         let mut version: Version =
             if let Some(from_env) = env_var("SUPERZET_APP_VERSION", "ZED_APP_VERSION") {
-            from_env
-                .parse()
-                .expect("invalid SUPERZET_APP_VERSION or ZED_APP_VERSION")
-        } else {
-            pkg_version.parse().expect("invalid version in Cargo.toml")
-        };
+                from_env
+                    .parse()
+                    .expect("invalid SUPERZET_APP_VERSION or ZED_APP_VERSION")
+            } else {
+                pkg_version.parse().expect("invalid version in Cargo.toml")
+            };
         let mut pre = String::from(RELEASE_CHANNEL.dev_name());
 
         if let Some(build_id) = build_id {

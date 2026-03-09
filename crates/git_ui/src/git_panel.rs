@@ -25,6 +25,8 @@ use editor::{EditorStyle, RewrapOptions};
 #[cfg(feature = "ai")]
 use futures::StreamExt as _;
 use git::commit::ParsedCommitMessage;
+#[cfg(feature = "ai")]
+use git::repository::DiffType;
 use git::repository::{
     Branch, CommitDetails, CommitOptions, CommitSummary, FetchOptions, PushOptions, Remote,
     RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus,
@@ -44,8 +46,6 @@ use gpui::{
 };
 use itertools::Itertools;
 use language::{Buffer, File};
-#[cfg(feature = "ai")]
-use git::repository::DiffType;
 #[cfg(feature = "ai")]
 use language_model::{
     ConfiguredModel, LanguageModelRegistry, LanguageModelRequest, LanguageModelRequestMessage, Role,

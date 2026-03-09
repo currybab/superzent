@@ -16841,13 +16841,17 @@ name = "superzet_ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "editor",
+ "git",
  "git_ui",
  "gpui",
  "log",
  "menu",
  "project",
  "project_panel",
+ "recent_projects",
+ "remote",
  "settings",
  "superzet_agent",
  "superzet_git",
@@ -16857,6 +16861,7 @@ dependencies = [
  "theme",
  "ui",
  "util",
+ "uuid",
  "workspace",
  "zed_actions",
 ]

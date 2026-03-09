@@ -1,5 +1,7 @@
 use anyhow::Result;
+use chrono::Utc;
 use editor::{Editor, EditorEvent, actions::SelectAll};
+use git::repository::validate_worktree_directory;
 use git_ui::git_panel::GitPanel;
 use gpui::{
     Action, Animation, AnimationExt, AsyncWindowContext, ClickEvent, DismissEvent, Entity,
@@ -7,32 +9,35 @@ use gpui::{
     Point, PromptLevel, Subscription, Task, WeakEntity, WindowHandle, actions, anchored, deferred,
 };
 use menu;
+use project::git_store::Repository;
+use project::project_settings::ProjectSettings;
 use project_panel::ProjectPanel;
+use recent_projects::open_remote_project;
+use remote::{RemoteConnectionOptions, SshConnectionOptions};
 use settings::Settings;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use superzet_agent::{AGENT_TERMINAL_ID_ENV_VAR, AgentHookEvent, AgentHookEventType};
 use superzet_model::{
-    AgentPreset, ProjectEntry, SuperzetStore, TaskStatus, WorkspaceAttentionStatus, WorkspaceEntry,
-    WorkspaceKind, aggregate_workspace_attention_status,
+    AgentPreset, GitChangeSummary, ProjectEntry, ProjectLocation, StoredSshConnection,
+    StoredSshPortForward, SuperzetStore, TaskStatus, WorkspaceAttentionStatus, WorkspaceEntry,
+    WorkspaceKind, WorkspaceLocation, aggregate_workspace_attention_status,
 };
 use terminal::terminal_settings::{TerminalAgentNotificationMode, TerminalSettings};
 use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 use ui::{
-    Chip, ContextMenu, DropdownMenu, DropdownStyle, Indicator, ListItem, Tab, Tooltip, prelude::*,
+    ButtonLike, Chip, ContextMenu, DropdownMenu, DropdownStyle, Indicator, ListItem, Tab,
+    Tooltip, prelude::*,
 };
+use uuid::Uuid;
 use workspace::{
     AppState as WorkspaceAppState, ModalView, MultiWorkspace, MultiWorkspaceEvent, OpenOptions,
-    OpenVisible, Pane, Sidebar as WorkspaceSidebar, SidebarEvent, Toast, Workspace,
+    OpenVisible, Pane, SerializedWorkspaceLocation, Sidebar as WorkspaceSidebar, SidebarEvent,
+    Toast, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
-    local_workspace_windows,
     notifications::NotificationId,
+    workspace_windows_for_location,
 };
-use zed_actions::OpenSettingsAt;
+use zed_actions::{OpenRemote, OpenSettingsAt};
 
 actions!(
     superzet,
@@ -380,19 +385,16 @@ fn render_terminal_preset_bar(
     cx: &mut Context<Pane>,
 ) -> Option<AnyElement> {
     let workspace_handle = pane.workspace()?;
-    let workspace_path = workspace_root_path(&workspace_handle, cx)?;
     let store = SuperzetStore::global(cx);
     let (workspace_entry, presets) = {
         let store = store.read(cx);
-        let workspace_entry = store
-            .workspace_for_path_or_ancestor(&workspace_path)
-            .or_else(|| {
-                store.active_workspace().filter(|workspace| {
-                    workspace_path.starts_with(&workspace.worktree_path)
-                        || workspace.worktree_path.starts_with(&workspace_path)
-                })
-            })?
-            .clone();
+        let workspace_entry =
+            if let Some(location) = workspace_location_snapshot(&workspace_handle, cx) {
+                store.workspace_for_location(&location).cloned()
+            } else {
+                None
+            }
+            .or_else(|| store.active_workspace().cloned())?;
 
         (workspace_entry, store.presets().to_vec())
     };
@@ -818,6 +820,155 @@ fn update_store_async<R>(
     }
 }
 
+struct WorkspaceCreationResult {
+    workspace: WorkspaceEntry,
+    warning: Option<String>,
+}
+
+async fn resolve_remote_project_workspace(
+    project: &ProjectEntry,
+    store: &Entity<SuperzetStore>,
+    app_state: Arc<WorkspaceAppState>,
+    require_primary_workspace: bool,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<(Entity<Workspace>, WorkspaceEntry)> {
+    let primary_workspace = cx
+        .update(|_, cx| {
+            store
+                .read(cx)
+                .primary_workspace_for_project(&project.id)
+                .cloned()
+        })?
+        .ok_or_else(|| anyhow::anyhow!("missing primary workspace for remote project"))?;
+
+    let primary_live_workspace =
+        cx.update(|window, cx| workspace_for_entry_in_window(window, cx, &primary_workspace))?;
+
+    let project_live_workspace = cx.update(|window, cx| {
+        store
+            .read(cx)
+            .workspaces_for_project(&project.id)
+            .into_iter()
+            .find_map(|workspace_entry| workspace_for_entry_in_window(window, cx, workspace_entry))
+    })?;
+
+    if let Some(live_workspace) = primary_live_workspace.or_else(|| {
+        (!require_primary_workspace)
+            .then_some(project_live_workspace)
+            .flatten()
+    }) {
+        return Ok((live_workspace, primary_workspace));
+    }
+
+    let open_task = cx.update(|window, cx| {
+        open_workspace_entry(primary_workspace.clone(), app_state, window, cx)
+    })?;
+    open_task.await?;
+
+    let live_workspace = cx
+        .update(|window, cx| workspace_for_entry_in_window(window, cx, &primary_workspace))?
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve remote project workspace"))?;
+
+    Ok((live_workspace, primary_workspace))
+}
+
+async fn create_remote_workspace(
+    project: ProjectEntry,
+    branch_name: String,
+    preset_id: String,
+    store: Entity<SuperzetStore>,
+    app_state: Arc<WorkspaceAppState>,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<WorkspaceCreationResult> {
+    let connection = match &project.location {
+        ProjectLocation::Ssh { connection, .. } => connection.clone(),
+        ProjectLocation::Local { .. } => {
+            return Err(anyhow::anyhow!(
+                "remote workspace creation requires an SSH project"
+            ));
+        }
+    };
+
+    let (project_workspace, _) =
+        resolve_remote_project_workspace(&project, &store, app_state, false, cx).await?;
+
+    let repository = cx.update(|_, cx| {
+        active_repository_for_workspace(&project_workspace, cx)
+            .ok_or_else(|| anyhow::anyhow!("no active repository found"))
+    })??;
+
+    let (receiver, worktree_path) = repository.update(cx, |repository, cx| {
+        let worktree_directory_setting = ProjectSettings::get_global(cx)
+            .git
+            .worktree_directory
+            .clone();
+        let directory = validate_worktree_directory(
+            &repository.original_repo_abs_path,
+            &worktree_directory_setting,
+        )?;
+        let worktree_path = directory.join(&branch_name);
+        let receiver = repository.create_worktree(branch_name.clone(), directory, None);
+        anyhow::Ok((receiver, worktree_path))
+    })?;
+    receiver.await??;
+
+    let workspace_location = WorkspaceLocation::Ssh {
+        connection,
+        worktree_path: worktree_path.to_string_lossy().into_owned(),
+    };
+
+    let workspace = cx.update(|_, cx| {
+        let existing_workspace = store
+            .read(cx)
+            .workspace_for_location(&workspace_location)
+            .cloned();
+        let now = Utc::now();
+
+        WorkspaceEntry {
+            id: existing_workspace
+                .as_ref()
+                .map(|workspace| workspace.id.clone())
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            project_id: project.id.clone(),
+            kind: WorkspaceKind::Worktree,
+            name: branch_name.clone(),
+            display_name: existing_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.display_name.clone()),
+            branch: branch_name.clone(),
+            location: workspace_location,
+            agent_preset_id: existing_workspace
+                .as_ref()
+                .map(|workspace| workspace.agent_preset_id.clone())
+                .unwrap_or(preset_id),
+            managed: true,
+            git_summary: existing_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.git_summary.clone()),
+            attention_status: existing_workspace
+                .as_ref()
+                .map(|workspace| workspace.attention_status.clone())
+                .unwrap_or(WorkspaceAttentionStatus::Idle),
+            review_pending: existing_workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.review_pending),
+            last_attention_reason: existing_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.last_attention_reason.clone()),
+            created_at: existing_workspace
+                .as_ref()
+                .map(|workspace| workspace.created_at)
+                .unwrap_or(now),
+            last_opened_at: now,
+        }
+    })?;
+
+    Ok(WorkspaceCreationResult {
+        workspace,
+        warning: None,
+    })
+}
+
 fn spawn_new_workspace_request(
     workspace_handle: Entity<Workspace>,
     app_state: Arc<WorkspaceAppState>,
@@ -830,20 +981,38 @@ fn spawn_new_workspace_request(
     let preset_id = store.read(cx).default_preset().id.clone();
     window
         .spawn(cx, async move |cx| {
-            let outcome = cx
-                .background_spawn({
-                    let project = project.clone();
-                    let branch_name = branch_name.clone();
-                    let preset_id = preset_id.clone();
-                    async move {
-                        superzet_git::create_workspace(
-                            &project,
-                            &preset_id,
-                            superzet_git::CreateWorkspaceOptions { branch_name },
-                        )
-                    }
-                })
-                .await;
+            let outcome = match &project.location {
+                ProjectLocation::Local { .. } => {
+                    cx.background_spawn({
+                        let project = project.clone();
+                        let branch_name = branch_name.clone();
+                        let preset_id = preset_id.clone();
+                        async move {
+                            superzet_git::create_workspace(
+                                &project,
+                                &preset_id,
+                                superzet_git::CreateWorkspaceOptions { branch_name },
+                            )
+                            .map(|outcome| WorkspaceCreationResult {
+                                workspace: outcome.workspace,
+                                warning: outcome.warning,
+                            })
+                        }
+                    })
+                    .await
+                }
+                ProjectLocation::Ssh { .. } => {
+                    create_remote_workspace(
+                        project.clone(),
+                        branch_name.clone(),
+                        preset_id.clone(),
+                        store.clone(),
+                        app_state.clone(),
+                        cx,
+                    )
+                    .await
+                }
+            };
 
             let outcome = match outcome {
                 Ok(outcome) => outcome,
@@ -869,12 +1038,7 @@ fn spawn_new_workspace_request(
             }
 
             let open_task = cx.update(|window, cx| {
-                open_workspace_path(
-                    workspace_entry.worktree_path.clone(),
-                    app_state.clone(),
-                    window,
-                    cx,
-                )
+                open_workspace_entry(workspace_entry.clone(), app_state.clone(), window, cx)
             })?;
             if let Err(error) = open_task.await {
                 show_workspace_toast_async(
@@ -885,9 +1049,9 @@ fn spawn_new_workspace_request(
                 return Ok::<(), anyhow::Error>(());
             }
 
-            if let Some(target_workspace) = cx.update(|window, cx| {
-                workspace_for_path_in_window(window, cx, &workspace_entry.worktree_path)
-            })? {
+            if let Some(target_workspace) =
+                cx.update(|window, cx| workspace_for_entry_in_window(window, cx, &workspace_entry))?
+            {
                 cx.update(|window, cx| {
                     launch_workspace_preset(
                         target_workspace,
@@ -914,23 +1078,157 @@ fn spawn_new_workspace_request(
         .detach();
 }
 
-fn workspace_for_path_in_window(
-    window: &Window,
-    cx: &App,
-    path: &std::path::Path,
-) -> Option<Entity<Workspace>> {
-    if let Some(multi_workspace) = window.window_handle().downcast::<MultiWorkspace>() {
-        let multi_workspace = multi_workspace.read(cx).ok()?;
-        return multi_workspace.workspaces().iter().find_map(|workspace| {
-            workspace_root_path(workspace, cx)
-                .filter(|workspace_path| workspace_path == path)
-                .map(|_| workspace.clone())
+struct AddProjectChooserModal {
+    workspace: WeakEntity<Workspace>,
+    focus_handle: FocusHandle,
+}
+
+impl EventEmitter<DismissEvent> for AddProjectChooserModal {}
+impl ModalView for AddProjectChooserModal {}
+
+impl Focusable for AddProjectChooserModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.workspace
+            .upgrade()
+            .map(|workspace| workspace.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| self.focus_handle.clone())
+    }
+}
+
+impl AddProjectChooserModal {
+    fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
+        Self {
+            workspace,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace_handle = self.workspace.clone();
+        window.defer(cx, move |window, cx| {
+            let Some(workspace_handle) = workspace_handle.upgrade() else {
+                return;
+            };
+
+            workspace_handle.update(cx, |workspace, workspace_cx| {
+                workspace.hide_modal(window, workspace_cx);
+                run_add_local_project(workspace, window, workspace_cx);
+            });
         });
     }
 
-    workspace_from_window(window, cx).filter(|workspace| {
-        workspace_root_path(workspace, cx).is_some_and(|workspace_path| workspace_path == path)
-    })
+    fn open_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace_handle = self.workspace.clone();
+        window.defer(cx, move |window, cx| {
+            let Some(workspace_handle) = workspace_handle.upgrade() else {
+                return;
+            };
+
+            workspace_handle.update(cx, |workspace, workspace_cx| {
+                workspace.hide_modal(window, workspace_cx);
+                run_add_remote_project(workspace, window, workspace_cx);
+            });
+        });
+    }
+}
+
+impl Render for AddProjectChooserModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("SuperzetAddProjectChooserModal")
+            .elevation_3(cx)
+            .w(px(420.))
+            .overflow_hidden()
+            .bg(cx.theme().colors().editor_background)
+            .border_1()
+            .border_color(cx.theme().colors().border)
+            .rounded_lg()
+            .child(
+                v_flex()
+                    .gap_3()
+                    .p_4()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(Label::new("Add Project").size(LabelSize::Large))
+                            .child(
+                                Label::new(
+                                    "Choose whether to add a local repository or connect to a remote SSH project.",
+                                )
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("superzet-add-local-project", "Local Project")
+                                    .full_width()
+                                    .style(ButtonStyle::Filled)
+                                    .icon(IconName::FolderOpen)
+                                    .icon_position(IconPosition::Start)
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, window, cx| {
+                                            this.open_local(window, cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                ButtonLike::new("superzet-add-remote-project")
+                                    .full_width()
+                                    .style(ButtonStyle::Subtle)
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, window, cx| {
+                                            this.open_remote(window, cx);
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .w_full()
+                                            .child(
+                                                h_flex()
+                                                    .w_full()
+                                                    .justify_center()
+                                                    .items_center()
+                                                    .gap(DynamicSpacing::Base04.rems(cx))
+                                                    .child(
+                                                        Icon::new(IconName::Server)
+                                                            .size(IconSize::default()),
+                                                    )
+                                                    .child(Label::new("Remote Project (SSH)")),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .absolute()
+                                                    .right(DynamicSpacing::Base06.rems(cx))
+                                                    .top_0()
+                                                    .h_full()
+                                                    .items_center()
+                                                    .child(
+                                                        Chip::new("experimental")
+                                                            .label_color(Color::Accent),
+                                                    ),
+                                            ),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .px_4()
+                    .pb_4()
+                    .child(
+                        Button::new("superzet-add-project-cancel", "Cancel")
+                            .style(ButtonStyle::Subtle)
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(DismissEvent);
+                            })),
+                    ),
+            )
+    }
 }
 
 struct NewWorkspaceModal {
@@ -1180,11 +1478,23 @@ impl SuperzetSidebar {
         let Some(current_workspace) = self.current_workspace_entity(cx) else {
             return;
         };
-        let Some(path) = workspace_root_path(&current_workspace, cx) else {
-            return;
+        let location = workspace_location_snapshot(&current_workspace, cx);
+        let remote_bundle = {
+            let store = self.store.read(cx);
+            build_remote_workspace_bundle(&current_workspace, &store, cx)
         };
         self.store.update(cx, |store, cx| {
-            store.set_active_workspace_by_path(&path, cx)
+            if let Some((project_entry, workspace_entry)) = remote_bundle.clone() {
+                store.upsert_project_bundle(project_entry, workspace_entry.clone(), cx);
+                store.record_workspace_opened(&workspace_entry.id, cx);
+                return;
+            }
+
+            let workspace_id = location
+                .as_ref()
+                .and_then(|location| store.workspace_for_location(location))
+                .map(|workspace| workspace.id.clone());
+            store.set_active_workspace(workspace_id, cx);
         });
     }
 
@@ -1607,7 +1917,7 @@ impl SuperzetSidebar {
                                             .truncate(),
                                     )
                                     .child(
-                                        Label::new(project.repo_root.display().to_string())
+                                        Label::new(project.display_root())
                                             .size(LabelSize::XSmall)
                                             .color(Color::Muted)
                                             .truncate(),
@@ -1712,7 +2022,7 @@ impl SuperzetSidebar {
                                 )
                             })
                             .tooltip({
-                                let path = workspace.worktree_path.display().to_string();
+                                let path = workspace.display_path();
                                 move |window, cx| ui::Tooltip::text(path.clone())(window, cx)
                             })
                             .on_secondary_mouse_down(cx.listener(
@@ -1735,7 +2045,7 @@ impl SuperzetSidebar {
                                     cx,
                                 );
                                 this.focus_or_open_workspace(
-                                    workspace_for_open.worktree_path.clone(),
+                                    workspace_for_open.clone(),
                                     window,
                                     cx,
                                 );
@@ -1825,32 +2135,67 @@ impl SuperzetSidebar {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let store = self.store.clone();
-        cx.spawn_in(window, async move |_, cx| {
-            let refresh = cx
-                .background_spawn(async move {
-                    superzet_git::refresh_workspace_path(&workspace.worktree_path)
-                })
-                .await;
+        match &workspace.location {
+            WorkspaceLocation::Local { worktree_path } => {
+                let worktree_path = worktree_path.clone();
+                let workspace_id = workspace.id.clone();
+                let store = self.store.clone();
+                cx.spawn_in(window, async move |_, cx| {
+                    let refresh = cx
+                        .background_spawn(async move {
+                            superzet_git::refresh_workspace_path(&worktree_path)
+                        })
+                        .await;
 
-            if let Ok(refresh) = refresh {
-                store.update(cx, |store, cx| {
-                    store.refresh_workspace_metadata(
-                        &workspace.id,
-                        Some(refresh.branch),
-                        refresh.git_summary,
-                        cx,
-                    );
-                });
+                    if let Ok(refresh) = refresh {
+                        store.update(cx, |store, cx| {
+                            store.refresh_workspace_metadata(
+                                &workspace_id,
+                                Some(refresh.branch),
+                                refresh.git_summary,
+                                cx,
+                            );
+                        });
+                    }
+
+                    anyhow::Ok(())
+                })
+                .detach_and_log_err(cx);
             }
-            anyhow::Ok(())
-        })
-        .detach_and_log_err(cx);
+            WorkspaceLocation::Ssh { .. } => {
+                let branch_and_summary = workspace_for_entry_in_window(window, cx, &workspace)
+                    .and_then(|live_workspace| {
+                        active_repository_for_workspace(&live_workspace, cx).map(|repository| {
+                            let repository = repository.read(cx);
+                            let branch = repository
+                                .branch
+                                .as_ref()
+                                .map(|branch| branch.name().to_string())
+                                .unwrap_or_else(|| "HEAD".to_string());
+                            (
+                                branch,
+                                Some(git_change_summary_from_repository(&repository)),
+                            )
+                        })
+                    });
+
+                if let Some((branch, git_summary)) = branch_and_summary {
+                    self.store.update(cx, |store, cx| {
+                        store.refresh_workspace_metadata(
+                            &workspace.id,
+                            Some(branch),
+                            git_summary,
+                            cx,
+                        );
+                    });
+                }
+            }
+        }
     }
 
     fn focus_or_open_workspace(
         &self,
-        path: std::path::PathBuf,
+        workspace_entry: WorkspaceEntry,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -1864,9 +2209,7 @@ impl SuperzetSidebar {
             .iter()
             .enumerate()
             .find_map(|(index, workspace)| {
-                workspace_root_path(workspace, cx)
-                    .filter(|workspace_path| *workspace_path == path)
-                    .map(|_| index)
+                workspace_matches_entry(workspace, &workspace_entry, cx).then_some(index)
             })
         {
             multi_workspace.update(cx, |multi_workspace, cx| {
@@ -1878,7 +2221,12 @@ impl SuperzetSidebar {
 
         multi_workspace
             .update(cx, |multi_workspace, cx| {
-                multi_workspace.open_project(vec![path.clone()], window, cx)
+                open_workspace_entry(
+                    workspace_entry.clone(),
+                    multi_workspace.workspace().read(cx).app_state().clone(),
+                    window,
+                    cx,
+                )
             })
             .detach_and_log_err(cx);
     }
@@ -2076,7 +2424,7 @@ impl Render for SuperzetSidebar {
                     .py_4()
                     .child(Label::new("No repositories yet"))
                     .child(
-                        Label::new("Add a local git repository to manage workspaces.")
+                        Label::new("Add a local repository or connect to a remote SSH project.")
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
@@ -2188,7 +2536,6 @@ impl WorkspaceSidebar for SuperzetSidebar {
 pub struct SuperzetRightSidebar {
     project_panel: Entity<ProjectPanel>,
     git_panel: Entity<GitPanel>,
-    store: Entity<SuperzetStore>,
     focus_handle: FocusHandle,
     width: Option<Pixels>,
     _active: bool,
@@ -2219,7 +2566,6 @@ impl SuperzetRightSidebar {
         Self {
             project_panel,
             git_panel,
-            store: store.clone(),
             focus_handle: cx.focus_handle(),
             width: None,
             _active: false,
@@ -2280,16 +2626,6 @@ impl Focusable for SuperzetRightSidebar {
 
 impl Render for SuperzetRightSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let active_workspace = self.store.read(cx).active_workspace().cloned();
-        let title = active_workspace
-            .as_ref()
-            .map(|workspace| workspace.display_name().to_string())
-            .unwrap_or_else(|| "Workspace".into());
-        let subtitle = active_workspace
-            .as_ref()
-            .map(|workspace| workspace.branch.clone())
-            .unwrap_or_else(|| "No workspace selected".into());
-
         v_flex()
             .size_full()
             .child(
@@ -2381,7 +2717,7 @@ impl Panel for SuperzetRightSidebar {
     }
 }
 
-fn run_add_project(
+fn run_add_local_project(
     _workspace: &mut Workspace,
     window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
@@ -2433,7 +2769,7 @@ fn run_add_project(
                 Ok(registration) => {
                     let existing_primary = store
                         .read(cx)
-                        .project_for_repo_root(&registration.project.repo_root)
+                        .project_for_location(&registration.project.location)
                         .and_then(|project| {
                             store
                                 .read(cx)
@@ -2464,8 +2800,8 @@ fn run_add_project(
                         ),
                         cx,
                     );
-                    open_workspace_path(
-                        primary_workspace.worktree_path.clone(),
+                    open_workspace_entry(
+                        primary_workspace,
                         workspace.app_state().clone(),
                         window,
                         cx,
@@ -2485,6 +2821,32 @@ fn run_add_project(
         anyhow::Ok(())
     })
     .detach_and_log_err(cx);
+}
+
+fn run_add_remote_project(
+    _workspace: &mut Workspace,
+    window: &mut gpui::Window,
+    cx: &mut Context<Workspace>,
+) {
+    window.dispatch_action(
+        OpenRemote {
+            from_existing_connection: false,
+            create_new_window: false,
+        }
+        .boxed_clone(),
+        cx,
+    );
+}
+
+fn run_add_project(
+    workspace: &mut Workspace,
+    window: &mut gpui::Window,
+    cx: &mut Context<Workspace>,
+) {
+    let workspace_handle = cx.entity().downgrade();
+    workspace.toggle_modal(window, cx, move |_window, cx| {
+        AddProjectChooserModal::new(workspace_handle.clone(), cx)
+    });
 }
 
 fn run_new_workspace(
@@ -2547,8 +2909,12 @@ fn run_reveal_changes(
         );
         return;
     };
-    let target_path = workspace_entry.worktree_path.clone();
-    let switch_task = open_workspace_path(target_path, workspace.app_state().clone(), window, cx);
+    let switch_task = open_workspace_entry(
+        workspace_entry.clone(),
+        workspace.app_state().clone(),
+        window,
+        cx,
+    );
     let maybe_multi_workspace = window.window_handle().downcast::<MultiWorkspace>();
 
     cx.spawn_in(window, async move |_, cx| {
@@ -2625,25 +2991,9 @@ fn run_open_workspace_in_new_window(
     };
 
     let app_state = workspace.app_state().clone();
-    let paths = vec![workspace_entry.worktree_path.clone()];
-    cx.spawn(async move |_, cx| {
-        cx.update(|cx| {
-            workspace::open_paths(
-                &paths,
-                app_state,
-                OpenOptions {
-                    open_new_workspace: Some(true),
-                    focus: Some(true),
-                    visible: Some(OpenVisible::All),
-                    ..Default::default()
-                },
-                cx,
-            )
-        })
-        .await?;
-        anyhow::Ok(())
-    })
-    .detach_and_log_err(cx);
+    let open_task = open_workspace_entry_in_new_window(workspace_entry, app_state, cx);
+    cx.spawn(async move |_, _| open_task.await)
+        .detach_and_log_err(cx);
 }
 
 fn run_delete_workspace(
@@ -2694,11 +3044,12 @@ fn run_delete_workspace(
         Some(&format!(
             "Delete `{}` and remove its worktree at {}?",
             workspace_entry.name,
-            workspace_entry.worktree_path.display()
+            workspace_entry.display_path()
         )),
         &["Cancel", "Delete"],
         cx,
     );
+    let app_state = workspace.app_state().clone();
 
     cx.spawn_in(window, async move |this, cx| {
         if prompt.await != Ok(1) {
@@ -2706,11 +3057,42 @@ fn run_delete_workspace(
         }
 
         let workspace_to_delete = workspace_entry.clone();
-        let delete_result = cx
-            .background_spawn(async move {
-                superzet_git::delete_workspace(&workspace_to_delete, &project.repo_root, false)
-            })
-            .await;
+        let delete_result = match &project.location {
+            ProjectLocation::Local { repo_root } => {
+                cx.background_spawn({
+                    let repo_root = repo_root.clone();
+                    async move {
+                        superzet_git::delete_workspace(&workspace_to_delete, &repo_root, false)
+                    }
+                })
+                .await
+            }
+            ProjectLocation::Ssh { .. } => {
+                let (project_workspace, primary_workspace) =
+                    resolve_remote_project_workspace(&project, &store, app_state.clone(), true, cx)
+                        .await?;
+
+                let repository = cx.update(|_, cx| {
+                    active_repository_for_workspace(&project_workspace, cx)
+                        .ok_or_else(|| anyhow::anyhow!("no active repository found"))
+                })??;
+                let target_path = PathBuf::from(
+                    workspace_to_delete
+                        .ssh_worktree_path()
+                        .ok_or_else(|| anyhow::anyhow!("missing remote worktree path"))?,
+                );
+                let receiver = repository.update(cx, |repository, _| {
+                    repository.remove_worktree(target_path, false)
+                });
+                receiver.await??;
+
+                let open_primary_task = cx.update(|window, cx| {
+                    open_workspace_entry(primary_workspace.clone(), app_state.clone(), window, cx)
+                })?;
+                open_primary_task.await?;
+                Ok(())
+            }
+        };
 
         this.update_in(cx, |workspace, window, cx| match delete_result {
             Ok(()) => {
@@ -2732,13 +3114,15 @@ fn run_delete_workspace(
                     store.update(cx, |store, cx| {
                         store.record_workspace_opened(&primary_workspace.id, cx);
                     });
-                    open_workspace_path(
-                        primary_workspace.worktree_path.clone(),
-                        workspace.app_state().clone(),
-                        window,
-                        cx,
-                    )
-                    .detach_and_log_err(cx);
+                    if workspace_entry.local_worktree_path().is_some() {
+                        open_workspace_entry(
+                            primary_workspace,
+                            workspace.app_state().clone(),
+                            window,
+                            cx,
+                        )
+                        .detach_and_log_err(cx);
+                    }
                 }
             }
             Err(error) => {
@@ -2783,18 +3167,12 @@ fn run_close_project(
         .cloned()
         .collect::<Vec<_>>();
     let workspace_count = project_workspaces.len();
-    let fallback_workspace_path = store
+    let fallback_workspace = store
         .read(cx)
         .workspaces()
         .iter()
-        .find_map(|workspace_entry| {
-            (workspace_entry.project_id != project_id)
-                .then(|| workspace_entry.worktree_path.clone())
-        });
-    let project_workspace_paths = project_workspaces
-        .iter()
-        .map(|workspace_entry| workspace_entry.worktree_path.clone())
-        .collect::<BTreeSet<_>>();
+        .find(|workspace_entry| workspace_entry.project_id != project_id)
+        .cloned();
     let prompt = window.prompt(
         PromptLevel::Warning,
         "Close project?",
@@ -2819,8 +3197,9 @@ fn run_close_project(
         }
 
         let close_result = close_project_in_all_windows(
-            project_workspace_paths,
-            fallback_workspace_path,
+            project.location.clone(),
+            project_workspaces.clone(),
+            fallback_workspace,
             app_state,
             cx,
         )
@@ -2854,16 +3233,22 @@ fn run_close_project(
 }
 
 async fn close_project_in_all_windows(
-    project_workspace_paths: BTreeSet<PathBuf>,
-    fallback_workspace_path: Option<PathBuf>,
+    project_location: ProjectLocation,
+    project_workspaces: Vec<WorkspaceEntry>,
+    fallback_workspace: Option<WorkspaceEntry>,
     app_state: Arc<WorkspaceAppState>,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<()> {
-    let workspace_windows = cx.update(|cx| local_workspace_windows(cx));
+    let Some(serialized_location) = serialized_workspace_location_for_project(&project_location)
+    else {
+        return Ok(());
+    };
+    let workspace_windows =
+        cx.update(|cx| workspace_windows_for_location(&serialized_location, cx));
 
     for workspace_window in workspace_windows {
         let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, cx| {
-            matching_workspace_indexes(multi_workspace, &project_workspace_paths, cx)
+            matching_workspace_indexes(multi_workspace, &project_workspaces, cx)
         }) {
             Ok(matching_indexes) => matching_indexes,
             Err(_) => continue,
@@ -2883,7 +3268,7 @@ async fn close_project_in_all_windows(
         if matching_indexes.len() == workspace_count {
             ensure_project_close_fallback(
                 workspace_window.clone(),
-                fallback_workspace_path.clone(),
+                fallback_workspace.clone(),
                 app_state.clone(),
                 cx,
             )
@@ -2891,7 +3276,7 @@ async fn close_project_in_all_windows(
         }
 
         let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, cx| {
-            matching_workspace_indexes(multi_workspace, &project_workspace_paths, cx)
+            matching_workspace_indexes(multi_workspace, &project_workspaces, cx)
         }) {
             Ok(matching_indexes) => matching_indexes,
             Err(_) => continue,
@@ -2914,37 +3299,29 @@ async fn close_project_in_all_windows(
 
 async fn ensure_project_close_fallback(
     workspace_window: WindowHandle<MultiWorkspace>,
-    fallback_workspace_path: Option<PathBuf>,
+    fallback_workspace: Option<WorkspaceEntry>,
     app_state: Arc<WorkspaceAppState>,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<()> {
-    let window_exists = || cx.update(|cx| workspace_window.read(cx).is_ok());
+    if let Some(workspace_entry) = fallback_workspace {
+        let open_result = match workspace_window.update(cx, |_, window, cx| {
+            open_workspace_entry(workspace_entry.clone(), app_state.clone(), window, cx)
+        }) {
+            Ok(task) => task.await,
+            Err(_) => return Ok(()),
+        };
 
-    if let Some(path) = fallback_workspace_path {
-        match cx
-            .update(|cx| {
-                Workspace::new_local(
-                    vec![path],
-                    app_state.clone(),
-                    Some(workspace_window.clone()),
-                    None,
-                    None,
-                    true,
-                    cx,
-                )
-            })
-            .await
-        {
+        match open_result {
             Ok(_) => return Ok(()),
             Err(_error) => {
-                if !window_exists() {
+                if !cx.update(|cx| workspace_window.read(cx).is_ok()) {
                     return Ok(());
                 }
             }
         }
     }
 
-    if !window_exists() {
+    if !cx.update(|cx| workspace_window.read(cx).is_ok()) {
         return Ok(());
     }
 
@@ -2966,7 +3343,7 @@ async fn ensure_project_close_fallback(
 
 fn matching_workspace_indexes(
     multi_workspace: &MultiWorkspace,
-    project_workspace_paths: &BTreeSet<PathBuf>,
+    project_workspaces: &[WorkspaceEntry],
     cx: &App,
 ) -> Vec<usize> {
     multi_workspace
@@ -2974,9 +3351,12 @@ fn matching_workspace_indexes(
         .iter()
         .enumerate()
         .filter_map(|(index, workspace_handle)| {
-            workspace_root_path(workspace_handle, cx)
-                .filter(|path| project_workspace_paths.contains(path))
-                .map(|_| index)
+            project_workspaces
+                .iter()
+                .any(|workspace_entry| {
+                    workspace_matches_entry(workspace_handle, workspace_entry, cx)
+                })
+                .then_some(index)
         })
         .collect()
 }
@@ -3055,8 +3435,8 @@ fn run_add_project_from_store(
     });
 }
 
-fn open_workspace_path(
-    path: std::path::PathBuf,
+fn open_local_workspace_path(
+    path: PathBuf,
     app_state: Arc<WorkspaceAppState>,
     window: &mut gpui::Window,
     cx: &mut App,
@@ -3075,7 +3455,7 @@ fn open_workspace_path(
             .iter()
             .enumerate()
             .find_map(|(index, workspace)| {
-                workspace_root_path(workspace, cx)
+                local_workspace_root_path(workspace, cx)
                     .filter(|workspace_path| *workspace_path == path)
                     .map(|_| index)
             })
@@ -3104,13 +3484,110 @@ fn open_workspace_path(
     })
 }
 
+fn open_workspace_entry(
+    workspace_entry: WorkspaceEntry,
+    app_state: Arc<WorkspaceAppState>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) -> Task<anyhow::Result<()>> {
+    match &workspace_entry.location {
+        WorkspaceLocation::Local { worktree_path } => {
+            open_local_workspace_path(worktree_path.clone(), app_state, window, cx)
+        }
+        WorkspaceLocation::Ssh {
+            connection,
+            worktree_path,
+        } => {
+            let Some(remote_connection) = remote_connection_options_from_stored(connection) else {
+                return Task::ready(Err(anyhow::anyhow!(
+                    "unsupported remote workspace configuration"
+                )));
+            };
+
+            let replace_window = window.window_handle().downcast::<MultiWorkspace>();
+            let path = PathBuf::from(worktree_path);
+            window.spawn(cx, async move |cx| {
+                open_remote_project(
+                    remote_connection,
+                    vec![path],
+                    app_state,
+                    OpenOptions {
+                        replace_window,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .await?;
+                anyhow::Ok(())
+            })
+        }
+    }
+}
+
+fn open_workspace_entry_in_new_window(
+    workspace_entry: WorkspaceEntry,
+    app_state: Arc<WorkspaceAppState>,
+    cx: &mut App,
+) -> Task<anyhow::Result<()>> {
+    match &workspace_entry.location {
+        WorkspaceLocation::Local { worktree_path } => {
+            let path = worktree_path.clone();
+            cx.spawn(async move |cx| {
+                cx.update(|cx| {
+                    workspace::open_paths(
+                        &[path],
+                        app_state,
+                        OpenOptions {
+                            open_new_workspace: Some(true),
+                            focus: Some(true),
+                            visible: Some(OpenVisible::All),
+                            ..Default::default()
+                        },
+                        cx,
+                    )
+                })
+                .await?;
+                anyhow::Ok(())
+            })
+        }
+        WorkspaceLocation::Ssh {
+            connection,
+            worktree_path,
+        } => {
+            let Some(remote_connection) = remote_connection_options_from_stored(connection) else {
+                return Task::ready(Err(anyhow::anyhow!(
+                    "unsupported remote workspace configuration"
+                )));
+            };
+
+            let path = PathBuf::from(worktree_path);
+            cx.spawn(async move |cx| {
+                open_remote_project(
+                    remote_connection,
+                    vec![path],
+                    app_state,
+                    OpenOptions {
+                        open_new_workspace: Some(true),
+                        focus: Some(true),
+                        visible: Some(OpenVisible::All),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .await?;
+                anyhow::Ok(())
+            })
+        }
+    }
+}
+
 fn workspace_from_window(window: &gpui::Window, cx: &App) -> Option<Entity<Workspace>> {
     let multi_workspace = window.window_handle().downcast::<MultiWorkspace>()?;
     let multi_workspace = multi_workspace.read(cx).ok()?;
     Some(multi_workspace.workspace().clone())
 }
 
-fn workspace_root_path(workspace: &Entity<Workspace>, cx: &App) -> Option<std::path::PathBuf> {
+fn local_workspace_root_path(workspace: &Entity<Workspace>, cx: &App) -> Option<PathBuf> {
     let project = workspace.read(cx).project();
     project.read(cx).visible_worktrees(cx).find_map(|worktree| {
         worktree
@@ -3118,6 +3595,309 @@ fn workspace_root_path(workspace: &Entity<Workspace>, cx: &App) -> Option<std::p
             .as_local()
             .map(|local| local.abs_path().to_path_buf())
     })
+}
+
+fn workspace_location_snapshot(
+    workspace: &Entity<Workspace>,
+    cx: &App,
+) -> Option<WorkspaceLocation> {
+    let root_path = workspace.read(cx).root_paths(cx).into_iter().next()?;
+    let project = workspace.read(cx).project();
+    let project = project.read(cx);
+
+    if let Some(connection) = project.remote_connection_options(cx) {
+        let connection = stored_ssh_connection_from_options(&connection)?;
+        return Some(WorkspaceLocation::Ssh {
+            connection,
+            worktree_path: root_path.to_string_lossy().into_owned(),
+        });
+    }
+
+    project.is_local().then_some(WorkspaceLocation::Local {
+        worktree_path: root_path.as_ref().to_path_buf(),
+    })
+}
+
+fn workspace_matches_entry(
+    workspace: &Entity<Workspace>,
+    workspace_entry: &WorkspaceEntry,
+    cx: &App,
+) -> bool {
+    workspace_location_snapshot(workspace, cx).is_some_and(|location| {
+        workspace_entry.matches_locator(&workspace_location_to_locator(&location))
+    })
+}
+
+fn workspace_for_entry_in_window(
+    window: &Window,
+    cx: &App,
+    workspace_entry: &WorkspaceEntry,
+) -> Option<Entity<Workspace>> {
+    if let Some(multi_workspace) = window.window_handle().downcast::<MultiWorkspace>() {
+        let multi_workspace = multi_workspace.read(cx).ok()?;
+        return multi_workspace
+            .workspaces()
+            .iter()
+            .find(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
+            .cloned();
+    }
+
+    workspace_from_window(window, cx)
+        .filter(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
+}
+
+fn active_repository_for_workspace(
+    workspace: &Entity<Workspace>,
+    cx: &App,
+) -> Option<Entity<Repository>> {
+    let project = workspace.read(cx).project();
+    let project = project.read(cx);
+    project
+        .active_repository(cx)
+        .or_else(|| project.repositories(cx).values().next().cloned())
+}
+
+fn workspace_location_to_locator(
+    location: &WorkspaceLocation,
+) -> superzet_model::WorkspaceLocator<'_> {
+    match location {
+        WorkspaceLocation::Local { worktree_path } => {
+            superzet_model::WorkspaceLocator::Local(worktree_path)
+        }
+        WorkspaceLocation::Ssh {
+            connection,
+            worktree_path,
+        } => superzet_model::WorkspaceLocator::Ssh {
+            connection,
+            worktree_path,
+        },
+    }
+}
+
+fn serialized_workspace_location_for_project(
+    project_location: &ProjectLocation,
+) -> Option<SerializedWorkspaceLocation> {
+    match project_location {
+        ProjectLocation::Local { .. } => Some(SerializedWorkspaceLocation::Local),
+        ProjectLocation::Ssh { connection, .. } => {
+            let remote_connection = remote_connection_options_from_stored(connection)?;
+            Some(SerializedWorkspaceLocation::Remote(remote_connection))
+        }
+    }
+}
+
+fn remote_connection_options_from_stored(
+    connection: &StoredSshConnection,
+) -> Option<RemoteConnectionOptions> {
+    Some(RemoteConnectionOptions::Ssh(SshConnectionOptions {
+        host: connection.host.clone().into(),
+        username: connection.username.clone(),
+        port: connection.port,
+        password: None,
+        args: Some(connection.args.clone()),
+        port_forwards: (!connection.port_forwards.is_empty()).then_some(
+            connection
+                .port_forwards
+                .iter()
+                .map(|forward| settings::SshPortForwardOption {
+                    local_host: forward.local_host.clone(),
+                    local_port: forward.local_port,
+                    remote_host: forward.remote_host.clone(),
+                    remote_port: forward.remote_port,
+                })
+                .collect(),
+        ),
+        connection_timeout: connection.connection_timeout,
+        nickname: connection.nickname.clone(),
+        upload_binary_over_ssh: connection.upload_binary_over_ssh,
+    }))
+}
+
+fn stored_ssh_connection_from_options(
+    options: &RemoteConnectionOptions,
+) -> Option<StoredSshConnection> {
+    match options {
+        RemoteConnectionOptions::Ssh(connection) => Some(StoredSshConnection {
+            host: connection.host.to_string(),
+            username: connection.username.clone(),
+            port: connection.port,
+            args: connection.args.clone().unwrap_or_default(),
+            nickname: connection.nickname.clone(),
+            upload_binary_over_ssh: connection.upload_binary_over_ssh,
+            port_forwards: connection
+                .port_forwards
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|forward| StoredSshPortForward {
+                    local_host: forward.local_host,
+                    local_port: forward.local_port,
+                    remote_host: forward.remote_host,
+                    remote_port: forward.remote_port,
+                })
+                .collect(),
+            connection_timeout: connection.connection_timeout,
+        }),
+        _ => None,
+    }
+}
+
+fn git_change_summary_from_repository(repository: &Repository) -> GitChangeSummary {
+    let summary = repository.status_summary();
+    GitChangeSummary {
+        changed_files: summary.count,
+        staged_files: summary.index.added
+            + summary.index.modified
+            + summary.index.deleted
+            + summary.conflict,
+        untracked_files: summary.untracked,
+    }
+}
+
+fn remote_path_basename(path: &str) -> String {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("Project")
+        .to_string()
+}
+
+fn build_remote_workspace_bundle(
+    workspace: &Entity<Workspace>,
+    store: &SuperzetStore,
+    cx: &App,
+) -> Option<(ProjectEntry, WorkspaceEntry)> {
+    let workspace_location = match workspace_location_snapshot(workspace, cx)? {
+        WorkspaceLocation::Ssh {
+            connection,
+            worktree_path,
+        } => WorkspaceLocation::Ssh {
+            connection,
+            worktree_path,
+        },
+        WorkspaceLocation::Local { .. } => return None,
+    };
+
+    let WorkspaceLocation::Ssh {
+        connection,
+        worktree_path,
+    } = &workspace_location
+    else {
+        return None;
+    };
+
+    let project_handle = workspace.read(cx).project();
+    let project = project_handle.read(cx);
+    let active_repository = project
+        .active_repository(cx)
+        .or_else(|| project.repositories(cx).values().next().cloned());
+
+    let (repo_root, branch, git_summary) = if let Some(repository) = active_repository {
+        let repository = repository.read(cx);
+        let repo_root = repository
+            .original_repo_abs_path
+            .to_string_lossy()
+            .into_owned();
+        let branch = repository
+            .branch
+            .as_ref()
+            .map(|branch| branch.name().to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+        (
+            repo_root,
+            branch,
+            Some(git_change_summary_from_repository(&repository)),
+        )
+    } else {
+        (worktree_path.clone(), "HEAD".to_string(), None)
+    };
+
+    let project_location = ProjectLocation::Ssh {
+        connection: connection.clone(),
+        repo_root: repo_root.clone(),
+    };
+    let existing_project = store.project_for_location(&project_location).cloned();
+    let now = Utc::now();
+    let project_id = existing_project
+        .as_ref()
+        .map(|project| project.id.clone())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let project_entry = ProjectEntry {
+        id: project_id.clone(),
+        name: existing_project
+            .as_ref()
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| remote_path_basename(&repo_root)),
+        location: project_location,
+        collapsed: existing_project
+            .as_ref()
+            .is_some_and(|project| project.collapsed),
+        created_at: existing_project
+            .as_ref()
+            .map(|project| project.created_at)
+            .unwrap_or(now),
+        last_opened_at: now,
+    };
+
+    let existing_workspace = store.workspace_for_location(&workspace_location).cloned();
+    let kind = if let Some(existing_workspace) = &existing_workspace {
+        existing_workspace.kind.clone()
+    } else if existing_project.is_none() {
+        WorkspaceKind::Primary
+    } else {
+        WorkspaceKind::Worktree
+    };
+
+    let workspace_entry = WorkspaceEntry {
+        id: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        project_id,
+        kind: kind.clone(),
+        name: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.name.clone())
+            .unwrap_or_else(|| match kind {
+                WorkspaceKind::Primary => remote_path_basename(worktree_path),
+                WorkspaceKind::Worktree => branch.clone(),
+            }),
+        display_name: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.display_name.clone()),
+        branch,
+        location: workspace_location,
+        agent_preset_id: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.agent_preset_id.clone())
+            .unwrap_or_else(|| store.default_preset().id.clone()),
+        managed: existing_workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.managed),
+        git_summary: git_summary.or_else(|| {
+            existing_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.git_summary.clone())
+        }),
+        attention_status: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.attention_status.clone())
+            .unwrap_or(WorkspaceAttentionStatus::Idle),
+        review_pending: existing_workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.review_pending),
+        last_attention_reason: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.last_attention_reason.clone()),
+        created_at: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.created_at)
+            .unwrap_or(now),
+        last_opened_at: now,
+    };
+
+    Some((project_entry, workspace_entry))
 }
 
 fn attention_priority(status: &WorkspaceAttentionStatus) -> u8 {

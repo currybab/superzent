@@ -32,9 +32,9 @@ use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::{BranchDiffToolbar, ProjectDiffToolbar};
 use gpui::{
     Action, App, AppContext as _, Context, DismissEvent, Element, Entity, Focusable, KeyBinding,
-    ParentElement, PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Task,
-    TitlebarOptions, UpdateGlobal, Window, WindowHandle, WindowKind, WindowOptions, actions,
-    image_cache, point, px, retain_all,
+    ParentElement, PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Task, TitlebarOptions,
+    UpdateGlobal, Window, WindowHandle, WindowKind, WindowOptions, actions, image_cache, point, px,
+    retain_all,
 };
 use image_viewer::ImageInfo;
 use language::Capability;
@@ -80,14 +80,12 @@ use util::rel_path::RelPath;
 use util::{ResultExt, asset_str, maybe};
 use uuid::Uuid;
 use vim_mode_setting::VimModeSetting;
-use workspace::notifications::{
-    NotificationId, dismiss_app_notification, show_app_notification,
-};
+use workspace::notifications::{NotificationId, dismiss_app_notification, show_app_notification};
 
 use workspace::{
-    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Toast, Workspace,
-    WorkspaceSettings, create_and_open_local_file,
-    notifications::simple_message_notification::MessageNotification, open_new,
+    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Toast, Workspace, WorkspaceSettings,
+    create_and_open_local_file, notifications::simple_message_notification::MessageNotification,
+    open_new,
 };
 use workspace::{
     CloseIntent, CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace,
@@ -100,22 +98,22 @@ use zed_actions::{
 
 #[cfg(feature = "ai")]
 use agent_ui::{AgentDiffToolbar, AgentPanelDelegate};
-#[cfg(feature = "ai")]
-use gpui::{AsyncWindowContext, WeakEntity};
 #[cfg(feature = "calls")]
 use audio::{AudioSettings, REPLAY_DURATION};
 #[cfg(feature = "ai")]
+use gpui::{AsyncWindowContext, WeakEntity};
+#[cfg(feature = "ai")]
 use project::DisableAiSettings;
+#[cfg(any(feature = "ai", test, feature = "test-support"))]
+use prompt_store::PromptBuilder;
 #[cfg(feature = "calls")]
 use std::time::Duration;
 #[cfg(feature = "calls")]
-use workspace::notifications::SuppressEvent;
+use workspace::NotificationFrame;
 #[cfg(feature = "ai")]
 use workspace::Panel;
 #[cfg(feature = "calls")]
-use workspace::NotificationFrame;
-#[cfg(any(feature = "ai", test, feature = "test-support"))]
-use prompt_store::PromptBuilder;
+use workspace::notifications::SuppressEvent;
 
 actions!(
     zed,
@@ -1855,7 +1853,11 @@ pub fn load_default_keymap(cx: &mut App) {
     }
 
     if VimModeSetting::get_global(cx).0 || vim_mode_setting::HelixModeSetting::get_global(cx).0 {
-        cx.bind_keys(load_built_in_keymap(VIM_KEYMAP_PATH, KeybindSource::Vim, cx));
+        cx.bind_keys(load_built_in_keymap(
+            VIM_KEYMAP_PATH,
+            KeybindSource::Vim,
+            cx,
+        ));
     }
 }
 

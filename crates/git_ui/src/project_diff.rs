@@ -158,49 +158,49 @@ impl ProjectDiff {
         {
             use zed_actions::agent::ReviewBranchDiff;
 
-        let diff_base = self.diff_base(cx).clone();
-        let DiffBase::Merge { base_ref } = diff_base else {
-            return;
-        };
+            let diff_base = self.diff_base(cx).clone();
+            let DiffBase::Merge { base_ref } = diff_base else {
+                return;
+            };
 
-        let Some(repo) = self.branch_diff.read(cx).repo().cloned() else {
-            return;
-        };
+            let Some(repo) = self.branch_diff.read(cx).repo().cloned() else {
+                return;
+            };
 
-        let diff_receiver = repo.update(cx, |repo, cx| {
-            repo.diff(
-                DiffType::MergeBase {
-                    base_ref: base_ref.clone(),
-                },
-                cx,
-            )
-        });
+            let diff_receiver = repo.update(cx, |repo, cx| {
+                repo.diff(
+                    DiffType::MergeBase {
+                        base_ref: base_ref.clone(),
+                    },
+                    cx,
+                )
+            });
 
-        let workspace = self.workspace.clone();
+            let workspace = self.workspace.clone();
 
-        window
-            .spawn(cx, {
-                let workspace = workspace.clone();
-                async move |cx| {
-                    let diff_text = diff_receiver.await??;
+            window
+                .spawn(cx, {
+                    let workspace = workspace.clone();
+                    async move |cx| {
+                        let diff_text = diff_receiver.await??;
 
-                    if let Some(workspace) = workspace.upgrade() {
-                        workspace.update_in(cx, |_workspace, window, cx| {
-                            window.dispatch_action(
-                                ReviewBranchDiff {
-                                    diff_text: diff_text.into(),
-                                    base_ref: base_ref.to_string().into(),
-                                }
-                                .boxed_clone(),
-                                cx,
-                            );
-                        })?;
+                        if let Some(workspace) = workspace.upgrade() {
+                            workspace.update_in(cx, |_workspace, window, cx| {
+                                window.dispatch_action(
+                                    ReviewBranchDiff {
+                                        diff_text: diff_text.into(),
+                                        base_ref: base_ref.to_string().into(),
+                                    }
+                                    .boxed_clone(),
+                                    cx,
+                                );
+                            })?;
+                        }
+
+                        anyhow::Ok(())
                     }
-
-                    anyhow::Ok(())
-                }
-            })
-            .detach_and_notify_err(workspace, window, cx);
+                })
+                .detach_and_notify_err(workspace, window, cx);
         }
     }
 

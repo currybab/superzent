@@ -80,15 +80,172 @@ impl From<&AgentPreset> for AgentPresetDraft {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct StoredSshPortForward {
+    pub local_host: Option<String>,
+    pub local_port: u16,
+    pub remote_host: Option<String>,
+    pub remote_port: u16,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct StoredSshConnection {
+    pub host: String,
+    pub username: Option<String>,
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub upload_binary_over_ssh: bool,
+    #[serde(default)]
+    pub port_forwards: Vec<StoredSshPortForward>,
+    pub connection_timeout: Option<u16>,
+}
+
+impl StoredSshConnection {
+    pub fn matches(&self, other: &StoredSshConnection) -> bool {
+        self.host == other.host
+            && self.username == other.username
+            && self.port == other.port
+            && self.args == other.args
+            && self.nickname == other.nickname
+            && self.upload_binary_over_ssh == other.upload_binary_over_ssh
+            && self.port_forwards == other.port_forwards
+            && self.connection_timeout == other.connection_timeout
+    }
+
+    pub fn display_target(&self) -> String {
+        let mut target = String::new();
+        if let Some(username) = &self.username {
+            target.push_str(username);
+            target.push('@');
+        }
+        target.push_str(&self.host);
+        if let Some(port) = self.port {
+            target.push(':');
+            target.push_str(&port.to_string());
+        }
+        target
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum ProjectLocation {
+    Local {
+        repo_root: PathBuf,
+    },
+    Ssh {
+        connection: StoredSshConnection,
+        repo_root: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum WorkspaceLocation {
+    Local {
+        worktree_path: PathBuf,
+    },
+    Ssh {
+        connection: StoredSshConnection,
+        worktree_path: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectLocator<'a> {
+    Local(&'a Path),
+    Ssh {
+        connection: &'a StoredSshConnection,
+        repo_root: &'a str,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceLocator<'a> {
+    Local(&'a Path),
+    Ssh {
+        connection: &'a StoredSshConnection,
+        worktree_path: &'a str,
+    },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectEntry {
     pub id: String,
     pub name: String,
-    pub repo_root: PathBuf,
+    pub location: ProjectLocation,
     #[serde(default)]
     pub collapsed: bool,
     pub created_at: DateTime<Utc>,
     pub last_opened_at: DateTime<Utc>,
+}
+
+impl ProjectEntry {
+    pub fn local_repo_root(&self) -> Option<&Path> {
+        match &self.location {
+            ProjectLocation::Local { repo_root } => Some(repo_root.as_path()),
+            ProjectLocation::Ssh { .. } => None,
+        }
+    }
+
+    pub fn ssh_connection(&self) -> Option<&StoredSshConnection> {
+        match &self.location {
+            ProjectLocation::Local { .. } => None,
+            ProjectLocation::Ssh { connection, .. } => Some(connection),
+        }
+    }
+
+    pub fn ssh_repo_root(&self) -> Option<&str> {
+        match &self.location {
+            ProjectLocation::Local { .. } => None,
+            ProjectLocation::Ssh { repo_root, .. } => Some(repo_root),
+        }
+    }
+
+    pub fn locator(&self) -> ProjectLocator<'_> {
+        match &self.location {
+            ProjectLocation::Local { repo_root } => ProjectLocator::Local(repo_root),
+            ProjectLocation::Ssh {
+                connection,
+                repo_root,
+            } => ProjectLocator::Ssh {
+                connection,
+                repo_root,
+            },
+        }
+    }
+
+    pub fn matches_locator(&self, locator: &ProjectLocator<'_>) -> bool {
+        match (&self.location, locator) {
+            (ProjectLocation::Local { repo_root }, ProjectLocator::Local(target)) => {
+                repo_root == *target
+            }
+            (
+                ProjectLocation::Ssh {
+                    connection,
+                    repo_root,
+                },
+                ProjectLocator::Ssh {
+                    connection: target_connection,
+                    repo_root: target_repo_root,
+                },
+            ) => connection.matches(target_connection) && repo_root == target_repo_root,
+            _ => false,
+        }
+    }
+
+    pub fn display_root(&self) -> String {
+        match &self.location {
+            ProjectLocation::Local { repo_root } => repo_root.display().to_string(),
+            ProjectLocation::Ssh {
+                connection,
+                repo_root,
+            } => format_remote_path(connection, repo_root),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,7 +257,7 @@ pub struct WorkspaceEntry {
     #[serde(default)]
     pub display_name: Option<String>,
     pub branch: String,
-    pub worktree_path: PathBuf,
+    pub location: WorkspaceLocation,
     pub agent_preset_id: String,
     pub managed: bool,
     #[serde(default)]
@@ -117,16 +274,92 @@ pub struct WorkspaceEntry {
 
 impl WorkspaceEntry {
     pub fn is_existing_path(&self) -> bool {
-        self.worktree_path.exists()
+        match &self.location {
+            WorkspaceLocation::Local { worktree_path } => worktree_path.exists(),
+            WorkspaceLocation::Ssh { .. } => true,
+        }
     }
 
     pub fn is_primary(&self) -> bool {
         self.kind == WorkspaceKind::Primary
     }
 
+    pub fn local_worktree_path(&self) -> Option<&Path> {
+        match &self.location {
+            WorkspaceLocation::Local { worktree_path } => Some(worktree_path.as_path()),
+            WorkspaceLocation::Ssh { .. } => None,
+        }
+    }
+
+    pub fn ssh_connection(&self) -> Option<&StoredSshConnection> {
+        match &self.location {
+            WorkspaceLocation::Local { .. } => None,
+            WorkspaceLocation::Ssh { connection, .. } => Some(connection),
+        }
+    }
+
+    pub fn ssh_worktree_path(&self) -> Option<&str> {
+        match &self.location {
+            WorkspaceLocation::Local { .. } => None,
+            WorkspaceLocation::Ssh { worktree_path, .. } => Some(worktree_path),
+        }
+    }
+
+    pub fn locator(&self) -> WorkspaceLocator<'_> {
+        match &self.location {
+            WorkspaceLocation::Local { worktree_path } => WorkspaceLocator::Local(worktree_path),
+            WorkspaceLocation::Ssh {
+                connection,
+                worktree_path,
+            } => WorkspaceLocator::Ssh {
+                connection,
+                worktree_path,
+            },
+        }
+    }
+
+    pub fn matches_locator(&self, locator: &WorkspaceLocator<'_>) -> bool {
+        match (&self.location, locator) {
+            (WorkspaceLocation::Local { worktree_path }, WorkspaceLocator::Local(target)) => {
+                worktree_path == *target
+            }
+            (
+                WorkspaceLocation::Ssh {
+                    connection,
+                    worktree_path,
+                },
+                WorkspaceLocator::Ssh {
+                    connection: target_connection,
+                    worktree_path: target_worktree_path,
+                },
+            ) => connection.matches(target_connection) && worktree_path == target_worktree_path,
+            _ => false,
+        }
+    }
+
+    pub fn display_path(&self) -> String {
+        match &self.location {
+            WorkspaceLocation::Local { worktree_path } => worktree_path.display().to_string(),
+            WorkspaceLocation::Ssh {
+                connection,
+                worktree_path,
+            } => format_remote_path(connection, worktree_path),
+        }
+    }
+
+    pub fn cwd_path(&self) -> PathBuf {
+        match &self.location {
+            WorkspaceLocation::Local { worktree_path } => worktree_path.clone(),
+            WorkspaceLocation::Ssh { worktree_path, .. } => PathBuf::from(worktree_path),
+        }
+    }
+
     pub fn display_name(&self) -> &str {
         self.display_name.as_deref().unwrap_or(match self.kind {
-            WorkspaceKind::Primary => "local",
+            WorkspaceKind::Primary => match &self.location {
+                WorkspaceLocation::Local { .. } => "local",
+                WorkspaceLocation::Ssh { .. } => "remote",
+            },
             WorkspaceKind::Worktree => &self.name,
         })
     }
@@ -189,7 +422,8 @@ impl SuperzetStore {
     }
 
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalSuperzetStore>().map(|store| store.0.clone())
+        cx.try_global::<GlobalSuperzetStore>()
+            .map(|store| store.0.clone())
     }
 
     pub fn projects(&self) -> &[ProjectEntry] {
@@ -238,18 +472,45 @@ impl SuperzetStore {
     }
 
     pub fn workspace_for_path(&self, path: &Path) -> Option<&WorkspaceEntry> {
-        self.state
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.worktree_path == path)
+        self.state.workspaces.iter().find(|workspace| {
+            workspace
+                .local_worktree_path()
+                .is_some_and(|worktree_path| worktree_path == path)
+        })
     }
 
     pub fn workspace_for_path_or_ancestor(&self, path: &Path) -> Option<&WorkspaceEntry> {
         self.state
             .workspaces
             .iter()
-            .filter(|workspace| path.starts_with(&workspace.worktree_path))
-            .max_by_key(|workspace| workspace.worktree_path.components().count())
+            .filter_map(|workspace| {
+                workspace.local_worktree_path().and_then(|worktree_path| {
+                    path.starts_with(worktree_path)
+                        .then_some((workspace, worktree_path.components().count()))
+                })
+            })
+            .max_by_key(|(_, depth)| *depth)
+            .map(|(workspace, _)| workspace)
+    }
+
+    pub fn workspace_for_locator(&self, locator: &WorkspaceLocator<'_>) -> Option<&WorkspaceEntry> {
+        self.state
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.matches_locator(locator))
+    }
+
+    pub fn workspace_for_location(&self, location: &WorkspaceLocation) -> Option<&WorkspaceEntry> {
+        match location {
+            WorkspaceLocation::Local { worktree_path } => self.workspace_for_path(worktree_path),
+            WorkspaceLocation::Ssh {
+                connection,
+                worktree_path,
+            } => self.workspace_for_locator(&WorkspaceLocator::Ssh {
+                connection,
+                worktree_path,
+            }),
+        }
     }
 
     pub fn project_for_workspace(&self, workspace_id: &str) -> Option<&ProjectEntry> {
@@ -261,7 +522,27 @@ impl SuperzetStore {
         self.state
             .projects
             .iter()
-            .find(|project| project.repo_root == repo_root)
+            .find(|project| project.local_repo_root() == Some(repo_root))
+    }
+
+    pub fn project_for_locator(&self, locator: &ProjectLocator<'_>) -> Option<&ProjectEntry> {
+        self.state
+            .projects
+            .iter()
+            .find(|project| project.matches_locator(locator))
+    }
+
+    pub fn project_for_location(&self, location: &ProjectLocation) -> Option<&ProjectEntry> {
+        match location {
+            ProjectLocation::Local { repo_root } => self.project_for_repo_root(repo_root),
+            ProjectLocation::Ssh {
+                connection,
+                repo_root,
+            } => self.project_for_locator(&ProjectLocator::Ssh {
+                connection,
+                repo_root,
+            }),
+        }
     }
 
     pub fn primary_workspace_for_project(&self, project_id: &str) -> Option<&WorkspaceEntry> {
@@ -926,11 +1207,21 @@ impl SuperzetStore {
         let state_path = state_path();
         let mut state = fs::read_to_string(&state_path)
             .ok()
-            .and_then(|contents| serde_json::from_str::<SuperzetState>(&contents).ok())
+            .and_then(|contents| {
+                serde_json::from_str::<SuperzetState>(&contents)
+                    .ok()
+                    .or_else(|| {
+                        serde_json::from_str::<LegacySuperzetState>(&contents)
+                            .ok()
+                            .map(Into::into)
+                    })
+            })
             .or_else(load_legacy_state)
             .unwrap_or_default();
 
-        state.projects.retain(|project| project.repo_root.exists());
+        state
+            .projects
+            .retain(|project| project.local_repo_root().is_none_or(Path::exists));
         state.workspaces.retain(WorkspaceEntry::is_existing_path);
 
         let workspace_ids = state
@@ -1003,7 +1294,12 @@ impl SuperzetStore {
                     .clone()
                     .filter(|project_id| existing_project_ids.contains(project_id.as_str()))
             })
-            .or_else(|| self.state.projects.first().map(|project| project.id.clone()));
+            .or_else(|| {
+                self.state
+                    .projects
+                    .first()
+                    .map(|project| project.id.clone())
+            });
 
         let mut preset_ids = BTreeSet::new();
         for preset in &mut self.state.presets {
@@ -1114,6 +1410,105 @@ impl SuperzetStore {
 }
 
 #[derive(Deserialize)]
+struct LegacySuperzetState {
+    active_project_id: Option<String>,
+    active_workspace_id: Option<String>,
+    projects: Vec<LegacyProjectEntry>,
+    workspaces: Vec<LegacyWorkspaceEntry>,
+    #[serde(default)]
+    sessions: Vec<AgentSession>,
+    #[serde(default)]
+    presets: Vec<AgentPreset>,
+}
+
+#[derive(Clone, Deserialize)]
+struct LegacyProjectEntry {
+    id: String,
+    name: String,
+    repo_root: PathBuf,
+    #[serde(default)]
+    collapsed: bool,
+    created_at: DateTime<Utc>,
+    last_opened_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Deserialize)]
+struct LegacyWorkspaceEntry {
+    id: String,
+    project_id: String,
+    kind: WorkspaceKind,
+    name: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    branch: String,
+    worktree_path: PathBuf,
+    agent_preset_id: String,
+    managed: bool,
+    #[serde(default)]
+    git_summary: Option<GitChangeSummary>,
+    #[serde(default)]
+    attention_status: WorkspaceAttentionStatus,
+    #[serde(default)]
+    review_pending: bool,
+    #[serde(default)]
+    last_attention_reason: Option<String>,
+    created_at: DateTime<Utc>,
+    last_opened_at: DateTime<Utc>,
+}
+
+impl From<LegacySuperzetState> for SuperzetState {
+    fn from(value: LegacySuperzetState) -> Self {
+        Self {
+            active_project_id: value.active_project_id,
+            active_workspace_id: value.active_workspace_id,
+            projects: value
+                .projects
+                .into_iter()
+                .map(|project| ProjectEntry {
+                    id: project.id,
+                    name: project.name,
+                    location: ProjectLocation::Local {
+                        repo_root: project.repo_root,
+                    },
+                    collapsed: project.collapsed,
+                    created_at: project.created_at,
+                    last_opened_at: project.last_opened_at,
+                })
+                .collect(),
+            workspaces: value
+                .workspaces
+                .into_iter()
+                .map(|workspace| WorkspaceEntry {
+                    id: workspace.id,
+                    project_id: workspace.project_id,
+                    kind: workspace.kind,
+                    name: workspace.name,
+                    display_name: workspace.display_name,
+                    branch: workspace.branch,
+                    location: WorkspaceLocation::Local {
+                        worktree_path: workspace.worktree_path,
+                    },
+                    agent_preset_id: workspace.agent_preset_id,
+                    managed: workspace.managed,
+                    git_summary: workspace.git_summary,
+                    attention_status: workspace.attention_status,
+                    review_pending: workspace.review_pending,
+                    last_attention_reason: workspace.last_attention_reason,
+                    created_at: workspace.created_at,
+                    last_opened_at: workspace.last_opened_at,
+                })
+                .collect(),
+            sessions: value.sessions,
+            presets: if value.presets.is_empty() {
+                default_presets()
+            } else {
+                value.presets
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct LegacyState {
     active_task_id: Option<String>,
     #[serde(default)]
@@ -1176,14 +1571,16 @@ fn load_legacy_state() -> Option<SuperzetState> {
         let project_id = state
             .projects
             .iter()
-            .find(|project| project.repo_root == repo_root)
+            .find(|project| project.local_repo_root() == Some(repo_root.as_path()))
             .map(|project| project.id.clone())
             .unwrap_or_else(|| {
                 let id = Uuid::new_v4().to_string();
                 state.projects.push(ProjectEntry {
                     id: id.clone(),
                     name: repo_name.clone(),
-                    repo_root: repo_root.clone(),
+                    location: ProjectLocation::Local {
+                        repo_root: repo_root.clone(),
+                    },
                     collapsed: false,
                     created_at: task.created_at,
                     last_opened_at: task.last_event_at,
@@ -1203,7 +1600,9 @@ fn load_legacy_state() -> Option<SuperzetState> {
                 name: repo_name.clone(),
                 display_name: None,
                 branch: "HEAD".to_string(),
-                worktree_path: repo_root.clone(),
+                location: WorkspaceLocation::Local {
+                    worktree_path: repo_root.clone(),
+                },
                 agent_preset_id: default_preset_id.clone(),
                 managed: false,
                 git_summary: None,
@@ -1222,7 +1621,9 @@ fn load_legacy_state() -> Option<SuperzetState> {
             name: task.name,
             display_name: None,
             branch: task.branch,
-            worktree_path: task.worktree_path,
+            location: WorkspaceLocation::Local {
+                worktree_path: task.worktree_path,
+            },
             agent_preset_id: task.agent_preset_id,
             managed: task.managed,
             git_summary: None,
@@ -1405,6 +1806,18 @@ fn unique_slug(base_id: &str, used_ids: &mut BTreeSet<String>) -> String {
     next_id
 }
 
+fn format_remote_path(connection: &StoredSshConnection, remote_path: &str) -> String {
+    let separator = if remote_path.starts_with('/') {
+        ""
+    } else {
+        "/"
+    };
+    format!(
+        "ssh://{}{separator}{remote_path}",
+        connection.display_target()
+    )
+}
+
 pub fn ensure_parent_dir(path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1438,7 +1851,9 @@ mod tests {
         ProjectEntry {
             id: id.to_string(),
             name: id.to_string(),
-            repo_root: PathBuf::from(repo_root),
+            location: ProjectLocation::Local {
+                repo_root: PathBuf::from(repo_root),
+            },
             collapsed: false,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
@@ -1458,7 +1873,9 @@ mod tests {
             name: id.to_string(),
             display_name: None,
             branch: "main".to_string(),
-            worktree_path: PathBuf::from(worktree_path),
+            location: WorkspaceLocation::Local {
+                worktree_path: PathBuf::from(worktree_path),
+            },
             agent_preset_id: "codex".to_string(),
             managed: false,
             git_summary: None,
@@ -1473,10 +1890,7 @@ mod tests {
     #[test]
     fn aggregates_live_attention_over_review_pending() {
         assert_eq!(
-            aggregate_workspace_attention_status(
-                Some(WorkspaceAttentionStatus::Permission),
-                true,
-            ),
+            aggregate_workspace_attention_status(Some(WorkspaceAttentionStatus::Permission), true,),
             WorkspaceAttentionStatus::Permission
         );
         assert_eq!(
@@ -1590,8 +2004,65 @@ mod tests {
         assert_eq!(store.active_workspace_id(), Some("project-one-primary"));
         assert_eq!(store.active_project_id(), Some("project-one"));
         assert_eq!(
-            store.startup_workspace().map(|workspace| workspace.id.as_str()),
+            store
+                .startup_workspace()
+                .map(|workspace| workspace.id.as_str()),
             Some("project-one-primary")
+        );
+    }
+
+    #[test]
+    fn matches_remote_workspace_by_connection_and_path() {
+        let connection = StoredSshConnection {
+            host: "example.com".to_string(),
+            username: Some("jun".to_string()),
+            port: Some(2222),
+            ..Default::default()
+        };
+
+        let workspace = WorkspaceEntry {
+            id: "remote".to_string(),
+            project_id: "project".to_string(),
+            kind: WorkspaceKind::Primary,
+            name: "remote".to_string(),
+            display_name: None,
+            branch: "main".to_string(),
+            location: WorkspaceLocation::Ssh {
+                connection: connection.clone(),
+                worktree_path: "/srv/repo".to_string(),
+            },
+            agent_preset_id: "codex".to_string(),
+            managed: false,
+            git_summary: None,
+            attention_status: WorkspaceAttentionStatus::Idle,
+            review_pending: false,
+            last_attention_reason: None,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        };
+
+        let store = SuperzetStore {
+            state_path: PathBuf::from("/tmp/state.json"),
+            state: SuperzetState {
+                active_project_id: None,
+                active_workspace_id: None,
+                projects: Vec::new(),
+                workspaces: vec![workspace],
+                sessions: Vec::new(),
+                presets: default_presets(),
+            },
+        };
+
+        let locator = WorkspaceLocator::Ssh {
+            connection: &connection,
+            worktree_path: "/srv/repo",
+        };
+
+        assert_eq!(
+            store
+                .workspace_for_locator(&locator)
+                .map(|workspace| workspace.id.as_str()),
+            Some("remote")
         );
     }
 }

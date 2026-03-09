@@ -39,7 +39,7 @@ async fn test_open_path_prompt(cx: &mut TestAppContext) {
 
     let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
 
-    let (picker, cx) = build_open_path_prompt(project, false, false, cx);
+    let (picker, cx) = build_open_path_prompt(project, false, false, false, false, cx);
 
     insert_query(path!("sadjaoislkdjasldj"), &picker, cx).await;
     assert_eq!(collect_match_candidates(&picker, cx), Vec::<String>::new());
@@ -148,7 +148,7 @@ async fn test_open_path_prompt_completion(cx: &mut TestAppContext) {
 
     let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
 
-    let (picker, cx) = build_open_path_prompt(project, false, false, cx);
+    let (picker, cx) = build_open_path_prompt(project, false, false, false, false, cx);
 
     // Confirm completion for the query "/root", since it's a directory, it should add a trailing slash.
     let query = path!("/root");
@@ -256,7 +256,7 @@ async fn test_open_path_prompt_on_windows(cx: &mut TestAppContext) {
 
     let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
 
-    let (picker, cx) = build_open_path_prompt(project, false, false, cx);
+    let (picker, cx) = build_open_path_prompt(project, false, false, false, false, cx);
 
     // Support both forward and backward slashes.
     let query = "C:/root/";
@@ -351,7 +351,7 @@ async fn test_new_path_prompt(cx: &mut TestAppContext) {
 
     let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
 
-    let (picker, cx) = build_open_path_prompt(project, true, false, cx);
+    let (picker, cx) = build_open_path_prompt(project, true, false, false, false, cx);
 
     insert_query(path!("/root"), &picker, cx).await;
     assert_eq!(collect_match_candidates(&picker, cx), vec!["root"]);
@@ -390,7 +390,7 @@ async fn test_open_path_prompt_with_show_hidden(cx: &mut TestAppContext) {
 
     let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
 
-    let (picker, cx) = build_open_path_prompt(project, false, true, cx);
+    let (picker, cx) = build_open_path_prompt(project, false, true, false, false, cx);
 
     #[cfg(not(windows))]
     let expected_separator = "./";
@@ -407,6 +407,49 @@ async fn test_open_path_prompt_with_show_hidden(cx: &mut TestAppContext) {
     assert_eq!(collect_match_candidates(&picker, cx), vec![".hidden"]);
 }
 
+#[gpui::test]
+async fn test_open_path_prompt_can_browse_directories_on_confirm(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/root"),
+            json!({
+                "a": "A",
+                "dir1": {
+                    "nested.txt": "NESTED"
+                },
+                "dir2": {}
+            }),
+        )
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+
+    let (picker, cx) = build_open_path_prompt(project, false, false, true, true, cx);
+
+    insert_query(path!("/root/"), &picker, cx).await;
+    #[cfg(not(windows))]
+    let expected_entries = vec!["./", "../", "dir1", "dir2"];
+    #[cfg(windows)]
+    let expected_entries = vec![".\\", "..\\", "dir1", "dir2"];
+    assert_eq!(collect_match_candidates(&picker, cx), expected_entries);
+    assert_eq!(
+        confirm_update_query(2, &picker, cx).unwrap(),
+        path!("/root/dir1/")
+    );
+
+    insert_query(path!("/root/dir1/"), &picker, cx).await;
+    #[cfg(not(windows))]
+    let nested_entries = vec!["./", "../"];
+    #[cfg(windows)]
+    let nested_entries = vec![".\\", "..\\"];
+    assert_eq!(collect_match_candidates(&picker, cx), nested_entries);
+    assert_eq!(confirm_update_query(0, &picker, cx), None);
+    assert_eq!(confirm_update_query(1, &picker, cx).unwrap(), path!("/root/"));
+}
+
 fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
     cx.update(|cx| {
         let state = AppState::test(cx);
@@ -421,6 +464,8 @@ fn build_open_path_prompt(
     project: Entity<Project>,
     creating_path: bool,
     show_hidden: bool,
+    browse_directories_on_confirm: bool,
+    directories_only: bool,
     cx: &mut TestAppContext,
 ) -> (Entity<Picker<OpenPathDelegate>>, &mut VisualTestContext) {
     let (tx, _) = futures::channel::oneshot::channel();
@@ -434,6 +479,16 @@ fn build_open_path_prompt(
             let delegate = OpenPathDelegate::new(tx, lister.clone(), creating_path, cx);
             let delegate = if show_hidden {
                 delegate.show_hidden()
+            } else {
+                delegate
+            };
+            let delegate = if browse_directories_on_confirm {
+                delegate.browse_directories_on_confirm()
+            } else {
+                delegate
+            };
+            let delegate = if directories_only {
+                delegate.directories_only()
             } else {
                 delegate
             };
@@ -473,6 +528,19 @@ fn confirm_completion(
             f.delegate.set_selected_index(select, window, cx);
         }
         f.delegate.confirm_completion(query.to_string(), window, cx)
+    })
+}
+
+fn confirm_update_query(
+    select: usize,
+    picker: &Entity<Picker<OpenPathDelegate>>,
+    cx: &mut VisualTestContext,
+) -> Option<String> {
+    picker.update_in(cx, |f, window, cx| {
+        if f.delegate.selected_index() != select {
+            f.delegate.set_selected_index(select, window, cx);
+        }
+        f.delegate.confirm_update_query(window, cx)
     })
 }
 

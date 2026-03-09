@@ -541,15 +541,13 @@ impl TerminalView {
                 menu
             };
 
-            menu
-                .separator()
-                .action(
-                    "Close Terminal Tab",
-                    Box::new(CloseActiveItem {
-                        save_intent: None,
-                        close_pinned: true,
-                    }),
-                )
+            menu.separator().action(
+                "Close Terminal Tab",
+                Box::new(CloseActiveItem {
+                    save_intent: None,
+                    close_pinned: true,
+                }),
+            )
         });
 
         window.focus(&context_menu.focus_handle(cx), cx);

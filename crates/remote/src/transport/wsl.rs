@@ -1,7 +1,7 @@
 use crate::{
     RemoteArch, RemoteClientDelegate, RemoteOs, RemotePlatform,
     remote_client::{CommandTemplate, Interactive, RemoteConnection, RemoteConnectionOptions},
-    transport::{parse_platform, parse_shell},
+    transport::{parse_platform, parse_shell, remote_server_binary_name},
 };
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -176,11 +176,8 @@ impl WslRemoteConnection {
             _ => version.to_string(),
         };
 
-        let binary_name = format!(
-            "zed-remote-server-{}-{}",
-            release_channel.dev_name(),
-            version_str
-        );
+        let binary_name =
+            remote_server_binary_name(release_channel.dev_name(), &version_str, false);
 
         let dst_path =
             paths::remote_server_dir_relative().join(RelPath::unix(&binary_name).unwrap());
@@ -256,7 +253,7 @@ impl WslRemoteConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Uploading remote server"), cx);
+        delegate.set_status(Some("Uploading Superzet remote server"), cx);
 
         if let Some(parent) = dst_path.parent() {
             let parent = parent.display(PathStyle::Posix);
@@ -272,7 +269,7 @@ impl WslRemoteConnection {
             .with_context(|| format!("source path does not exist: {}", src_path.display()))?;
         let size = src_stat.len();
         log::info!(
-            "uploading remote server to WSL {:?} ({}kb)",
+            "uploading superzet remote server to WSL {:?} ({}kb)",
             dst_path,
             size / 1024
         );
@@ -305,7 +302,7 @@ impl WslRemoteConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Extracting remote server"), cx);
+        delegate.set_status(Some("Extracting Superzet remote server"), cx);
 
         let tmp_path_str = tmp_path.display(PathStyle::Posix);
         let dst_path_str = dst_path.display(PathStyle::Posix);

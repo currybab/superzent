@@ -1,7 +1,7 @@
 use crate::{
     RemoteArch, RemoteClientDelegate, RemoteOs, RemotePlatform,
     remote_client::{CommandTemplate, Interactive, RemoteConnection, RemoteConnectionOptions},
-    transport::{parse_platform, parse_shell},
+    transport::{parse_platform, parse_shell, remote_server_binary_name},
 };
 use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
@@ -647,15 +647,10 @@ impl SshRemoteConnection {
             ReleaseChannel::Dev => "build".to_string(),
             _ => version.to_string(),
         };
-        let binary_name = format!(
-            "zed-remote-server-{}-{}{}",
+        let binary_name = remote_server_binary_name(
             release_channel.dev_name(),
-            version_str,
-            if self.ssh_platform.os.is_windows() {
-                ".exe"
-            } else {
-                ""
-            }
+            &version_str,
+            self.ssh_platform.os.is_windows(),
         );
         let dst_path =
             paths::remote_server_dir_relative().join(RelPath::unix(&binary_name).unwrap());
@@ -703,7 +698,7 @@ impl SshRemoteConnection {
             ReleaseChannel::Nightly => Ok(None),
             ReleaseChannel::Dev => {
                 anyhow::bail!(
-                    "ZED_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
+                    "SUPERZET_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
                     dst_path
                 )
             }
@@ -898,9 +893,9 @@ impl SshRemoteConnection {
         let size = src_stat.len();
 
         let t0 = Instant::now();
-        delegate.set_status(Some("Uploading remote development server"), cx);
+        delegate.set_status(Some("Uploading Superzet remote development server"), cx);
         log::info!(
-            "uploading remote development server to {:?} ({}kb)",
+            "uploading superzet remote development server to {:?} ({}kb)",
             tmp_path,
             size / 1024
         );
@@ -918,7 +913,7 @@ impl SshRemoteConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Extracting remote development server"), cx);
+        delegate.set_status(Some("Extracting Superzet remote development server"), cx);
 
         if self.ssh_platform.os.is_windows() {
             self.extract_server_binary_windows(dst_path, tmp_path).await

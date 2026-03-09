@@ -64,10 +64,10 @@ use crate::zed::{OpenRequestKind, eager_load_active_theme_and_icon_theme};
 use agent::{SharedThread, ThreadStore};
 #[cfg(feature = "ai")]
 use agent_ui::AgentPanel;
-#[cfg(feature = "ai")]
-use zed::edit_prediction_registry;
 #[cfg(feature = "collab")]
 use collab_ui::channel_view::ChannelView;
+#[cfg(feature = "ai")]
+use zed::edit_prediction_registry;
 
 #[cfg(target_os = "macos")]
 use cocoa::{
@@ -750,7 +750,11 @@ fn main() {
             language_model::init(app_state.client.clone(), cx);
             language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
             web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-            edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            edit_prediction_registry::init(
+                app_state.client.clone(),
+                app_state.user_store.clone(),
+                cx,
+            );
             project::AgentRegistryStore::init_global(
                 cx,
                 app_state.fs.clone(),
@@ -1317,47 +1321,51 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
 
                 #[cfg(feature = "collab")]
                 {
-                if let Some(task) = task {
-                    task.await?;
-                }
-                let client = app_state.client.clone();
-                // we continue even if authentication fails as join_channel/ open channel notes will
-                // show a visible error message.
-                authenticate(client, cx).await.log_err();
+                    if let Some(task) = task {
+                        task.await?;
+                    }
+                    let client = app_state.client.clone();
+                    // we continue even if authentication fails as join_channel/ open channel notes will
+                    // show a visible error message.
+                    authenticate(client, cx).await.log_err();
 
-                if let Some(channel_id) = request.join_channel {
-                    cx.update(|cx| {
-                        workspace::join_channel(
-                            client::ChannelId(channel_id),
-                            app_state.clone(),
-                            None,
-                            None,
-                            cx,
-                        )
-                    })
-                    .await?;
-                }
+                    if let Some(channel_id) = request.join_channel {
+                        cx.update(|cx| {
+                            workspace::join_channel(
+                                client::ChannelId(channel_id),
+                                app_state.clone(),
+                                None,
+                                None,
+                                cx,
+                            )
+                        })
+                        .await?;
+                    }
 
-                let workspace_window =
-                    workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
+                    let workspace_window =
+                        workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
 
-                let workspace = workspace_window.read_with(cx, |mw, _| mw.workspace().clone())?;
+                    let workspace =
+                        workspace_window.read_with(cx, |mw, _| mw.workspace().clone())?;
 
-                let mut promises = Vec::new();
-                for (channel_id, heading) in request.open_channel_notes {
-                    promises.push(cx.update_window(workspace_window.into(), |_, window, cx| {
-                        ChannelView::open(
-                            client::ChannelId(channel_id),
-                            heading,
-                            workspace.clone(),
-                            window,
-                            cx,
-                        )
-                        .log_err()
-                    })?)
-                }
-                future::join_all(promises).await;
-                anyhow::Ok(())
+                    let mut promises = Vec::new();
+                    for (channel_id, heading) in request.open_channel_notes {
+                        promises.push(cx.update_window(
+                            workspace_window.into(),
+                            |_, window, cx| {
+                                ChannelView::open(
+                                    client::ChannelId(channel_id),
+                                    heading,
+                                    workspace.clone(),
+                                    window,
+                                    cx,
+                                )
+                                .log_err()
+                            },
+                        )?)
+                    }
+                    future::join_all(promises).await;
+                    anyhow::Ok(())
                 }
             })
             .await;
@@ -1475,7 +1483,8 @@ pub(crate) async fn restore_or_create_workspace(
                 let paths = session_workspace.paths;
                 if let RemoteConnectionOptions::Ssh(options) = &mut connection_options {
                     cx.update(|cx| {
-                        RemoteSettings::get_global(cx).fill_connection_options_from_settings(options)
+                        RemoteSettings::get_global(cx)
+                            .fill_connection_options_from_settings(options)
                     });
                 }
                 let task = cx.spawn(async move |cx| {
@@ -1630,16 +1639,75 @@ async fn restore_superzet_startup_workspace(
         return Ok(false);
     };
 
-    let startup_workspace = cx.update(|cx| {
-        store.read(cx).startup_workspace().map(|workspace| {
-            (workspace.id.clone(), workspace.worktree_path.clone())
-        })
+    let startup_workspace = cx.update(|cx| store.read(cx).startup_workspace().cloned());
+    let fallback_local_workspace = cx.update(|cx| {
+        store
+            .read(cx)
+            .workspaces()
+            .iter()
+            .find(|workspace| {
+                matches!(
+                    workspace.location,
+                    superzet_model::WorkspaceLocation::Local { .. }
+                )
+            })
+            .cloned()
     });
 
-    let Some((workspace_id, worktree_path)) = startup_workspace else {
+    let Some(startup_workspace) = startup_workspace else {
         return Ok(false);
     };
 
+    if let Some(worktree_path) = startup_workspace.local_worktree_path().map(PathBuf::from) {
+        return restore_local_superzet_startup_workspace(
+            store,
+            startup_workspace.id,
+            worktree_path,
+            app_state,
+            cx,
+        )
+        .await;
+    }
+
+    if let Some(fallback_local_workspace) = fallback_local_workspace
+        && let Some(worktree_path) = fallback_local_workspace
+            .local_worktree_path()
+            .map(PathBuf::from)
+    {
+        if restore_local_superzet_startup_workspace(
+            store.clone(),
+            fallback_local_workspace.id,
+            worktree_path,
+            app_state.clone(),
+            cx,
+        )
+        .await?
+        {
+            return Ok(true);
+        }
+    }
+
+    match cx
+        .update(|cx| {
+            workspace::Workspace::new_local(vec![], app_state.clone(), None, None, None, true, cx)
+        })
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            log::error!("Failed to open empty startup workspace: {error:#}");
+            Ok(false)
+        }
+    }
+}
+
+async fn restore_local_superzet_startup_workspace(
+    store: Entity<superzet_model::SuperzetStore>,
+    workspace_id: String,
+    worktree_path: PathBuf,
+    app_state: Arc<AppState>,
+    cx: &mut AsyncApp,
+) -> Result<bool> {
     let session_handle = app_state.session.clone();
     let (last_session_id, last_session_window_stack) = cx.update(|cx| {
         let session = session_handle.read(cx);
@@ -1660,7 +1728,11 @@ async fn restore_superzet_startup_workspace(
             matches!(
                 session_workspace.location,
                 SerializedWorkspaceLocation::Local
-            ) && session_workspace.paths.paths().iter().any(|path| path == &worktree_path)
+            ) && session_workspace
+                .paths
+                .paths()
+                .iter()
+                .any(|path| path == &worktree_path)
         })
     {
         let matching_group = if let Some(window_id) = matching_workspace.window_id {
@@ -1672,11 +1744,10 @@ async fn restore_superzet_startup_workspace(
             vec![matching_workspace.clone()]
         };
 
-        if let Some(serialized_multi_workspace) = workspace::read_serialized_multi_workspaces(
-            matching_group,
-        )
-        .into_iter()
-        .next()
+        if let Some(serialized_multi_workspace) =
+            workspace::read_serialized_multi_workspaces(matching_group)
+                .into_iter()
+                .next()
         {
             match restore_multiworkspace(serialized_multi_workspace, app_state.clone(), cx).await {
                 Ok(result) => {

@@ -157,7 +157,8 @@ impl ChannelStore {
     }
 
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalChannelStore>().map(|store| store.0.clone())
+        cx.try_global::<GlobalChannelStore>()
+            .map(|store| store.0.clone())
     }
 
     pub fn new(client: Arc<Client>, user_store: Entity<UserStore>, cx: &mut Context<Self>) -> Self {

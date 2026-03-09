@@ -471,6 +471,7 @@ message Envelope {
 
     GetRemoteProfilingData get_remote_profiling_data = 423;
     GetRemoteProfilingDataResponse get_remote_profiling_data_response = 424;
+    GitRemoveWorktree git_remove_worktree = 425;
 
     SpawnKernel spawn_kernel = 426;
     SpawnKernelResponse spawn_kernel_response = 427;

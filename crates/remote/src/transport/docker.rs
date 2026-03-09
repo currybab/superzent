@@ -26,7 +26,7 @@ use rpc::proto::Envelope;
 use crate::{
     RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions, RemoteOs, RemotePlatform,
     remote_client::{CommandTemplate, Interactive},
-    transport::parse_platform,
+    transport::{parse_platform, remote_server_binary_name},
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
@@ -179,10 +179,10 @@ impl DockerExecConnection {
             ReleaseChannel::Dev => "build".to_string(),
             _ => version.to_string(),
         };
-        let binary_name = format!(
-            "zed-remote-server-{}-{}",
+        let binary_name = remote_server_binary_name(
             release_channel.dev_name(),
-            version_str
+            &version_str,
+            remote_platform.os.is_windows(),
         );
         let dst_path =
             paths::remote_server_dir_relative().join(RelPath::unix(&binary_name).unwrap());
@@ -234,7 +234,7 @@ impl DockerExecConnection {
             ReleaseChannel::Nightly => Ok(None),
             ReleaseChannel::Dev => {
                 anyhow::bail!(
-                    "ZED_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
+                    "SUPERZET_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
                     dst_path
                 )
             }
@@ -322,7 +322,7 @@ impl DockerExecConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Extracting remote development server"), cx);
+        delegate.set_status(Some("Extracting Superzet remote development server"), cx);
         let server_mode = 0o755;
 
         let shell_kind = ShellKind::Posix;
@@ -381,9 +381,9 @@ impl DockerExecConnection {
         let size = src_stat.len();
 
         let t0 = Instant::now();
-        delegate.set_status(Some("Uploading remote development server"), cx);
+        delegate.set_status(Some("Uploading Superzet remote development server"), cx);
         log::info!(
-            "uploading remote development server to {:?} ({}kb)",
+            "uploading superzet remote development server to {:?} ({}kb)",
             tmp_path_gz,
             size / 1024
         );

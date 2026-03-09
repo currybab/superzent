@@ -26,7 +26,7 @@ use http_client::{Url, read_proxy_from_env};
 use language::LanguageRegistry;
 use net::async_net::{UnixListener, UnixStream};
 use node_runtime::{NodeBinaryOptions, NodeRuntime};
-use paths::logs_dir;
+use paths::{REMOTE_SERVER_BINARY_NAME_PREFIX, logs_dir};
 use project::{project_settings::ProjectSettings, trusted_worktrees};
 use proto::CrashReport;
 use release_channel::{AppCommitSha, AppVersion, RELEASE_CHANNEL, ReleaseChannel};
@@ -465,7 +465,7 @@ pub fn execute_run(
         crashes::InitCrashHandler {
             session_id: id,
             zed_version: VERSION.to_owned(),
-            binary: "zed-remote-server".to_string(),
+            binary: REMOTE_SERVER_BINARY_NAME_PREFIX.to_string(),
             release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
             commit_sha: option_env!("ZED_COMMIT_SHA").unwrap_or("no_sha").to_owned(),
         },
@@ -720,7 +720,7 @@ pub(crate) fn execute_proxy(
         crashes::InitCrashHandler {
             session_id: id,
             zed_version: VERSION.to_owned(),
-            binary: "zed-remote-server".to_string(),
+            binary: REMOTE_SERVER_BINARY_NAME_PREFIX.to_string(),
             release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
             commit_sha: option_env!("ZED_COMMIT_SHA").unwrap_or("no_sha").to_owned(),
         },
@@ -1178,7 +1178,7 @@ fn read_proxy_settings(cx: &mut Context<HeadlessProject>) -> Option<Url> {
 fn cleanup_old_binaries() -> Result<()> {
     let server_dir = paths::remote_server_dir_relative();
     let release_channel = release_channel::RELEASE_CHANNEL.dev_name();
-    let prefix = format!("zed-remote-server-{}-", release_channel);
+    let prefix = format!("{REMOTE_SERVER_BINARY_NAME_PREFIX}-{release_channel}-");
 
     for entry in std::fs::read_dir(server_dir.as_std_path())? {
         let path = entry?.path();

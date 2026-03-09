@@ -7,7 +7,7 @@ use gpui::{
     actions,
 };
 use http_client::{HttpClient, HttpClientWithUrl};
-use paths::remote_servers_dir;
+use paths::{REMOTE_SERVER_BINARY_NAME_PREFIX, remote_servers_dir};
 use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -465,12 +465,12 @@ impl AutoUpdater {
                 .context("auto-update not initialized")
         })?;
 
-        set_status("Fetching remote server release", cx);
+        set_status("Fetching Superzet remote server release", cx);
         let release = Self::get_release_asset(
             &this,
             release_channel,
             version,
-            "zed-remote-server",
+            REMOTE_SERVER_BINARY_NAME_PREFIX,
             os,
             arch,
             cx,
@@ -487,10 +487,10 @@ impl AutoUpdater {
 
         if smol::fs::metadata(&version_path).await.is_err() {
             log::info!(
-                "downloading zed-remote-server {os} {arch} version {}",
+                "downloading superzet-remote-server {os} {arch} version {}",
                 release.version
             );
-            set_status("Downloading remote server", cx);
+            set_status("Downloading Superzet remote server", cx);
             download_remote_server_binary(&version_path, release, client).await?;
         }
 
@@ -521,9 +521,16 @@ impl AutoUpdater {
                 .context("auto-update not initialized")
         })?;
 
-        let release =
-            Self::get_release_asset(&this, channel, version, "zed-remote-server", os, arch, cx)
-                .await?;
+        let release = Self::get_release_asset(
+            &this,
+            channel,
+            version,
+            REMOTE_SERVER_BINARY_NAME_PREFIX,
+            os,
+            arch,
+            cx,
+        )
+        .await?;
 
         Ok(Some(release.url))
     }

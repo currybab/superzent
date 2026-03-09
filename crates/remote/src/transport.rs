@@ -11,6 +11,7 @@ use futures::{
     channel::mpsc::{Sender, UnboundedReceiver, UnboundedSender},
 };
 use gpui::{AppContext as _, AsyncApp, Task};
+use paths::REMOTE_SERVER_BINARY_NAME_PREFIX;
 use rpc::proto::Envelope;
 use util::command::Child;
 
@@ -66,6 +67,23 @@ fn parse_shell(output: &str, fallback_shell: &str) -> String {
     } else {
         shell.to_owned()
     }
+}
+
+fn remote_server_env(primary: &str, legacy: &str) -> Option<String> {
+    std::env::var(primary)
+        .ok()
+        .or_else(|| std::env::var(legacy).ok())
+}
+
+pub(crate) fn remote_server_binary_name(
+    release_channel_name: &str,
+    version_str: &str,
+    is_windows: bool,
+) -> String {
+    format!(
+        "{REMOTE_SERVER_BINARY_NAME_PREFIX}-{release_channel_name}-{version_str}{}",
+        if is_windows { ".exe" } else { "" }
+    )
 }
 
 fn handle_rpc_messages_over_child_process_stdio(
@@ -192,13 +210,13 @@ async fn build_remote_server_from_source(
     use std::path::Path;
     use util::command::{Command, Stdio, new_command};
 
-    if let Ok(path) = std::env::var("ZED_COPY_REMOTE_SERVER") {
+    if let Some(path) = remote_server_env("SUPERZET_COPY_REMOTE_SERVER", "ZED_COPY_REMOTE_SERVER") {
         let path = std::path::PathBuf::from(path);
         if path.exists() {
             return Ok(Some(path));
         } else {
             log::warn!(
-                "ZED_COPY_REMOTE_SERVER path does not exist, falling back to ZED_BUILD_REMOTE_SERVER: {}",
+                "SUPERZET_COPY_REMOTE_SERVER path does not exist, falling back to SUPERZET_BUILD_REMOTE_SERVER: {}",
                 path.display()
             );
         }
@@ -207,7 +225,8 @@ async fn build_remote_server_from_source(
     // By default, we make building remote server from source opt-out and we do not force artifact compression
     // for quicker builds.
     let build_remote_server =
-        std::env::var("ZED_BUILD_REMOTE_SERVER").unwrap_or("nocompress".into());
+        remote_server_env("SUPERZET_BUILD_REMOTE_SERVER", "ZED_BUILD_REMOTE_SERVER")
+            .unwrap_or("nocompress".into());
 
     if let "never" = &*build_remote_server {
         return Ok(None);
@@ -215,7 +234,9 @@ async fn build_remote_server_from_source(
         if binary_exists_on_server {
             return Ok(None);
         }
-        log::warn!("ZED_BUILD_REMOTE_SERVER is disabled, but no server binary exists on the server")
+        log::warn!(
+            "SUPERZET_BUILD_REMOTE_SERVER is disabled, but no server binary exists on the server"
+        )
     }
 
     async fn run_cmd(command: &mut Command) -> Result<()> {
@@ -259,7 +280,7 @@ async fn build_remote_server_from_source(
     if platform.os == RemoteOs::Linux && use_musl {
         rust_flags.push_str(" -C target-feature=+crt-static");
 
-        if let Ok(path) = std::env::var("ZED_ZSTD_MUSL_LIB") {
+        if let Some(path) = remote_server_env("SUPERZET_ZSTD_MUSL_LIB", "ZED_ZSTD_MUSL_LIB") {
             rust_flags.push_str(&format!(" -C link-arg=-L{path}"));
         }
     }
@@ -270,8 +291,11 @@ async fn build_remote_server_from_source(
     if platform.arch.as_str() == std::env::consts::ARCH
         && platform.os.as_str() == std::env::consts::OS
     {
-        delegate.set_status(Some("Building remote server binary from source"), cx);
-        log::info!("building remote server binary from source");
+        delegate.set_status(
+            Some("Building Superzet remote server binary from source"),
+            cx,
+        );
+        log::info!("building superzet remote server binary from source");
         run_cmd(
             new_command("cargo")
                 .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
@@ -301,23 +325,29 @@ async fn build_remote_server_from_source(
         let rustup = which("rustup", cx)
             .await?
             .context("rustup not found on $PATH, install rustup (see https://rustup.rs/)")?;
-        delegate.set_status(Some("Adding rustup target for cross-compilation"), cx);
+        delegate.set_status(
+            Some("Adding rustup target for Superzet remote server cross-compilation"),
+            cx,
+        );
         log::info!("adding rustup target");
         run_cmd(new_command(rustup).args(["target", "add"]).arg(&triple)).await?;
 
         if which("cargo-zigbuild", cx).await?.is_none() {
-            delegate.set_status(Some("Installing cargo-zigbuild for cross-compilation"), cx);
+            delegate.set_status(
+                Some("Installing cargo-zigbuild for Superzet remote server cross-compilation"),
+                cx,
+            );
             log::info!("installing cargo-zigbuild");
             run_cmd(new_command("cargo").args(["install", "--locked", "cargo-zigbuild"])).await?;
         }
 
         delegate.set_status(
             Some(&format!(
-                "Building remote binary from source for {triple} with Zig"
+                "Building Superzet remote server binary from source for {triple} with Zig"
             )),
             cx,
         );
-        log::info!("building remote binary from source for {triple} with Zig");
+        log::info!("building superzet remote server binary from source for {triple} with Zig");
         run_cmd(
             new_command("cargo")
                 .args([
@@ -343,7 +373,7 @@ async fn build_remote_server_from_source(
         .with_extension(if platform.os.is_windows() { "exe" } else { "" });
 
     let path = if !build_remote_server.contains("nocompress") {
-        delegate.set_status(Some("Compressing binary"), cx);
+        delegate.set_status(Some("Compressing Superzet remote server binary"), cx);
 
         #[cfg(not(target_os = "windows"))]
         let archive_path = {
@@ -464,5 +494,17 @@ mod tests {
         );
         assert_eq!(parse_shell("", "sh"), "sh");
         assert_eq!(parse_shell("\n", "sh"), "sh");
+    }
+
+    #[test]
+    fn test_remote_server_binary_name() {
+        assert_eq!(
+            remote_server_binary_name("dev", "build", false),
+            "superzet-remote-server-dev-build"
+        );
+        assert_eq!(
+            remote_server_binary_name("stable", "1.2.3", true),
+            "superzet-remote-server-stable-1.2.3.exe"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Paths to locations used by Zed.
+//! Paths to locations used by Superzet.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use util::rel_path::RelPath;
 
 /// A default editorconfig file name to use when resolving project settings.
 pub const EDITORCONFIG_NAME: &str = ".editorconfig";
+pub const REMOTE_SERVER_BINARY_NAME_PREFIX: &str = "superzet-remote-server";
 
 /// A custom data directory override, set only by `set_custom_data_dir`.
 /// This is used to override the default data directory location.
@@ -29,18 +30,18 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Zed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Returns the relative path to the zed_server directory on the ssh host.
+/// Returns the relative path to the Superzet remote server directory on the ssh host.
 pub fn remote_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::unix(".zed_server").unwrap());
+        LazyLock::new(|| RelPath::unix(".superzet_server").unwrap());
     *CACHED
 }
 
 // Remove this once 223 goes stable
-/// Returns the relative path to the zed_wsl_server directory on the wsl host.
+/// Returns the relative path to the Superzet WSL server directory on the WSL host.
 pub fn remote_wsl_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::unix(".zed_wsl_server").unwrap());
+        LazyLock::new(|| RelPath::unix(".superzet_wsl_server").unwrap());
     *CACHED
 }
 
@@ -588,4 +589,23 @@ pub fn global_gitignore_path() -> Option<PathBuf> {
     GLOBAL_GITIGNORE_PATH
         .get_or_init(::ignore::gitignore::gitconfig_excludes_path)
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn remote_server_paths_use_superzet_namespaces() {
+        assert_eq!(REMOTE_SERVER_BINARY_NAME_PREFIX, "superzet-remote-server");
+        assert_eq!(
+            remote_server_dir_relative().as_std_path(),
+            Path::new(".superzet_server")
+        );
+        assert_eq!(
+            remote_wsl_server_dir_relative().as_std_path(),
+            Path::new(".superzet_wsl_server")
+        );
+    }
 }

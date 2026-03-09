@@ -42,12 +42,12 @@ use superzet_model::SuperzetStore;
 use superzet_ui;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
-use ui::{
-    Avatar, ButtonLike, ContextMenu, IconWithIndicator, Indicator, PopoverMenu, TintColor,
-    Tooltip, prelude::*, utils::platform_title_bar_height,
-};
 #[cfg(feature = "calls")]
 use ui::PopoverMenuHandle;
+use ui::{
+    Avatar, ButtonLike, ContextMenu, IconWithIndicator, Indicator, PopoverMenu, TintColor, Tooltip,
+    prelude::*, utils::platform_title_bar_height,
+};
 use update_version::UpdateVersion;
 use util::ResultExt;
 use workspace::{
@@ -252,7 +252,8 @@ impl TitleBar {
         #[cfg(feature = "calls")]
         {
             let active_call = call::ActiveCall::global(cx);
-            subscriptions.push(cx.observe(&active_call, |this, _, cx| this.active_call_changed(cx)));
+            subscriptions
+                .push(cx.observe(&active_call, |this, _, cx| this.active_call_changed(cx)));
         }
         subscriptions.push(cx.observe_window_activation(window, Self::window_activation_changed));
         subscriptions.push(
