@@ -447,7 +447,10 @@ async fn test_open_path_prompt_can_browse_directories_on_confirm(cx: &mut TestAp
     let nested_entries = vec![".\\", "..\\"];
     assert_eq!(collect_match_candidates(&picker, cx), nested_entries);
     assert_eq!(confirm_update_query(0, &picker, cx), None);
-    assert_eq!(confirm_update_query(1, &picker, cx).unwrap(), path!("/root/"));
+    assert_eq!(
+        confirm_update_query(1, &picker, cx).unwrap(),
+        path!("/root/")
+    );
 }
 
 fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {

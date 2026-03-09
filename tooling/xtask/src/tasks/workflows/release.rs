@@ -39,11 +39,8 @@ pub(crate) fn release() -> Workflow {
     let bundle_mac = bundle_mac_preview();
     let bundle_linux_x86_64 = bundle_linux_remote_server_preview(Arch::X86_64);
     let bundle_linux_aarch64 = bundle_linux_remote_server_preview(Arch::AARCH64);
-    let publish = publish_preview_release(&[
-        &bundle_mac,
-        &bundle_linux_x86_64,
-        &bundle_linux_aarch64,
-    ]);
+    let publish =
+        publish_preview_release(&[&bundle_mac, &bundle_linux_x86_64, &bundle_linux_aarch64]);
 
     named::workflow()
         .on(Event::default().push(Push::default().tags(vec!["v*-pre".to_string()])))

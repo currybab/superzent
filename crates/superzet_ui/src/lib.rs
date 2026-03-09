@@ -25,8 +25,8 @@ use superzet_model::{
 use terminal::terminal_settings::{TerminalAgentNotificationMode, TerminalSettings};
 use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 use ui::{
-    ButtonLike, Chip, ContextMenu, DropdownMenu, DropdownStyle, Indicator, ListItem, Tab,
-    Tooltip, prelude::*,
+    ButtonLike, Chip, ContextMenu, DropdownMenu, DropdownStyle, Indicator, ListItem, Tab, Tooltip,
+    prelude::*,
 };
 use uuid::Uuid;
 use workspace::{

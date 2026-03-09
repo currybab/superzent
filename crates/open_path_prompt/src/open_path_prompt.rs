@@ -640,9 +640,8 @@ impl PickerDelegate for OpenPathDelegate {
         }
 
         let parent_path = match &self.directory_state {
-            DirectoryState::Create { parent_path, .. } | DirectoryState::List { parent_path, .. } => {
-                parent_path
-            }
+            DirectoryState::Create { parent_path, .. }
+            | DirectoryState::List { parent_path, .. } => parent_path,
             DirectoryState::None { .. } => return None,
         };
         if candidate.path.string == self.parent_dir() {
@@ -690,7 +689,10 @@ impl PickerDelegate for OpenPathDelegate {
         }
 
         let candidate = self.get_entry(self.selected_index)?;
-        if !candidate.is_dir || candidate.path.string.is_empty() || candidate.path.string == self.current_dir() {
+        if !candidate.is_dir
+            || candidate.path.string.is_empty()
+            || candidate.path.string == self.current_dir()
+        {
             return None;
         }
 

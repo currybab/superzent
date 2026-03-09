@@ -1129,9 +1129,8 @@ mod tests {
     use std::{
         rc::Rc,
         sync::{
-            Arc,
+            Arc, Mutex, OnceLock,
             atomic::{self, AtomicBool},
-            Mutex, OnceLock,
         },
     };
     use tempfile::tempdir;
