@@ -66,8 +66,18 @@ jobs:
     - name: release::bundle_linux_remote_server_preview
       run: |
         if ! command -v zig >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y zig
+          case "$(uname -m)" in
+            x86_64) zig_arch=x86_64 ;;
+            aarch64|arm64) zig_arch=aarch64 ;;
+            *)
+              echo "Unsupported architecture for Zig bootstrap: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          zig_root="$(mktemp -d)"
+          curl -fsSL "https://ziglang.org/download/0.14.1/zig-linux-${zig_arch}-0.14.1.tar.xz" -o "${zig_root}/zig.tar.xz"
+          tar -xJf "${zig_root}/zig.tar.xz" -C "${zig_root}" --strip-components=1
+          export PATH="${zig_root}:$PATH"
         fi
         if ! command -v cargo-zigbuild >/dev/null 2>&1; then
           cargo install --locked cargo-zigbuild
@@ -110,8 +120,18 @@ jobs:
     - name: release::bundle_linux_remote_server_preview
       run: |
         if ! command -v zig >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y zig
+          case "$(uname -m)" in
+            x86_64) zig_arch=x86_64 ;;
+            aarch64|arm64) zig_arch=aarch64 ;;
+            *)
+              echo "Unsupported architecture for Zig bootstrap: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          zig_root="$(mktemp -d)"
+          curl -fsSL "https://ziglang.org/download/0.14.1/zig-linux-${zig_arch}-0.14.1.tar.xz" -o "${zig_root}/zig.tar.xz"
+          tar -xJf "${zig_root}/zig.tar.xz" -C "${zig_root}" --strip-components=1
+          export PATH="${zig_root}:$PATH"
         fi
         if ! command -v cargo-zigbuild >/dev/null 2>&1; then
           cargo install --locked cargo-zigbuild

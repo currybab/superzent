@@ -102,6 +102,7 @@ fn bundle_mac_preview() -> NamedJob {
 }
 
 fn bundle_linux_remote_server_preview(arch: Arch) -> NamedJob {
+    let zig_version = "0.14.1";
     let remote_server_triple = match arch {
         Arch::X86_64 => "x86_64-unknown-linux-musl",
         Arch::AARCH64 => "aarch64-unknown-linux-musl",
@@ -113,8 +114,18 @@ fn bundle_linux_remote_server_preview(arch: Arch) -> NamedJob {
     let build_script = formatdoc!(
         r#"
         if ! command -v zig >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y zig
+          case "$(uname -m)" in
+            x86_64) zig_arch=x86_64 ;;
+            aarch64|arm64) zig_arch=aarch64 ;;
+            *)
+              echo "Unsupported architecture for Zig bootstrap: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          zig_root="$(mktemp -d)"
+          curl -fsSL "https://ziglang.org/download/{zig_version}/zig-linux-${{zig_arch}}-{zig_version}.tar.xz" -o "${{zig_root}}/zig.tar.xz"
+          tar -xJf "${{zig_root}}/zig.tar.xz" -C "${{zig_root}}" --strip-components=1
+          export PATH="${{zig_root}}:$PATH"
         fi
         if ! command -v cargo-zigbuild >/dev/null 2>&1; then
           cargo install --locked cargo-zigbuild
@@ -125,6 +136,7 @@ fn bundle_linux_remote_server_preview(arch: Arch) -> NamedJob {
         objcopy --strip-debug "target/{remote_server_triple}/release/remote_server"
         gzip -f --stdout --best "target/{remote_server_triple}/release/remote_server" > "target/{artifact_name}"
         "#,
+        zig_version = zig_version,
         remote_server_triple = remote_server_triple,
         artifact_name = artifact_name,
     );
