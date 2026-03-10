@@ -786,11 +786,12 @@ impl ProjectPanel {
             }
 
             let filename_editor = cx.new(|cx| Editor::single_line(window, cx));
+            let filename_editor_focus_handle = filename_editor.read(cx).focus_handle(cx);
 
             cx.subscribe_in(
                 &filename_editor,
                 window,
-                |project_panel, _, editor_event, window, cx| match editor_event {
+                |project_panel, _, editor_event, _window, cx| match editor_event {
                     EditorEvent::BufferEdited => {
                         project_panel.populate_validation_error(cx);
                         project_panel.autoscroll(cx);
@@ -798,30 +799,25 @@ impl ProjectPanel {
                     EditorEvent::SelectionsChanged { .. } => {
                         project_panel.autoscroll(cx);
                     }
-                    EditorEvent::Blurred => {
-                        if project_panel
-                            .state
-                            .edit_state
-                            .as_ref()
-                            .is_some_and(|state| state.processing_filename.is_none())
-                        {
-                            match project_panel.confirm_edit(false, window, cx) {
-                                Some(task) => {
-                                    task.detach_and_notify_err(
-                                        project_panel.workspace.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                }
-                                None => {
-                                    project_panel.discard_edit_state(window, cx);
-                                }
-                            }
-                        }
-                    }
                     _ => {}
                 },
             )
+            .detach();
+
+            cx.on_focus_out(
+                &filename_editor_focus_handle,
+                window,
+                |project_panel, _, window, cx| {
+                    project_panel.handle_filename_editor_focus_out(window, cx);
+                },
+            )
+            .detach();
+
+            cx.observe_window_activation(window, |project_panel, window, cx| {
+                if !window.is_window_active() {
+                    project_panel.handle_filename_editor_focus_out(window, cx);
+                }
+            })
             .detach();
 
             cx.observe_global::<FileIcons>(|_, cx| {
@@ -1141,6 +1137,8 @@ impl ProjectPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.handle_filename_editor_focus_out(window, cx);
+
         let project = self.project.read(cx);
 
         let worktree_id = if let Some(id) = project.worktree_id_for_entry(entry_id, cx) {
@@ -2006,6 +2004,24 @@ impl ProjectPanel {
         }))
     }
 
+    fn handle_filename_editor_focus_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .state
+            .edit_state
+            .as_ref()
+            .is_some_and(|state| state.processing_filename.is_none())
+        {
+            match self.confirm_edit(false, window, cx) {
+                Some(task) => {
+                    task.detach_and_notify_err(self.workspace.clone(), window, cx);
+                }
+                None => {
+                    self.discard_edit_state(window, cx);
+                }
+            }
+        }
+    }
+
     fn discard_edit_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(edit_state) = self.state.edit_state.take() {
             self.state.temporarily_unfolded_pending_state = edit_state
@@ -2210,36 +2226,60 @@ impl ProjectPanel {
                     }
                 }
 
-                self.state.edit_state = Some(EditState {
-                    worktree_id,
-                    entry_id: sub_entry_id,
-                    leaf_entry_id: Some(entry_id),
-                    is_dir: entry.is_dir(),
-                    processing_filename: None,
-                    previously_focused: None,
-                    depth: 0,
-                    validation_state: ValidationState::None,
-                    temporarily_unfolded: None,
-                });
                 let file_name = entry.path.file_name().unwrap_or_default().to_string();
-                let selection = selection.unwrap_or_else(|| {
-                    let file_stem = entry.path.file_stem().map(|s| s.to_string());
-                    let selection_end =
-                        file_stem.map_or(file_name.len(), |file_stem| file_stem.len());
-                    0..selection_end
-                });
-                self.filename_editor.update(cx, |editor, cx| {
-                    editor.set_text(file_name, window, cx);
-                    editor.change_selections(Default::default(), window, cx, |s| {
-                        s.select_ranges([
-                            MultiBufferOffset(selection.start)..MultiBufferOffset(selection.end)
-                        ])
-                    });
-                });
-                self.update_visible_entries(None, true, true, window, cx);
-                cx.notify();
+                self.begin_rename_entry(
+                    worktree_id,
+                    sub_entry_id,
+                    entry_id,
+                    entry.is_dir(),
+                    file_name,
+                    selection,
+                    window,
+                    cx,
+                );
             }
         }
+    }
+
+    fn begin_rename_entry(
+        &mut self,
+        worktree_id: WorktreeId,
+        entry_id: ProjectEntryId,
+        leaf_entry_id: ProjectEntryId,
+        is_dir: bool,
+        file_name: String,
+        selection: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.edit_state = Some(EditState {
+            worktree_id,
+            entry_id,
+            leaf_entry_id: Some(leaf_entry_id),
+            is_dir,
+            processing_filename: None,
+            previously_focused: None,
+            depth: 0,
+            validation_state: ValidationState::None,
+            temporarily_unfolded: None,
+        });
+        let selection = selection.unwrap_or_else(|| {
+            let file_stem = RelPath::unix(&file_name)
+                .ok()
+                .and_then(|path| path.file_stem().map(|stem| stem.to_string()));
+            let selection_end = file_stem.map_or(file_name.len(), |file_stem| file_stem.len());
+            0..selection_end
+        });
+        self.filename_editor.update(cx, |editor, cx| {
+            editor.set_text(file_name, window, cx);
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([
+                    MultiBufferOffset(selection.start)..MultiBufferOffset(selection.end)
+                ])
+            });
+        });
+        self.update_visible_entries(None, true, true, window, cx);
+        cx.notify();
     }
 
     fn rename(&mut self, _: &Rename, window: &mut Window, cx: &mut Context<Self>) {
@@ -3151,8 +3191,21 @@ impl ProjectPanel {
 
                                 // if only one entry was pasted and it was disambiguated, open the rename editor
                                 if disambiguation_range.is_some() {
-                                    cx.defer_in(window, |this, window, cx| {
-                                        this.rename_impl(disambiguation_range, window, cx);
+                                    let entry_id = entry.id;
+                                    let is_dir = entry.is_dir();
+                                    let file_name =
+                                        entry.path.file_name().unwrap_or_default().to_string();
+                                    cx.defer_in(window, move |this, window, cx| {
+                                        this.begin_rename_entry(
+                                            worktree_id,
+                                            entry_id,
+                                            entry_id,
+                                            is_dir,
+                                            file_name,
+                                            disambiguation_range,
+                                            window,
+                                            cx,
+                                        );
                                     });
                                 }
                             }

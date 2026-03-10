@@ -189,7 +189,7 @@ impl TasksModal {
                 id: _,
                 directory_in_worktree: dir,
                 id_base: _,
-            } => dir.file_name().is_some_and(|name| name == ".superzet"),
+            } => dir.file_name().is_some_and(|name| name == ".zed"),
             _ => false,
         });
         // todo(debugger): We're always adding lsp tasks here even if prefer_lsp is false
@@ -767,7 +767,7 @@ mod tests {
         fs.insert_tree(
             path!("/dir"),
             json!({
-                ".superzet": {
+                ".zed": {
                     "tasks.json": r#"[
                         {
                             "label": "example task",
@@ -940,7 +940,7 @@ mod tests {
         fs.insert_tree(
             path!("/dir"),
             json!({
-                ".superzet": {
+                ".zed": {
                     "tasks.json": r#"[
                         {
                             "label": "hello from $ZED_FILE:$ZED_ROW:$ZED_COLUMN",

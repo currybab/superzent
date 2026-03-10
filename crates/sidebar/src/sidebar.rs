@@ -7,8 +7,8 @@ use editor::{Editor, EditorElement, EditorStyle};
 use feature_flags::{AgentV2FeatureFlag, FeatureFlagViewExt as _};
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle, ListState,
-    Pixels, Render, SharedString, TextStyle, WeakEntity, Window, actions, list, prelude::*, px,
-    relative, rems,
+    Pixels, Render, SharedString, Subscription, TextStyle, WeakEntity, Window, actions, list,
+    prelude::*, px, relative, rems,
 };
 use menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::Event as ProjectEvent;
@@ -164,6 +164,7 @@ pub struct Sidebar {
     width: Pixels,
     focus_handle: FocusHandle,
     filter_editor: Entity<Editor>,
+    _action_subscriptions: Vec<Subscription>,
     list_state: ListState,
     contents: SidebarContents,
     /// The index of the list item that currently has the keyboard focus
@@ -184,6 +185,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let this = cx.weak_entity();
         let focus_handle = cx.focus_handle();
         cx.on_focus_in(&focus_handle, window, Self::focus_in)
             .detach();
@@ -193,6 +195,76 @@ impl Sidebar {
             editor.set_placeholder_text("Search…", window, cx);
             editor
         });
+        let filter_focus_handle = filter_editor.focus_handle(cx);
+        cx.on_focus_in(&filter_focus_handle, window, Self::focus_in)
+            .detach();
+
+        let action_subscriptions = vec![
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &Cancel, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.cancel(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &SelectNext, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.select_next(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &SelectPrevious, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.select_previous(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &SelectFirst, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.select_first(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &SelectLast, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.select_last(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &MoveDown, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.editor_move_down(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &MoveUp, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.editor_move_up(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &Confirm, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.confirm(action, window, cx));
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &ExpandSelectedEntry, window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.expand_selected_entry(action, window, cx)
+                    });
+                })
+            }),
+            filter_editor.update(cx, |editor, _| {
+                let this = this.clone();
+                editor.register_action(move |action: &CollapseSelectedEntry, window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.collapse_selected_entry(action, window, cx)
+                    });
+                })
+            }),
+        ];
 
         cx.subscribe_in(
             &multi_workspace,
@@ -262,6 +334,7 @@ impl Sidebar {
             width: DEFAULT_WIDTH,
             focus_handle,
             filter_editor,
+            _action_subscriptions: action_subscriptions,
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)),
             contents: SidebarContents::default(),
             selection: None,
@@ -1533,16 +1606,16 @@ mod tests {
     }
 
     fn open_and_focus_sidebar(
-        sidebar: &Entity<Sidebar>,
+        _sidebar: &Entity<Sidebar>,
         multi_workspace: &Entity<MultiWorkspace>,
         cx: &mut gpui::VisualTestContext,
     ) {
         multi_workspace.update_in(cx, |mw, window, cx| {
-            mw.toggle_sidebar(window, cx);
-        });
-        cx.run_until_parked();
-        sidebar.update_in(cx, |_, window, cx| {
-            cx.focus_self(window);
+            cx.notify();
+            if !mw.is_sidebar_open() {
+                mw.toggle_sidebar(window, cx);
+            }
+            mw.focus_sidebar(window, cx);
         });
         cx.run_until_parked();
     }

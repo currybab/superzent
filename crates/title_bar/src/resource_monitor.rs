@@ -1126,7 +1126,7 @@ mod tests {
                 },
                 true,
             ),
-            UsageSeverity::High
+            UsageSeverity::Elevated
         );
     }
 

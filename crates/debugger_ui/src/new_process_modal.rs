@@ -1068,7 +1068,7 @@ impl DebugDelegate {
                     };
 
                     match path.components().next_back() {
-                        Some(".superzet") => {
+                        Some(".zed") => {
                             path.push(RelPath::unix("debug.json").unwrap());
                         }
                         Some(".vscode") => {
@@ -1165,7 +1165,7 @@ impl DebugDelegate {
                         id: _,
                         directory_in_worktree: dir,
                         id_base: _,
-                    } => dir.ends_with(RelPath::unix(".superzet").unwrap()),
+                    } => dir.ends_with(RelPath::unix(".zed").unwrap()),
                     _ => false,
                 });
 

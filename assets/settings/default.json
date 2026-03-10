@@ -1546,7 +1546,7 @@
       "**/*.crt",
       "**/.dev.vars",
       "**/secrets.yml",
-      "**/.superzet/settings.json", // superzet project settings
+      "**/.zed/settings.json", // project settings
       "/**/superzet/settings.json", // superzet user settings
       "/**/superzet/keymap.json",
     ],
@@ -1886,9 +1886,9 @@
   //
   "file_types": {
     "JSONC": [
-      "**/.superzet/*.json",
+      "**/.zed/*.json",
       "**/.vscode/**/*.json",
-      "**/{superzet,Superzet}/{settings,keymap,tasks,debug}.json",
+      "**/{zed,Zed}/{settings,keymap,tasks,debug}.json",
       "tsconfig*.json",
     ],
     "Markdown": [".rules", ".cursorrules", ".windsurfrules", ".clinerules"],

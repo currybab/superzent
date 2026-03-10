@@ -26,6 +26,7 @@ pub fn visual_test_settings() -> String {
             "buffer_font_size": 14,
             "buffer_font_fallbacks": [],
             "theme": EMPTY_THEME_NAME,
+            "disable_ai": false,
         }),
         &mut value,
     );
@@ -50,6 +51,7 @@ pub fn test_settings() -> String {
             "buffer_font_size": 14,
             "buffer_font_fallbacks": [],
             "theme": EMPTY_THEME_NAME,
+            "disable_ai": false,
         }),
         &mut value,
     );
@@ -65,6 +67,7 @@ pub fn test_settings() -> String {
             "buffer_font_size": 14,
             "buffer_font_fallbacks": [],
             "theme": EMPTY_THEME_NAME,
+            "disable_ai": false,
         }),
         &mut value,
     );

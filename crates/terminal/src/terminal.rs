@@ -2584,8 +2584,9 @@ mod tests {
     ) -> (Entity<Terminal>, Receiver<Option<ExitStatus>>) {
         let (completion_tx, completion_rx) = smol::channel::unbounded();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let (program, args) =
-            ShellBuilder::new(&Shell::System, false).build(Some(command.to_owned()), &args);
+        let (program, args) = ShellBuilder::new(&Shell::System, false)
+            .non_interactive()
+            .build(Some(command.to_owned()), &args);
         let builder = cx
             .update(|cx| {
                 TerminalBuilder::new(

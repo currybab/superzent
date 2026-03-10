@@ -142,7 +142,7 @@ impl Render for SecurityModal {
                             )
                             .child(
                                 Label::new(
-                                    "Review .superzet/settings.json for any extensions or commands configured by this project.",
+                                    "Review .zed/settings.json for any extensions or commands configured by this project.",
                                 )
                                 .color(Color::Muted),
                             ),
