@@ -152,7 +152,7 @@ pub fn init(cx: &mut App) {
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
     project: Entity<Project>,
-    superzet_store: Entity<SuperzetStore>,
+    superzet_store: Option<Entity<SuperzetStore>>,
     user_store: Entity<UserStore>,
     client: Arc<Client>,
     workspace: WeakEntity<Workspace>,
@@ -216,7 +216,7 @@ impl TitleBar {
     ) -> Self {
         let project = workspace.project().clone();
         let git_store = project.read(cx).git_store().clone();
-        let superzet_store = SuperzetStore::global(cx);
+        let superzet_store = SuperzetStore::try_global(cx);
         let user_store = workspace.app_state().user_store.clone();
         let client = workspace.app_state().client.clone();
         let platform_style = PlatformStyle::platform();
@@ -271,7 +271,9 @@ impl TitleBar {
             }),
         );
         subscriptions.push(cx.observe(&user_store, |_a, _, cx| cx.notify()));
-        subscriptions.push(cx.observe(&superzet_store, |_a, _, cx| cx.notify()));
+        if let Some(superzet_store) = superzet_store.as_ref() {
+            subscriptions.push(cx.observe(superzet_store, |_a, _, cx| cx.notify()));
+        }
         if let Some(trusted_worktrees) = TrustedWorktrees::try_get_global(cx) {
             subscriptions.push(cx.subscribe(&trusted_worktrees, |_, _, _, cx| {
                 cx.notify();
@@ -441,7 +443,10 @@ impl TitleBar {
     }
 
     fn superzet_header_title(&self, cx: &App) -> SharedString {
-        let store = self.superzet_store.read(cx);
+        let Some(store) = self.superzet_store.as_ref() else {
+            return SharedString::default();
+        };
+        let store = store.read(cx);
         match (store.active_project(), store.active_workspace()) {
             (Some(project), Some(workspace)) if workspace.display_name() != project.name => {
                 format!("{} - {}", project.name, workspace.display_name()).into()

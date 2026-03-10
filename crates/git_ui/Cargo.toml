@@ -19,7 +19,7 @@ ai = [
     "dep:language_model",
     "dep:prompt_store",
 ]
-test-support = ["ai", "multi_buffer/test-support", "remote_connection/test-support"]
+test-support = ["multi_buffer/test-support", "remote_connection/test-support"]
 
 [dependencies]
 agent_settings = { workspace = true, optional = true }

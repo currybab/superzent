@@ -17,15 +17,13 @@ impl SettingsSectionHeader {
         }
     }
 
-    #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "ai")]
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "ai")]
     pub fn no_padding(mut self, no_padding: bool) -> Self {
         self.no_padding = no_padding;
         self

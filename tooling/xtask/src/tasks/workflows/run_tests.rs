@@ -418,7 +418,9 @@ fn check_workspace_binaries() -> NamedJob {
             .map(steps::install_linux_dependencies)
             .add_step(steps::setup_sccache(Platform::Linux))
             .add_step(steps::script("cargo build -p collab"))
-            .add_step(steps::script("cargo build --workspace --bins --examples"))
+            .add_step(steps::script(
+                "CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --bins --examples",
+            ))
             .add_step(steps::show_sccache_stats(Platform::Linux))
             .add_step(steps::cleanup_cargo_config(Platform::Linux)),
     ))

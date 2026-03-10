@@ -1,6 +1,6 @@
 mod audio_input_output_setup;
 #[allow(dead_code)]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 mod audio_test_window;
 #[allow(dead_code)]
 #[cfg(feature = "ai")]

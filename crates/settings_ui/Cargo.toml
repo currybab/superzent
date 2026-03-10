@@ -22,7 +22,7 @@ ai = [
     "dep:edit_prediction",
     "dep:edit_prediction_ui",
 ]
-test-support = ["ai"]
+test-support = []
 
 [dependencies]
 agent = { workspace = true, optional = true }

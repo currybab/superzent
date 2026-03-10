@@ -417,8 +417,8 @@ jobs:
         SCCACHE_BUCKET: sccache-zed
     - name: cargo build -p collab
       run: cargo build -p collab
-    - name: cargo build --workspace --bins --examples
-      run: cargo build --workspace --bins --examples
+    - name: CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --bins --examples
+      run: CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --bins --examples
     - name: steps::show_sccache_stats
       run: sccache --show-stats || true
     - name: steps::cleanup_cargo_config
