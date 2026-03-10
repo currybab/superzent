@@ -39,11 +39,13 @@ use git::{
     StashApply, StashPop, TrashUntrackedFiles, UnstageAll,
 };
 use gpui::{
-    Action, AsyncApp, AsyncWindowContext, Bounds, ClickEvent, Corner, DismissEvent, Empty, Entity,
+    Action, AsyncWindowContext, Bounds, ClickEvent, Corner, DismissEvent, Empty, Entity,
     EventEmitter, FocusHandle, Focusable, KeyContext, MouseButton, MouseDownEvent, Point,
     PromptLevel, ScrollStrategy, Subscription, Task, TextStyle, UniformListScrollHandle,
     WeakEntity, actions, anchored, deferred, point, size, uniform_list,
 };
+#[cfg(feature = "ai")]
+use gpui::AsyncApp;
 use itertools::Itertools;
 use language::{Buffer, File};
 #[cfg(feature = "ai")]
@@ -87,8 +89,10 @@ use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
     Workspace,
     dock::{DockPosition, Panel, PanelEvent},
-    notifications::{DetachAndPromptErr, ErrorMessagePrompt, NotificationId, NotifyResultExt},
+    notifications::{DetachAndPromptErr, NotifyResultExt},
 };
+#[cfg(feature = "ai")]
+use workspace::notifications::{ErrorMessagePrompt, NotificationId};
 
 actions!(
     git_panel,
@@ -626,6 +630,7 @@ pub struct GitPanel {
     pub(crate) commit_editor: Entity<Editor>,
     conflicted_count: usize,
     conflicted_staged_count: usize,
+    #[cfg(feature = "ai")]
     generate_commit_message_task: Option<Task<Option<()>>>,
     entries: Vec<GitListEntry>,
     view_mode: GitPanelViewMode,
@@ -670,17 +675,9 @@ struct BulkStaging {
 
 const MAX_PANEL_EDITOR_LINES: usize = 6;
 
+#[cfg(feature = "ai")]
 fn ai_enabled(cx: &App) -> bool {
-    #[cfg(feature = "ai")]
-    {
-        agent_settings::AgentSettings::get_global(cx).enabled(cx)
-    }
-
-    #[cfg(not(feature = "ai"))]
-    {
-        let _ = cx;
-        false
-    }
+    agent_settings::AgentSettings::get_global(cx).enabled(cx)
 }
 
 fn observe_ai_settings(cx: &mut Context<GitPanel>) -> Subscription {
@@ -821,6 +818,7 @@ impl GitPanel {
                 commit_editor,
                 conflicted_count: 0,
                 conflicted_staged_count: 0,
+                #[cfg(feature = "ai")]
                 generate_commit_message_task: None,
                 entries: Vec::new(),
                 view_mode: GitPanelViewMode::from_settings(cx),
@@ -3698,6 +3696,7 @@ impl GitPanel {
         show_error_toast(workspace, action, e, cx)
     }
 
+    #[cfg(feature = "ai")]
     fn show_commit_message_error<E>(weak_this: &WeakEntity<Self>, err: &E, cx: &mut AsyncApp)
     where
         E: std::fmt::Debug + std::fmt::Display,

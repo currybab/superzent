@@ -503,7 +503,7 @@ jobs:
         license-check: false
     timeout-minutes: 60
   check_docs:
-    if: 'false'
+    if: github.repository == '__disabled__/__disabled__'
     runs-on: ubuntu-24.04
     env:
       CC: clang

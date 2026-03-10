@@ -2317,7 +2317,7 @@ mod tests {
         DisplayPoint, Editor, MultiBufferOffset, SelectionEffects, display_map::DisplayRow,
     };
     use gpui::{
-        Action, AnyWindowHandle, App, AssetSource, BorrowAppContext, Keystroke, TestAppContext,
+        Action, AnyWindowHandle, App, AssetSource, BorrowAppContext, TestAppContext,
         UpdateGlobal, VisualTestContext, WindowHandle, actions,
     };
     use language::LanguageRegistry;
@@ -5192,7 +5192,7 @@ mod tests {
         line: u32,
     ) {
         for (binding_source, action) in actions {
-            let expected = Keystroke::parse(binding_source).unwrap();
+            let expected = gpui::Keystroke::parse(binding_source).unwrap();
             let bindings = cx
                 .update(|cx| window.update(cx, |_, window, _| window.bindings_for_action(action)))
                 .unwrap();

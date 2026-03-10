@@ -590,7 +590,9 @@ fn doctests() -> NamedJob {
 fn disabled(job: NamedJob) -> NamedJob {
     NamedJob {
         name: job.name,
-        job: job.job.cond(Expression::new("false")),
+        job: job
+            .job
+            .cond(Expression::new("github.repository == '__disabled__/__disabled__'")),
     }
 }
 
