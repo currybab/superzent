@@ -2278,6 +2278,14 @@ impl SuperzetEmptyPaneView {
         }
     }
 
+    fn current_workspace_entity(
+        &self,
+        window: &gpui::Window,
+        cx: &App,
+    ) -> Option<Entity<Workspace>> {
+        workspace_from_window(window, cx)
+    }
+
     fn action_button(
         &self,
         id: &'static str,
@@ -2313,38 +2321,18 @@ impl Render for SuperzetEmptyPaneView {
         };
 
         let buttons = match mode {
-            EmptyPaneMode::Initial => vec![
-                self.action_button(
-                    "superzet-empty-add-project",
-                    "Add Project",
-                    IconName::OpenFolder,
-                    true,
-                    |_, window, cx| add_project_from_window(window, cx),
-                    cx,
-                ),
-                self.action_button(
-                    "superzet-empty-open-file",
-                    "Open File",
-                    IconName::File,
-                    false,
-                    |this, window, cx| {
-                        this.focus_pane(window, cx);
-                        window.dispatch_action(Box::new(workspace::OpenFiles), cx);
-                    },
-                    cx,
-                ),
-                self.action_button(
-                    "superzet-empty-new-file",
-                    "New File",
-                    IconName::File,
-                    false,
-                    |this, window, cx| {
-                        this.focus_pane(window, cx);
-                        window.dispatch_action(Box::new(workspace::NewFile), cx);
-                    },
-                    cx,
-                ),
-            ],
+            EmptyPaneMode::Initial => vec![self.action_button(
+                "superzet-empty-add-project",
+                "Add Project",
+                IconName::OpenFolder,
+                true,
+                |this, window, cx| {
+                    if let Some(current_workspace) = this.current_workspace_entity(window, cx) {
+                        run_add_project_from_store(current_workspace, window, cx);
+                    }
+                },
+                cx,
+            )],
             EmptyPaneMode::Workspace => vec![
                 self.action_button(
                     "superzet-empty-new-terminal",
