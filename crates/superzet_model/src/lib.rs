@@ -843,6 +843,7 @@ impl SuperzetStore {
         workspace_id: &str,
         branch: Option<String>,
         git_summary: Option<GitChangeSummary>,
+        persist: bool,
         cx: &mut Context<Self>,
     ) {
         if let Some(workspace) = self
@@ -851,11 +852,15 @@ impl SuperzetStore {
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
         {
-            if let Some(branch) = branch {
-                workspace.branch = branch;
+            if !update_workspace_metadata(workspace, branch, git_summary) {
+                return;
             }
-            workspace.git_summary = git_summary;
-            self.persist_and_notify(cx);
+
+            if persist {
+                self.persist_and_notify(cx);
+            } else {
+                cx.notify();
+            }
         }
     }
 
@@ -1409,6 +1414,28 @@ impl SuperzetStore {
     }
 }
 
+fn update_workspace_metadata(
+    workspace: &mut WorkspaceEntry,
+    branch: Option<String>,
+    git_summary: Option<GitChangeSummary>,
+) -> bool {
+    let mut changed = false;
+
+    if let Some(branch) = branch
+        && workspace.branch != branch
+    {
+        workspace.branch = branch;
+        changed = true;
+    }
+
+    if workspace.git_summary != git_summary {
+        workspace.git_summary = git_summary;
+        changed = true;
+    }
+
+    changed
+}
+
 #[derive(Deserialize)]
 struct LegacySuperzetState {
     active_project_id: Option<String>,
@@ -1885,6 +1912,43 @@ mod tests {
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn update_workspace_metadata_ignores_missing_branch_when_summary_is_unchanged() {
+        let mut workspace = workspace_entry(
+            "worktree",
+            "project",
+            WorkspaceKind::Worktree,
+            "/tmp/repo/feature",
+        );
+
+        assert!(!update_workspace_metadata(&mut workspace, None, None));
+        assert_eq!(workspace.branch, "main");
+        assert_eq!(workspace.git_summary, None);
+    }
+
+    #[test]
+    fn update_workspace_metadata_reports_branch_and_summary_changes() {
+        let mut workspace = workspace_entry(
+            "worktree",
+            "project",
+            WorkspaceKind::Worktree,
+            "/tmp/repo/feature",
+        );
+        let summary = GitChangeSummary {
+            changed_files: 3,
+            staged_files: 1,
+            untracked_files: 2,
+        };
+
+        assert!(update_workspace_metadata(
+            &mut workspace,
+            Some("feature/fast".to_string()),
+            Some(summary.clone()),
+        ));
+        assert_eq!(workspace.branch, "feature/fast");
+        assert_eq!(workspace.git_summary, Some(summary));
     }
 
     #[test]

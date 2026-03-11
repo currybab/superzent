@@ -9,7 +9,7 @@ use gpui::{
     Point, PromptLevel, Subscription, Task, WeakEntity, WindowHandle, actions, anchored, deferred,
 };
 use menu;
-use project::git_store::Repository;
+use project::git_store::{GitStoreEvent, Repository, RepositoryEvent};
 use project::project_settings::ProjectSettings;
 use project_panel::ProjectPanel;
 use recent_projects::open_remote_project;
@@ -1430,6 +1430,7 @@ pub struct SuperzetSidebar {
     rename_workspace_id: Option<String>,
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
+    _git_store_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1447,10 +1448,17 @@ impl SuperzetSidebar {
                 &multi_workspace,
                 window,
                 |this, _, event, _, cx| match event {
-                    MultiWorkspaceEvent::ActiveWorkspaceChanged
-                    | MultiWorkspaceEvent::WorkspaceAdded(_)
+                    MultiWorkspaceEvent::ActiveWorkspaceChanged => {
+                        this.sync_active_workspace(cx);
+                        if let Some(current_workspace) = this.current_workspace_entity(cx) {
+                            this.refresh_live_workspace_metadata(&current_workspace, false, cx);
+                        }
+                        cx.notify();
+                    }
+                    MultiWorkspaceEvent::WorkspaceAdded(_)
                     | MultiWorkspaceEvent::WorkspaceRemoved(_) => {
                         this.sync_active_workspace(cx);
+                        this.sync_live_workspace_git_subscriptions(cx);
                         cx.notify();
                     }
                 },
@@ -1466,9 +1474,11 @@ impl SuperzetSidebar {
             rename_workspace_id: None,
             rename_editor: None,
             rename_editor_subscription: None,
+            _git_store_subscriptions: Vec::new(),
             _subscriptions: subscriptions,
         };
         this.sync_active_workspace(cx);
+        this.sync_live_workspace_git_subscriptions(cx);
         this
     }
 
@@ -1493,6 +1503,83 @@ impl SuperzetSidebar {
                 .and_then(|location| store.workspace_for_location(location))
                 .map(|workspace| workspace.id.clone());
             store.set_active_workspace(workspace_id, cx);
+        });
+    }
+
+    fn sync_live_workspace_git_subscriptions(&mut self, cx: &mut Context<Self>) {
+        self._git_store_subscriptions.clear();
+
+        let Some(multi_workspace) = self.multi_workspace.upgrade() else {
+            return;
+        };
+
+        let workspaces = multi_workspace.read(cx).workspaces().to_vec();
+        for workspace in &workspaces {
+            self.refresh_live_workspace_metadata(workspace, false, cx);
+        }
+
+        self._git_store_subscriptions = workspaces
+            .into_iter()
+            .map(|workspace| {
+                let git_store = workspace.read(cx).project().read(cx).git_store().clone();
+                let workspace = workspace.clone();
+
+                cx.subscribe(&git_store, move |this, _, event, cx| {
+                    let persist = match event {
+                        GitStoreEvent::RepositoryUpdated(
+                            _,
+                            RepositoryEvent::StatusesChanged,
+                            _,
+                        ) => false,
+                        GitStoreEvent::RepositoryUpdated(_, RepositoryEvent::BranchChanged, _) => {
+                            true
+                        }
+                        GitStoreEvent::ActiveRepositoryChanged(_)
+                        | GitStoreEvent::RepositoryAdded
+                        | GitStoreEvent::RepositoryRemoved(_) => false,
+                        GitStoreEvent::RepositoryUpdated(_, _, _)
+                        | GitStoreEvent::IndexWriteError(_)
+                        | GitStoreEvent::JobsUpdated
+                        | GitStoreEvent::ConflictsUpdated => return,
+                    };
+
+                    this.refresh_live_workspace_metadata(&workspace, persist, cx);
+                })
+            })
+            .collect();
+    }
+
+    fn refresh_live_workspace_metadata(
+        &self,
+        workspace: &Entity<Workspace>,
+        persist: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(location) = workspace_location_snapshot(workspace, cx) else {
+            return;
+        };
+        let Some(workspace_id) = self
+            .store
+            .read(cx)
+            .workspace_for_location(&location)
+            .map(|workspace| workspace.id.clone())
+        else {
+            return;
+        };
+        let Some(repository) = active_repository_for_workspace(workspace, cx) else {
+            return;
+        };
+
+        let repository = repository.read(cx);
+        let branch = repository
+            .branch
+            .as_ref()
+            .map(|branch| branch.name().to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let git_summary = Some(git_change_summary_from_repository(&repository));
+
+        self.store.update(cx, |store, cx| {
+            store.refresh_workspace_metadata(&workspace_id, Some(branch), git_summary, persist, cx);
         });
     }
 
@@ -2133,6 +2220,11 @@ impl SuperzetSidebar {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(live_workspace) = workspace_for_entry_in_window(window, cx, &workspace) {
+            self.refresh_live_workspace_metadata(&live_workspace, true, cx);
+            return;
+        }
+
         match &workspace.location {
             WorkspaceLocation::Local { worktree_path } => {
                 let worktree_path = worktree_path.clone();
@@ -2151,6 +2243,7 @@ impl SuperzetSidebar {
                                 &workspace_id,
                                 Some(refresh.branch),
                                 refresh.git_summary,
+                                true,
                                 cx,
                             );
                         });
@@ -2183,6 +2276,7 @@ impl SuperzetSidebar {
                             &workspace.id,
                             Some(branch),
                             git_summary,
+                            true,
                             cx,
                         );
                     });
