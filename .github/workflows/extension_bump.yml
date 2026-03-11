@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
         fetch-depth: 0
@@ -74,7 +74,7 @@ jobs:
         app-id: ${{ secrets.app-id }}
         private-key: ${{ secrets.app-secret }}
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: extension_bump::install_bump_2_version
@@ -130,7 +130,7 @@ jobs:
         app-id: ${{ secrets.app-id }}
         private-key: ${{ secrets.app-secret }}
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: extension_bump::create_version_tag
@@ -161,7 +161,7 @@ jobs:
         owner: zed-industries
         repositories: extensions
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - id: get-extension-id

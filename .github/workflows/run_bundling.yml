@@ -25,7 +25,7 @@ jobs:
       CXX: clang++-18
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_sentry
@@ -41,13 +41,13 @@ jobs:
     - name: ./script/bundle-linux
       run: ./script/bundle-linux
     - name: '@actions/upload-artifact zed-linux-aarch64.tar.gz'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: zed-linux-aarch64.tar.gz
         path: target/release/zed-linux-aarch64.tar.gz
         if-no-files-found: error
     - name: '@actions/upload-artifact superzet-remote-server-linux-aarch64.gz'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-remote-server-linux-aarch64.gz
         path: target/superzet-remote-server-linux-aarch64.gz
@@ -68,7 +68,7 @@ jobs:
       CXX: clang++-18
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_sentry
@@ -84,13 +84,13 @@ jobs:
     - name: ./script/bundle-linux
       run: ./script/bundle-linux
     - name: '@actions/upload-artifact zed-linux-x86_64.tar.gz'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: zed-linux-x86_64.tar.gz
         path: target/release/zed-linux-x86_64.tar.gz
         if-no-files-found: error
     - name: '@actions/upload-artifact superzet-remote-server-linux-x86_64.gz'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-remote-server-linux-x86_64.gz
         path: target/superzet-remote-server-linux-x86_64.gz
@@ -120,7 +120,7 @@ jobs:
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_node
@@ -136,13 +136,13 @@ jobs:
     - name: run_bundling::bundle_mac::bundle_mac
       run: ./script/bundle-mac aarch64-apple-darwin
     - name: '@actions/upload-artifact superzet-aarch64.dmg'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-aarch64.dmg
         path: target/aarch64-apple-darwin/release/superzet-aarch64.dmg
         if-no-files-found: error
     - name: '@actions/upload-artifact superzet-remote-server-macos-aarch64.gz'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-remote-server-macos-aarch64.gz
         path: target/superzet-remote-server-macos-aarch64.gz
@@ -172,7 +172,7 @@ jobs:
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_node
@@ -188,13 +188,13 @@ jobs:
     - name: run_bundling::bundle_mac::bundle_mac
       run: ./script/bundle-mac x86_64-apple-darwin
     - name: '@actions/upload-artifact superzet-x86_64.dmg'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-x86_64.dmg
         path: target/x86_64-apple-darwin/release/superzet-x86_64.dmg
         if-no-files-found: error
     - name: '@actions/upload-artifact superzet-remote-server-macos-x86_64.gz'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-remote-server-macos-x86_64.gz
         path: target/superzet-remote-server-macos-x86_64.gz
@@ -222,7 +222,7 @@ jobs:
       TIMESTAMP_SERVER: http://timestamp.acs.microsoft.com
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_sentry
@@ -234,13 +234,13 @@ jobs:
       shell: pwsh
       working-directory: ${{ env.ZED_WORKSPACE }}
     - name: '@actions/upload-artifact Zed-aarch64.exe'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: Zed-aarch64.exe
         path: target/Zed-aarch64.exe
         if-no-files-found: error
     - name: '@actions/upload-artifact superzet-remote-server-windows-aarch64.zip'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-remote-server-windows-aarch64.zip
         path: target/superzet-remote-server-windows-aarch64.zip
@@ -268,7 +268,7 @@ jobs:
       TIMESTAMP_SERVER: http://timestamp.acs.microsoft.com
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_sentry
@@ -280,13 +280,13 @@ jobs:
       shell: pwsh
       working-directory: ${{ env.ZED_WORKSPACE }}
     - name: '@actions/upload-artifact Zed-x86_64.exe'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: Zed-x86_64.exe
         path: target/Zed-x86_64.exe
         if-no-files-found: error
     - name: '@actions/upload-artifact superzet-remote-server-windows-x86_64.zip'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: superzet-remote-server-windows-x86_64.zip
         path: target/superzet-remote-server-windows-x86_64.zip
@@ -302,7 +302,7 @@ jobs:
       GIT_LFS_SKIP_SMUDGE: '1'
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::cache_nix_dependencies_namespace
@@ -334,7 +334,7 @@ jobs:
       GIT_LFS_SKIP_SMUDGE: '1'
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::cache_nix_store_macos

@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
       with:
         clean: false
     - name: steps::setup_cargo_config
@@ -72,7 +72,7 @@ jobs:
         BASE: ${{ inputs.base }}
         HEAD: ${{ inputs.head }}
     - name: '@actions/upload-artifact results.md'
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254
       with:
         name: results.md
         path: results.md

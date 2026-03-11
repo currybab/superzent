@@ -111,7 +111,7 @@ pub fn upload_artifact(path: &str) -> Step<Use> {
         .uses(
             "actions",
             "upload-artifact",
-            "330a01c490aca151604b8cf639adc76d48f6c5d4", // v5
+            "bbbca2ff186980d4b5400ce112fb0775aa163254", // v7.0.0
         )
         // N.B. "name" is the name for the asset. The uploaded
         // file retains its filename.

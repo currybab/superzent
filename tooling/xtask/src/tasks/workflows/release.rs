@@ -1,4 +1,4 @@
-use gh_workflow::{Event, Push, Step, Use, Workflow};
+use gh_workflow::{Event, Level, Permissions, Push, Step, Use, Workflow};
 use indoc::formatdoc;
 
 use crate::tasks::workflows::{
@@ -44,6 +44,7 @@ pub(crate) fn release() -> Workflow {
 
     named::workflow()
         .on(Event::default().push(Push::default().tags(vec!["v*-pre".to_string()])))
+        .permissions(Permissions::default().contents(Level::Write))
         .concurrency(vars::one_workflow_per_non_main_branch())
         .add_env(("CARGO_TERM_COLOR", "always"))
         .add_env(("RUST_BACKTRACE", "1"))
@@ -57,7 +58,7 @@ fn download_workflow_artifacts() -> Step<Use> {
     named::uses(
         "actions",
         "download-artifact",
-        "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", // v6.0.0
+        "70fc10eb3fdc3a884b88c9f72e79bb36de8d0f6e", // v8.0.0
     )
     .add_with(("path", "./artifacts/"))
 }

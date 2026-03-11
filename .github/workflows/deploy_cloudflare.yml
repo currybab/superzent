@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2 # v6.0.2
         with:
           clean: false
 
@@ -25,7 +25,7 @@ jobs:
           command: deploy --config .cloudflare/release-assets/wrangler.toml
 
       - name: Preserve Wrangler logs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@bbbca2ff186980d4b5400ce112fb0775aa163254 # v7.0.0
         if: always()
         with:
           name: wrangler_logs
