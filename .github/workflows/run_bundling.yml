@@ -25,7 +25,7 @@ jobs:
       CXX: clang++-18
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::setup_sentry
@@ -68,7 +68,7 @@ jobs:
       CXX: clang++-18
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::setup_sentry
@@ -120,7 +120,7 @@ jobs:
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::setup_node
@@ -172,7 +172,7 @@ jobs:
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::setup_node
@@ -222,7 +222,7 @@ jobs:
       TIMESTAMP_SERVER: http://timestamp.acs.microsoft.com
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::setup_sentry
@@ -268,7 +268,7 @@ jobs:
       TIMESTAMP_SERVER: http://timestamp.acs.microsoft.com
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::setup_sentry
@@ -302,7 +302,7 @@ jobs:
       GIT_LFS_SKIP_SMUDGE: '1'
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::cache_nix_dependencies_namespace
@@ -334,7 +334,7 @@ jobs:
       GIT_LFS_SKIP_SMUDGE: '1'
     steps:
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
     - name: steps::cache_nix_store_macos

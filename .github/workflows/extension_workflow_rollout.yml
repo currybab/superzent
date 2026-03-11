@@ -54,13 +54,13 @@ jobs:
         permission-contents: write
         permission-workflows: write
     - name: checkout_zed_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
         fetch-depth: 0
         path: zed
     - name: checkout_extension_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
         token: ${{ steps.generate-token.outputs.token }}
@@ -171,7 +171,7 @@ jobs:
         private-key: ${{ secrets.ZED_ZIPPY_APP_PRIVATE_KEY }}
         permission-contents: write
     - name: steps::checkout_repo
-      uses: actions/checkout@de0fac2f34d62369131b8448cec9ffbd4111f4c2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         clean: false
         fetch-depth: 0

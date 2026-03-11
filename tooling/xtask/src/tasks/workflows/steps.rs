@@ -121,7 +121,7 @@ impl From<CheckoutStep> for Step<Use> {
             .uses(
                 "actions",
                 "checkout",
-                "de0fac2f34d62369131b8448cec9ffbd4111f4c2", // v6.0.2
+                "11bd71901bbe5b1630ceea73d27597364c9af683", // v4.2.2
             )
             // prevent checkout action from running `git clean -ffdx` which
             // would delete the target directory
