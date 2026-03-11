@@ -2,7 +2,7 @@
 description = "The terminal for coding agents."
 edition.workspace = true
 name = "superzet"
-version = "0.1.0"
+version = "0.1.1"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["superzet contributors"]
