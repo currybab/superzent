@@ -307,7 +307,7 @@ function sign_app_binaries() {
 
         if [[ $can_code_sign = true ]]; then
             echo "Notarizing DMG with Apple"
-            /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$signing_identity" "$(pwd)/${dmg_file_path}" -v
+            /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$signing_identity" "${dmg_file_path}" -v
             echo "$apple_notarization_key" > "$notarization_key_file"
             "${xcode_bin_dir_path}/notarytool" submit --wait --key "$notarization_key_file" --key-id "$apple_notarization_key_id" --issuer "$apple_notarization_issuer_id" "${dmg_file_path}"
             rm "$notarization_key_file"
