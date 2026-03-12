@@ -353,7 +353,7 @@ pub struct TitleBarSettingsContent {
     pub show_menus: Option<bool>,
     /// Whether to show the resource monitor in the title bar.
     ///
-    /// Default: true
+    /// Default: false
     pub show_resource_monitor: Option<bool>,
 }
 
@@ -449,19 +449,19 @@ impl From<Option<String>> for AudioOutputDeviceName {
 pub struct TelemetrySettingsContent {
     /// Send debug info like crash reports.
     ///
-    /// Default: true
+    /// Default: false
     pub diagnostics: Option<bool>,
     /// Send anonymized usage data like what languages you're using Zed with.
     ///
-    /// Default: true
+    /// Default: false
     pub metrics: Option<bool>,
 }
 
 impl Default for TelemetrySettingsContent {
     fn default() -> Self {
         Self {
-            diagnostics: Some(true),
-            metrics: Some(true),
+            diagnostics: Some(false),
+            metrics: Some(false),
         }
     }
 }

@@ -461,7 +461,7 @@
     // Whether to show the menus in the titlebar.
     "show_menus": false,
     // Whether to show the resource monitor in the titlebar.
-    "show_resource_monitor": true,
+    "show_resource_monitor": false,
   },
   "audio": {
     // Opt into the new audio system.
@@ -1356,9 +1356,9 @@
   // Control what info is collected by superzet.
   "telemetry": {
     // Send debug info like crash reports.
-    "diagnostics": true,
+    "diagnostics": false,
     // Send anonymized usage data like what languages you're using superzet with.
-    "metrics": true,
+    "metrics": false,
   },
   // Whether to disable all built-in AI features in superzet.
   //
