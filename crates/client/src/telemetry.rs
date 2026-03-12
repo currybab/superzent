@@ -942,7 +942,18 @@ mod tests {
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            let settings_store = SettingsStore::test(cx);
+            let mut settings_store = SettingsStore::test(cx);
+            settings_store
+                .set_user_settings(
+                    r#"{
+                      "telemetry": {
+                        "metrics": true,
+                        "diagnostics": true
+                      }
+                    }"#,
+                    cx,
+                )
+                .expect("telemetry test settings should be valid");
             cx.set_global(settings_store);
         });
     }
