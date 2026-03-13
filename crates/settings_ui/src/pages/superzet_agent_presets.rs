@@ -20,13 +20,14 @@ pub(crate) fn render_superzet_agent_presets_page(
     v_flex()
         .id("superzet-agent-presets-page")
         .min_w_0()
-        .size_full()
+        .min_h_0()
+        .w_full()
+        .h_full()
         .pt_2p5()
         .px_8()
-        .pb_16()
         .overflow_y_scroll()
         .track_scroll(scroll_handle)
-        .child(page)
+        .child(v_flex().w_full().pb_16().child(page))
         .into_any_element()
 }
 
@@ -457,7 +458,7 @@ fn preset_editor(
         let expected_text = expected_text.clone();
         move |window, cx| {
             let mut editor = if multi_line {
-                Editor::auto_height(2, 8, window, cx)
+                Editor::auto_height_unbounded(2, window, cx)
             } else {
                 Editor::single_line(window, cx)
             };
