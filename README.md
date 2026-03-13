@@ -1,12 +1,15 @@
-# superzent
-
 <p align="center">
   <img src="assets/branding/logo_nightly.png" alt="superzent" width="180" />
+  <h1 align="center">superzent</h1>
+  <p align="center">A local-first workspace shell for coding agents.<br/>
+  Built on <a href="https://github.com/zed-industries/zed">Zed</a>, inspired by <a href="https://github.com/superset-sh/superset">superset</a>.</p>
 </p>
 
-`superzent` is a local-first workspace shell for coding agents.
+<p align="center">
+  <img src="assets/images/superzent_screenshot.png" alt="superzent screenshot" width="800" />
+</p>
 
-It is built on top of a Zed fork, but the product scope is narrower: one window, multiple local workspaces with git worktree, fast file navigation, diff views, and terminal-heavy agent workflows.
+One window, multiple local workspaces with git worktree, fast file navigation, diff views, and terminal-heavy agent workflows.
 
 ## Status
 
@@ -85,33 +88,6 @@ For a signed macOS bundle:
 ./script/bundle-mac aarch64-apple-darwin
 ```
 
-## Public Release
-
-The current public desktop release flow is macOS Apple Silicon only.
-
-- Tag releases as `vX.Y.Z`
-- GitHub Actions builds `superzent-aarch64.dmg`
-- The release workflow also uploads Linux `remote_server` support assets
-- `releases.nangman.ai/releases/...` is served by a thin Cloudflare worker that points the app at those GitHub assets
-
-## Release Infrastructure
-
-To publish a release with in-app updates, you need:
-
-- GitHub Releases enabled for this repository
-- Cloudflare configured for `nangman.ai` with a `releases.nangman.ai/releases*` route
-- the release worker deployed from `.cloudflare/release-assets`
-- optional but recommended: a Cloudflare worker secret named `GITHUB_RELEASES_TOKEN` to avoid GitHub API rate limits on update checks
-- Apple signing and notarization credentials in GitHub secrets:
-  - `MACOS_CERTIFICATE`
-  - `MACOS_CERTIFICATE_PASSWORD`
-  - `APPLE_NOTARIZATION_KEY`
-  - `APPLE_NOTARIZATION_KEY_ID`
-  - `APPLE_NOTARIZATION_ISSUER_ID`
-- the mac signing identity in the `MACOS_SIGNING_IDENTITY` repository variable
-
-The app prefers `SUPERZENT_*` runtime env vars for release/update overrides, but legacy `ZED_*` aliases still work during the transition.
-
 ## Open Source Notes
 
 - Extensions still use the upstream Zed marketplace.
@@ -124,6 +100,7 @@ The app prefers `SUPERZENT_*` runtime env vars for release/update overrides, but
 - [Installation](./docs/src/installation.md)
 - [Development](./docs/src/development.md)
 - [Contributing](./CONTRIBUTING.md)
+- [Release](./docs/src/release.md)
 - [Security](./SECURITY.md)
 
 ## License
