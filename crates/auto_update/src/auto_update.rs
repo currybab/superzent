@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use client::Client;
 use db::kvp::KEY_VALUE_STORE;
 use futures_lite::StreamExt;
@@ -6,7 +6,7 @@ use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, Global, Task, Window,
     actions,
 };
-use http_client::{HttpClient, HttpClientWithUrl, Url};
+use http_client::{HttpClient, HttpClientWithUrl, Url, http};
 use paths::{REMOTE_SERVER_BINARY_NAME_PREFIX, remote_servers_dir};
 use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
@@ -30,7 +30,8 @@ use util::command::new_command;
 use workspace::{
     Workspace,
     notifications::{
-        NotificationId, show_app_notification, simple_message_notification::MessageNotification,
+        ErrorMessagePrompt, NotificationId, show_app_notification,
+        simple_message_notification::MessageNotification,
     },
 };
 
@@ -39,6 +40,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REMOTE_SERVER_CACHE_LIMIT: usize = 5;
 const DEFAULT_RELEASES_URL: &str = "https://releases.nangman.ai";
 const UP_TO_DATE_MESSAGE: &str = "Superzent is already up to date.";
+const UPDATE_QUERY_FAILED_MESSAGE: &str = "Failed to check for updates. Please try again.";
+const UPDATE_PACKAGE_NOT_FOUND_MESSAGE: &str = "A compatible update package was not found for this installation. Please download the latest release manually.";
 
 fn update_explanation_from_compile_env() -> Option<&'static str> {
     option_env!("SUPERZENT_UPDATE_EXPLANATION").or(option_env!("ZED_UPDATE_EXPLANATION"))
@@ -57,6 +60,10 @@ fn releases_base_url() -> String {
         .unwrap_or_else(|| DEFAULT_RELEASES_URL.to_string())
         .trim_end_matches('/')
         .to_string()
+}
+
+fn latest_stable_release_page_url() -> String {
+    build_releases_url("/releases/stable/latest")
 }
 
 fn build_releases_url(path: &str) -> String {
@@ -220,6 +227,41 @@ struct GlobalAutoUpdate(Option<Entity<AutoUpdater>>);
 impl Global for GlobalAutoUpdate {}
 
 struct UpToDateNotification;
+struct UpdateQueryFailedNotification;
+struct UpdatePackageNotFoundNotification;
+
+#[derive(Debug)]
+enum ReleaseLookupError {
+    CompatibleUpdatePackageNotFound { source: anyhow::Error },
+    QueryFailed { source: anyhow::Error },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManualUpdateNotificationKind {
+    QueryFailed,
+    CompatibleUpdatePackageNotFound,
+}
+
+impl std::fmt::Display for ReleaseLookupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompatibleUpdatePackageNotFound { .. } => formatter
+                .write_str("A compatible update package was not found for this installation."),
+            Self::QueryFailed { .. } => {
+                formatter.write_str("Failed to check for updates. Please try again.")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReleaseLookupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CompatibleUpdatePackageNotFound { source } => Some(source.as_ref()),
+            Self::QueryFailed { source } => Some(source.as_ref()),
+        }
+    }
+}
 
 fn show_up_to_date_notification(cx: &mut App) {
     show_app_notification(NotificationId::unique::<UpToDateNotification>(), cx, |cx| {
@@ -229,6 +271,59 @@ fn show_up_to_date_notification(cx: &mut App) {
                 .show_suppress_button(false)
         })
     });
+}
+
+fn show_update_query_failed_notification(cx: &mut App) {
+    show_app_notification(
+        NotificationId::unique::<UpdateQueryFailedNotification>(),
+        cx,
+        |cx| {
+            cx.new(|cx| {
+                MessageNotification::new(UPDATE_QUERY_FAILED_MESSAGE, cx)
+                    .with_title("Updates")
+                    .show_suppress_button(false)
+            })
+        },
+    );
+}
+
+fn show_update_package_not_found_notification(cx: &mut App) {
+    show_app_notification(
+        NotificationId::unique::<UpdatePackageNotFoundNotification>(),
+        cx,
+        |cx| {
+            cx.new(|cx| {
+                ErrorMessagePrompt::new(UPDATE_PACKAGE_NOT_FOUND_MESSAGE, cx).with_link_button(
+                    "Open Releases".to_string(),
+                    latest_stable_release_page_url(),
+                )
+            })
+        },
+    );
+}
+
+fn show_manual_update_error_notification(error: &anyhow::Error, cx: &mut App) {
+    match manual_update_notification_kind(error) {
+        Some(ManualUpdateNotificationKind::CompatibleUpdatePackageNotFound) => {
+            show_update_package_not_found_notification(cx);
+        }
+        Some(ManualUpdateNotificationKind::QueryFailed) => {
+            show_update_query_failed_notification(cx);
+        }
+        None => {}
+    }
+}
+
+fn manual_update_notification_kind(error: &anyhow::Error) -> Option<ManualUpdateNotificationKind> {
+    match error.downcast_ref::<ReleaseLookupError>() {
+        Some(ReleaseLookupError::CompatibleUpdatePackageNotFound { .. }) => {
+            Some(ManualUpdateNotificationKind::CompatibleUpdatePackageNotFound)
+        }
+        Some(ReleaseLookupError::QueryFailed { .. }) => {
+            Some(ManualUpdateNotificationKind::QueryFailed)
+        }
+        None => None,
+    }
 }
 
 pub fn init(client: Arc<Client>, cx: &mut App) {
@@ -479,6 +574,7 @@ impl AutoUpdater {
                         }
                         UpdateCheckType::Manual => {
                             log::error!("auto-update failed: error:{:?}", error);
+                            show_manual_update_error_notification(&error, cx);
                             AutoUpdateStatus::Errored {
                                 error: Arc::new(error),
                             }
@@ -641,22 +737,43 @@ impl AutoUpdater {
 
         let mut response = http_client
             .get(url.as_str(), Default::default(), true)
-            .await?;
+            .await
+            .map_err(|error| ReleaseLookupError::QueryFailed {
+                source: error.into(),
+            })?;
         let mut body = Vec::new();
-        response.body_mut().read_to_end(&mut body).await?;
+        response
+            .body_mut()
+            .read_to_end(&mut body)
+            .await
+            .map_err(|error| ReleaseLookupError::QueryFailed {
+                source: error.into(),
+            })?;
 
-        anyhow::ensure!(
-            response.status().is_success(),
-            "failed to fetch release: {:?}",
-            String::from_utf8_lossy(&body),
-        );
-
-        serde_json::from_slice(body.as_slice()).with_context(|| {
-            format!(
-                "error deserializing release {:?}",
+        if !response.status().is_success() {
+            let source = anyhow!(
+                "failed to fetch release: {:?}",
                 String::from_utf8_lossy(&body),
-            )
-        })
+            );
+
+            return match response.status() {
+                http::StatusCode::NOT_FOUND => {
+                    Err(ReleaseLookupError::CompatibleUpdatePackageNotFound { source }.into())
+                }
+                _ => Err(ReleaseLookupError::QueryFailed { source }.into()),
+            };
+        }
+
+        Ok(serde_json::from_slice(body.as_slice())
+            .with_context(|| {
+                format!(
+                    "error deserializing release {:?}",
+                    String::from_utf8_lossy(&body),
+                )
+            })
+            .map_err(|error| ReleaseLookupError::QueryFailed {
+                source: error.into(),
+            })?)
     }
 
     async fn update(this: Entity<Self>, cx: &mut AsyncApp) -> Result<()> {
@@ -1209,6 +1326,51 @@ mod tests {
             build_releases_url("/releases/stable/latest")
         });
         assert_eq!(url, "https://stable.example.com/releases/stable/latest");
+    }
+
+    #[test]
+    fn test_latest_stable_release_page_url_uses_default_host() {
+        let url = with_releases_url_env(None, latest_stable_release_page_url);
+        assert_eq!(url, "https://releases.nangman.ai/releases/stable/latest");
+    }
+
+    #[test]
+    fn test_latest_stable_release_page_url_honors_override() {
+        let url = with_releases_url_env(Some("https://stable.example.com/"), || {
+            latest_stable_release_page_url()
+        });
+        assert_eq!(url, "https://stable.example.com/releases/stable/latest");
+    }
+
+    #[test]
+    fn test_manual_update_notification_kind_for_missing_package() {
+        let error = anyhow::Error::from(ReleaseLookupError::CompatibleUpdatePackageNotFound {
+            source: anyhow!("missing asset"),
+        });
+
+        assert_eq!(
+            manual_update_notification_kind(&error),
+            Some(ManualUpdateNotificationKind::CompatibleUpdatePackageNotFound)
+        );
+    }
+
+    #[test]
+    fn test_manual_update_notification_kind_for_query_failure() {
+        let error = anyhow::Error::from(ReleaseLookupError::QueryFailed {
+            source: anyhow!("network unavailable"),
+        });
+
+        assert_eq!(
+            manual_update_notification_kind(&error),
+            Some(ManualUpdateNotificationKind::QueryFailed)
+        );
+    }
+
+    #[test]
+    fn test_manual_update_notification_kind_ignores_other_errors() {
+        let error = anyhow!("installer failed");
+
+        assert_eq!(manual_update_notification_kind(&error), None);
     }
 
     #[gpui::test]
