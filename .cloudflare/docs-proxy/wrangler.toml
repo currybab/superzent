@@ -4,5 +4,5 @@ compatibility_date = "2024-05-03"
 workers_dev = true
 
 [[routes]]
-pattern = "superzet.dev/docs*"
-zone_name = "superzet.dev"
+pattern = "superzent.dev/docs*"
+zone_name = "superzent.dev"

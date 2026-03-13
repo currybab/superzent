@@ -41,7 +41,7 @@ fn run_bump_patch_version(branch: &WorkflowInput) -> steps::NamedJob {
                 ;;
             esac
             which cargo-set-version > /dev/null || cargo install cargo-edit -f --no-default-features --features "set-version"
-            output="$(cargo set-version -p superzet --bump patch 2>&1 | sed 's/.* //')"
+            output="$(cargo set-version -p superzent --bump patch 2>&1 | sed 's/.* //')"
             git commit -am "Bump to $output for @$GITHUB_ACTOR"
             git tag "v${output}"
             git push origin HEAD "v${output}"

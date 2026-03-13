@@ -1,6 +1,6 @@
 ---
 title: Release Notes
-description: How to write PR release notes for superzet.
+description: How to write PR release notes for superzent.
 ---
 
 # Release Notes

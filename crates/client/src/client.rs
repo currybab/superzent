@@ -66,28 +66,28 @@ fn env_flag(primary: &str, legacy: &str) -> bool {
 }
 
 static ZED_SERVER_URL: LazyLock<Option<String>> =
-    LazyLock::new(|| env_var("SUPERZET_SERVER_URL", "ZED_SERVER_URL"));
+    LazyLock::new(|| env_var("SUPERZENT_SERVER_URL", "ZED_SERVER_URL"));
 static ZED_RPC_URL: LazyLock<Option<String>> =
-    LazyLock::new(|| env_var("SUPERZET_RPC_URL", "ZED_RPC_URL"));
+    LazyLock::new(|| env_var("SUPERZENT_RPC_URL", "ZED_RPC_URL"));
 
 pub static IMPERSONATE_LOGIN: LazyLock<Option<String>> = LazyLock::new(|| {
-    env_var("SUPERZET_IMPERSONATE", "ZED_IMPERSONATE")
+    env_var("SUPERZENT_IMPERSONATE", "ZED_IMPERSONATE")
         .and_then(|s| if s.is_empty() { None } else { Some(s) })
 });
 
 pub static USE_WEB_LOGIN: LazyLock<bool> =
-    LazyLock::new(|| env_flag("SUPERZET_WEB_LOGIN", "ZED_WEB_LOGIN"));
+    LazyLock::new(|| env_flag("SUPERZENT_WEB_LOGIN", "ZED_WEB_LOGIN"));
 
 pub static ADMIN_API_TOKEN: LazyLock<Option<String>> = LazyLock::new(|| {
-    env_var("SUPERZET_ADMIN_API_TOKEN", "ZED_ADMIN_API_TOKEN")
+    env_var("SUPERZENT_ADMIN_API_TOKEN", "ZED_ADMIN_API_TOKEN")
         .and_then(|s| if s.is_empty() { None } else { Some(s) })
 });
 
 pub static ZED_APP_PATH: LazyLock<Option<PathBuf>> =
-    LazyLock::new(|| env_var("SUPERZET_APP_PATH", "ZED_APP_PATH").map(PathBuf::from));
+    LazyLock::new(|| env_var("SUPERZENT_APP_PATH", "ZED_APP_PATH").map(PathBuf::from));
 
 pub static ZED_ALWAYS_ACTIVE: LazyLock<bool> = LazyLock::new(|| {
-    env_var("SUPERZET_ALWAYS_ACTIVE", "ZED_ALWAYS_ACTIVE").is_some_and(|e| !e.is_empty())
+    env_var("SUPERZENT_ALWAYS_ACTIVE", "ZED_ALWAYS_ACTIVE").is_some_and(|e| !e.is_empty())
 });
 
 pub const INITIAL_RECONNECTION_DELAY: Duration = Duration::from_millis(500);
@@ -1741,7 +1741,7 @@ impl ProtoClient for Client {
 }
 
 /// prefix for the zed:// url scheme
-pub const ZED_URL_SCHEME: &str = "superzet";
+pub const ZED_URL_SCHEME: &str = "superzent";
 
 /// A parsed Zed link that can be handled internally by the application.
 #[derive(Debug, Clone, PartialEq, Eq)]

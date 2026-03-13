@@ -71,7 +71,7 @@ use std::{
     sync::Arc,
     sync::atomic::{self, AtomicBool},
 };
-use superzet_ui::{SuperzetRightSidebar, SuperzetSidebar};
+use superzent_ui::{SuperzentRightSidebar, SuperzentSidebar};
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, GlobalTheme, SystemAppearance, ThemeRegistry, ThemeSettings};
 use ui::{PopoverMenuHandle, prelude::*};
@@ -400,12 +400,13 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         cx.defer(move |cx| {
             window_handle
                 .update(cx, |_, window, cx| {
-                    if superzet_model::SuperzetStore::try_global(cx).is_none() {
+                    if superzent_model::SuperzentStore::try_global(cx).is_none() {
                         return;
                     }
 
-                    let sidebar = cx
-                        .new(|cx| SuperzetSidebar::new(multi_workspace_handle.clone(), window, cx));
+                    let sidebar = cx.new(|cx| {
+                        SuperzentSidebar::new(multi_workspace_handle.clone(), window, cx)
+                    });
                     multi_workspace_handle.update(cx, |multi_workspace, cx| {
                         multi_workspace.register_sidebar(sidebar, window, cx);
                     });
@@ -531,7 +532,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             inotify_init returned {}
 
-            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://superzet.dev/docs/linux
+            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://superzent.dev/docs/linux
             "#},
             e
         );
@@ -545,7 +546,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://superzet.dev/docs/linux#could-not-start-inotify");
+                    cx.open_url("https://superzent.dev/docs/linux#could-not-start-inotify");
                     cx.quit();
                 });
             }
@@ -562,7 +563,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             ReadDirectoryChangesW initialization failed: {}
 
-            This may occur on network filesystems and WSL paths. For troubleshooting see: https://superzet.dev/docs/windows
+            This may occur on network filesystems and WSL paths. For troubleshooting see: https://superzent.dev/docs/windows
             "#},
             e
         );
@@ -576,7 +577,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://superzet.dev/docs/windows");
+                    cx.open_url("https://superzent.dev/docs/windows");
                     cx.quit()
                 });
             }
@@ -590,32 +591,32 @@ fn show_software_emulation_warning_if_needed(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let allow_emulated_gpu = std::env::var("SUPERZET_ALLOW_EMULATED_GPU")
+    let allow_emulated_gpu = std::env::var("SUPERZENT_ALLOW_EMULATED_GPU")
         .or_else(|_| std::env::var("ZED_ALLOW_EMULATED_GPU"))
         .is_ok();
     if specs.is_software_emulated && !allow_emulated_gpu {
         let (graphics_api, docs_url, open_url) = if cfg!(target_os = "windows") {
             (
                 "DirectX",
-                "https://superzet.dev/docs/windows",
-                "https://superzet.dev/docs/windows",
+                "https://superzent.dev/docs/windows",
+                "https://superzent.dev/docs/windows",
             )
         } else {
             (
                 "Vulkan",
-                "https://superzet.dev/docs/linux",
-                "https://superzet.dev/docs/linux#zed-fails-to-open-windows",
+                "https://superzent.dev/docs/linux",
+                "https://superzent.dev/docs/linux#zed-fails-to-open-windows",
             )
         };
         let message = format!(
             db::indoc! {r#"
-            superzet uses {} for rendering and requires a compatible GPU.
+            superzent uses {} for rendering and requires a compatible GPU.
 
             Currently you are using a software emulated GPU ({}) which
             will result in awful performance.
 
             For troubleshooting see: {}
-            Set SUPERZET_ALLOW_EMULATED_GPU=1 to permanently override.
+            Set SUPERZENT_ALLOW_EMULATED_GPU=1 to permanently override.
             "#},
             graphics_api, specs.device_name, docs_url
         );
@@ -656,11 +657,11 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             )?;
 
         let right_sidebar = cx
-            .update(|_, cx| superzet_model::SuperzetStore::try_global(cx).is_some())
+            .update(|_, cx| superzent_model::SuperzentStore::try_global(cx).is_some())
             .ok()
             .filter(|has_store| *has_store)
             .map(|_| {
-                SuperzetRightSidebar::load(
+                SuperzentRightSidebar::load(
                     workspace_handle.clone(),
                     project_panel.clone(),
                     git_panel.clone(),
@@ -679,10 +680,10 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
                 if let Some(right_sidebar) = right_sidebar {
                     workspace.add_panel(right_sidebar, window, cx);
 
-                    // Superzet owns the left shell and the right details sidebar.
+                    // Superzent owns the left shell and the right details sidebar.
                     // Zed's left/bottom docks add duplicate chrome for this product surface.
                     workspace.close_all_docks(window, cx);
-                    let _ = workspace.focus_panel::<SuperzetRightSidebar>(window, cx);
+                    let _ = workspace.focus_panel::<SuperzentRightSidebar>(window, cx);
                 }
 
                 let active_pane = workspace.active_pane().clone();
@@ -1013,7 +1014,7 @@ fn register_actions(
                         Toast::new(
                             NotificationId::unique::<RegisterZedScheme>(),
                             format!(
-                                "superzet:// links will now open in {}.",
+                                "superzent:// links will now open in {}.",
                                 ReleaseChannel::global(cx).display_name()
                             ),
                         ),
@@ -1023,7 +1024,7 @@ fn register_actions(
                 Ok(())
             })
             .detach_and_prompt_err(
-                "Error registering superzet:// scheme",
+                "Error registering superzent:// scheme",
                 window,
                 cx,
                 |_, _, _| None,
@@ -1189,7 +1190,7 @@ fn initialize_pane(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    superzet_ui::install_pane_accessory(pane, cx);
+    superzent_ui::install_pane_accessory(pane, cx);
 
     let workspace_handle = cx.weak_entity();
     pane.update(cx, |pane, cx| {

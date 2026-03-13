@@ -1,5 +1,5 @@
 {
-  "$schema": "superzet://schemas/settings",
+  "$schema": "superzent://schemas/settings",
   /// The displayed name of this project. If not set or null, the root directory name
   /// will be displayed.
   "project_name": null,
@@ -123,9 +123,9 @@
   // Time to wait in milliseconds before showing the informational hover box.
   // This delay also applies to auto signature help when `auto_signature_help` is enabled.
   "hover_popover_delay": 300,
-  // Whether to confirm before quitting superzet.
+  // Whether to confirm before quitting superzent.
   "confirm_quit": false,
-  // Whether to restore the last closed project when a fresh superzet instance is opened
+  // Whether to restore the last closed project when a fresh superzent instance is opened
   // May take 3 values:
   //  1. All workspaces open during last session
   //         "restore_on_startup": "last_session"
@@ -184,23 +184,23 @@
   //
   // Default: true
   "zoomed_padding": true,
-  // What draws superzet's window decorations (titlebar):
-  // 1. Client application (superzet) draws its own window decorations
+  // What draws superzent's window decorations (titlebar):
+  // 1. Client application (superzent) draws its own window decorations
   //    "client"
   // 2. Display server draws the window decorations. Not supported by GNOME Wayland.
   //    "server"
   //
-  // This requires restarting superzet for changes to take effect.
+  // This requires restarting superzent for changes to take effect.
   //
   // Default: "client"
   "window_decorations": "client",
   // Whether to use the system provided dialogs for Open and Save As.
-  // When set to false, superzet will use the built-in keyboard-first pickers.
+  // When set to false, superzent will use the built-in keyboard-first pickers.
   "use_system_path_prompts": true,
   // Whether to use the system provided dialogs for prompts, such as confirmation
   // prompts.
-  // When set to false, superzet will use its built-in prompts. Note that on Linux,
-  // this option is ignored and superzet will always use the built-in prompts.
+  // When set to false, superzent will use its built-in prompts. Note that on Linux,
+  // this option is ignored and superzent will always use the built-in prompts.
   "use_system_prompts": true,
   // Whether the cursor blinks in the editor.
   "cursor_blink": true,
@@ -355,11 +355,11 @@
   "use_on_type_format": true,
   // Whether to automatically add matching closing characters when typing
   // opening parenthesis, bracket, brace, single or double quote characters.
-  // For example, when you type '(', superzet will add a closing ) at the correct position.
+  // For example, when you type '(', superzent will add a closing ) at the correct position.
   "use_autoclose": true,
   // Whether to automatically surround selected text when typing opening parenthesis,
   // bracket, brace, single or double quote characters.
-  // For example, when you select text and type '(', superzet will surround the text with ().
+  // For example, when you select text and type '(', superzent will surround the text with ().
   "use_auto_surround": true,
   // Controls automatic indentation behavior when typing.
   // - "syntax_aware": Adjusts indentation based on syntax context (default)
@@ -420,7 +420,7 @@
     "space": "•",
     "tab": "→",
   },
-  // Settings related to calls in superzet
+  // Settings related to calls in superzent
   "calls": {
     // Join calls with the microphone live by default
     "mute_on_join": false,
@@ -989,7 +989,7 @@
     // The "default" setting applies when no tool-specific rules match.
     // For external agents that define their own permission modes,
     // "deny" and "confirm" still take precedence — the external agent's
-    // permission system is only used when superzet would allow the action.
+    // permission system is only used when superzent would allow the action.
     //
     // Per-tool regex patterns ("tools" below) match against tool input text
     // (commands, paths, URLs, etc.). For `copy_path` and `move_path`,
@@ -1161,7 +1161,7 @@
   //
   // 1. Never automatically save:
   //     "autosave": "off",
-  // 2. Save when changing focus away from the superzet window:
+  // 2. Save when changing focus away from the superzent window:
   //     "autosave": "on_window_change",
   // 3. Save when changing focus away from a specific buffer:
   //     "autosave": "on_focus_change",
@@ -1277,11 +1277,11 @@
     // Default: true
     "skip_focus_for_active_in_search": true,
     // Whether to use gitignored files when searching.
-    // Only the file superzet had indexed will be used, not necessarily all the gitignored files.
+    // Only the file superzent had indexed will be used, not necessarily all the gitignored files.
     //
     // Can accept 3 values:
     //   * "all": Use all gitignored files
-    //   * "indexed": Use only the files superzet had indexed
+    //   * "indexed": Use only the files superzent had indexed
     //   * "smart": Be smart and search for ignored when called from a gitignored worktree
     "include_ignored": "smart",
   },
@@ -1302,7 +1302,7 @@
   "format_on_save": "on",
   // How to perform a buffer format. This setting can take multiple values:
   //
-  // 1. Default. Format files using superzet's Prettier integration (if applicable),
+  // 1. Default. Format files using superzent's Prettier integration (if applicable),
   //    or falling back to formatting via language server:
   //     "formatter": "auto"
   // 2. Format code using the current language server:
@@ -1316,7 +1316,7 @@
   //         "arguments": ["--stdin-filepath", "{buffer_path}"]
   //       }
   //     }
-  // 5. Format code using superzet's Prettier integration:
+  // 5. Format code using superzent's Prettier integration:
   //     "formatter": "prettier"
   // 6. Format code using a code action
   //     "formatter": {"code_action": "source.fixAll.eslint"}
@@ -1353,18 +1353,18 @@
   //
   // Default: true
   "word_diff_enabled": true,
-  // Control what info is collected by superzet.
+  // Control what info is collected by superzent.
   "telemetry": {
     // Send debug info like crash reports.
     "diagnostics": false,
-    // Send anonymized usage data like what languages you're using superzet with.
+    // Send anonymized usage data like what languages you're using superzent with.
     "metrics": false,
   },
-  // Whether to disable all built-in AI features in superzet.
+  // Whether to disable all built-in AI features in superzent.
   //
   // Default: true
   "disable_ai": true,
-  // Automatically update superzet. This setting may be ignored on Linux if
+  // Automatically update superzent. This setting may be ignored on Linux if
   // installed through a package manager.
   "auto_update": true,
   // How to render LSP `textDocument/documentColor` colors in the editor.
@@ -1388,7 +1388,7 @@
     //
     // Default: true
     "include_warnings": true,
-    // Settings for using LSP pull diagnostics in superzet.
+    // Settings for using LSP pull diagnostics in superzent.
     "lsp_pull_diagnostics": {
       // Whether to pull for diagnostics or not.
       "enabled": true,
@@ -1415,7 +1415,7 @@
       "max_severity": null,
     },
   },
-  // Files or globs of files that will be excluded by superzet entirely. They will be skipped during file
+  // Files or globs of files that will be excluded by superzent entirely. They will be skipped during file
   // scans, file searches, and not be displayed in the project file tree. Takes precedence over `file_scan_inclusions`.
   "file_scan_exclusions": [
     "**/.git",
@@ -1430,9 +1430,9 @@
     "**/.classpath",
     "**/.settings",
   ],
-  // Files or globs of files that will be included by superzet, even when ignored by git. This is useful
+  // Files or globs of files that will be included by superzent, even when ignored by git. This is useful
   // for files that are not tracked by git, but are still important to your project. Note that globs
-  // that are overly broad can slow down superzet's file scanning. `file_scan_exclusions` takes
+  // that are overly broad can slow down superzent's file scanning. `file_scan_exclusions` takes
   // precedence over these inclusions.
   "file_scan_inclusions": [".env*"],
   // Globs to match files that will be considered "hidden". These files can be hidden from the
@@ -1500,15 +1500,15 @@
     // When the resolved directory is outside the project root, the
     // project's directory name is automatically appended so that
     // sibling repos don't collide. For example, with the default
-    // "../worktrees" and a project at ~/code/superzet, worktrees are
-    // created under ~/code/worktrees/superzet/.
+    // "../worktrees" and a project at ~/code/superzent, worktrees are
+    // created under ~/code/worktrees/superzent/.
     //
     // When the resolved directory is inside the project root, no
     // extra component is added (it's already project-scoped).
     //
     // Examples:
     //   "../worktrees" — ~/code/worktrees/<project>/ (default)
-    //   ".git/superzet-worktrees" — <project>/.git/superzet-worktrees/
+    //   ".git/superzent-worktrees" — <project>/.git/superzent-worktrees/
     //   "my-worktrees" — <project>/my-worktrees/
     //
     // Trailing slashes are ignored.
@@ -1547,8 +1547,8 @@
       "**/.dev.vars",
       "**/secrets.yml",
       "**/.zed/settings.json", // project settings
-      "/**/superzet/settings.json", // superzet user settings
-      "/**/superzet/keymap.json",
+      "/**/superzent/settings.json", // superzent user settings
+      "/**/superzent/keymap.json",
     ],
     // When to show edit predictions previews in buffer.
     // This setting takes two possible values:
@@ -1661,7 +1661,7 @@
     //    this platform's home directory  (if we can find it)
     //      "working_directory": {
     //        "always": {
-    //          "directory": "~/superzet/projects/"
+    //          "directory": "~/superzent/projects/"
     //        }
     //      }
     "working_directory": "current_project_directory",
@@ -1861,13 +1861,13 @@
   "tasks": {
     "variables": {},
     "enabled": true,
-    // Use LSP tasks over superzet language extension ones.
+    // Use LSP tasks over superzent language extension ones.
     // If no LSP tasks are returned due to error/timeout or regular execution,
-    // superzet language extension tasks will be used instead.
+    // superzent language extension tasks will be used instead.
     //
-    // Other superzet tasks will still be shown:
-    // * A superzet task from either task config file
-    // * A superzet task from history (e.g. a one-off task was spawned before)
+    // Other superzent tasks will still be shown:
+    // * A superzent task from either task config file
+    // * A superzent task from history (e.g. a one-off task was spawned before)
     //
     // Default: true
     "prefer_lsp": true,
@@ -1897,20 +1897,20 @@
   // Settings for which version of Node.js and NPM to use when installing
   // language servers and Copilot.
   //
-  // Note: changing this setting currently requires restarting superzet.
+  // Note: changing this setting currently requires restarting superzent.
   "node": {
-    // By default, superzet will look for `node` and `npm` on your `$PATH`, and use the
+    // By default, superzent will look for `node` and `npm` on your `$PATH`, and use the
     // existing executables if their version is recent enough. Set this to `true`
-    // to prevent this, and force superzet to always download and install its own
+    // to prevent this, and force superzent to always download and install its own
     // version of Node.
     "ignore_system_version": false,
     // You can also specify alternative paths to Node and NPM. If you specify
-    // `path`, but not `npm_path`, superzet will assume that `npm` is located at
+    // `path`, but not `npm_path`, superzent will assume that `npm` is located at
     // `${path}/../npm`.
     "path": null,
     "npm_path": null,
   },
-  // The extensions that superzet should automatically install on startup.
+  // The extensions that superzent should automatically install on startup.
   //
   // If you don't want any of these extensions, add this field to your settings
   // and change the value to `false`.
@@ -1960,7 +1960,7 @@
     // When LSP servers give an `InsertReplaceEdit` completion, they provides two ranges: `insert` and `replace`. Usually, `insert`
     // contains the word prefix before your cursor and `replace` contains the whole word.
     //
-    // Effectively, this setting just changes whether superzet will use the received range for `insert` or `replace`, so the results may
+    // Effectively, this setting just changes whether superzent will use the received range for `insert` or `replace`, so the results may
     // differ depending on the underlying LSP server.
     //
     // Possible values:
@@ -2257,7 +2257,7 @@
     // Default: false
     "trust_all_worktrees": false,
   },
-  // superzet's Prettier integration settings.
+  // superzent's Prettier integration settings.
   // Allows to enable/disable formatting with Prettier
   // and configure default Prettier, used when no project-level Prettier installation is found.
   "prettier": {
@@ -2285,7 +2285,7 @@
     // "rust-analyzer": {
     //     // A special flag for rust-analyzer integration, to use server-provided tasks
     //     enable_lsp_tasks": true,
-    //     // These initialization options are merged into superzet's defaults
+    //     // These initialization options are merged into superzent's defaults
     //     "initialization_options": {
     //         "check": {
     //             "command": "clippy" // rust-analyzer.check.command (default: "check")
@@ -2344,7 +2344,7 @@
     //   }
     // ]
     //
-    // Default rules are viewable via the "superzet: show default semantic token rules" action.
+    // Default rules are viewable via the "superzent: show default semantic token rules" action.
     "semantic_token_rules": [],
   },
   // Jupyter settings
@@ -2399,15 +2399,15 @@
     "delay_ms": 1000,
   },
   // The server to connect to. If the environment variable
-  // SUPERZET_SERVER_URL or ZED_SERVER_URL is set, it will override this setting.
-  "server_url": "https://superzet.dev",
-  // Settings overrides to use when using superzet stable.
-  // Mostly useful for developers who are managing multiple instances of superzet.
+  // SUPERZENT_SERVER_URL or ZED_SERVER_URL is set, it will override this setting.
+  "server_url": "https://superzent.dev",
+  // Settings overrides to use when using superzent stable.
+  // Mostly useful for developers who are managing multiple instances of superzent.
   "stable": {
     // "theme": "Andromeda"
   },
-  // Settings overrides to use when using superzet dev.
-  // Mostly useful for developers who are managing multiple instances of superzet.
+  // Settings overrides to use when using superzent dev.
+  // Mostly useful for developers who are managing multiple instances of superzent.
   "dev": {
     // "theme": "Andromeda"
   },
@@ -2435,7 +2435,7 @@
   // Supported URI scheme: `http`, `https`, `socks4`, `socks4a`, `socks5`,
   // `socks5h`. `http` will be used when no scheme is specified.
   //
-  // By default no proxy will be used, or superzet will try to get proxy settings from
+  // By default no proxy will be used, or superzent will try to get proxy settings from
   // environment variables. If certain hosts should not be proxied,
   // set the `no_proxy` environment variable and provide a comma-separated list.
   //
@@ -2453,7 +2453,7 @@
   "command_aliases": {},
   // ssh_connections is an array of ssh connections.
   // You can configure these from `project: Open Remote` in the command palette.
-  // superzet's ssh support will pull configuration from your ~/.ssh too.
+  // superzent's ssh support will pull configuration from your ~/.ssh too.
   // Examples:
   // [
   //   {
@@ -2461,7 +2461,7 @@
   //     // "port": 22, "username": "test", "args": ["-i", "/home/user/.ssh/id_rsa"]
   //     "projects": [
   //       {
-  //         "paths": ["/home/user/code/superzet"]
+  //         "paths": ["/home/user/code/superzent"]
   //       }
   //     ]
   //   }

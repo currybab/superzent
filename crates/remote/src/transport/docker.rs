@@ -229,7 +229,7 @@ impl DockerExecConnection {
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Dev => {
                 anyhow::bail!(
-                    "SUPERZET_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
+                    "SUPERZENT_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
                     dst_path
                 )
             }
@@ -317,7 +317,7 @@ impl DockerExecConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Extracting Superzet remote development server"), cx);
+        delegate.set_status(Some("Extracting Superzent remote development server"), cx);
         let server_mode = 0o755;
 
         let shell_kind = ShellKind::Posix;
@@ -376,9 +376,9 @@ impl DockerExecConnection {
         let size = src_stat.len();
 
         let t0 = Instant::now();
-        delegate.set_status(Some("Uploading Superzet remote development server"), cx);
+        delegate.set_status(Some("Uploading Superzent remote development server"), cx);
         log::info!(
-            "uploading superzet remote development server to {:?} ({}kb)",
+            "uploading superzent remote development server to {:?} ({}kb)",
             tmp_path_gz,
             size / 1024
         );

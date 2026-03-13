@@ -4,7 +4,7 @@ body:
       value: |
         # Feature Request
 
-        If you are interested in proposing a new feature, improvement, or change to superzet, you are in the right place.
+        If you are interested in proposing a new feature, improvement, or change to superzent, you are in the right place.
 
         Use this template to suggest a new feature, improvement, or change.
 
@@ -37,5 +37,5 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please keep requests grounded in the current local-first superzet scope:
+        Please keep requests grounded in the current local-first superzent scope:
         repositories, worktrees, terminals, diffs, and editor workflows.

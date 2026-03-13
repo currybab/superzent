@@ -4,10 +4,10 @@ set -eu
 app_dir_name() {
     case "$channel" in
         stable)
-            echo "superzet"
+            echo "superzent"
             ;;
         dev)
-            echo "superzet-dev"
+            echo "superzent-dev"
             ;;
         *)
             echo "Unsupported release channel: $channel" >&2
@@ -19,10 +19,10 @@ app_dir_name() {
 linux_app_id() {
     case "$channel" in
         stable)
-            echo "ai.nangman.superzet"
+            echo "ai.nangman.superzent"
             ;;
         dev)
-            echo "ai.nangman.superzet-dev"
+            echo "ai.nangman.superzent-dev"
             ;;
         *)
             echo "Unsupported release channel: $channel" >&2
@@ -34,10 +34,10 @@ linux_app_id() {
 mac_app_bundle() {
     case "$channel" in
         stable)
-            echo "superzet.app"
+            echo "superzent.app"
             ;;
         dev)
-            echo "superzet dev.app"
+            echo "superzent dev.app"
             ;;
         *)
             echo "Unsupported release channel: $channel" >&2
@@ -49,10 +49,10 @@ mac_app_bundle() {
 mac_bundle_id() {
     case "$channel" in
         stable)
-            echo "ai.nangman.superzet"
+            echo "ai.nangman.superzent"
             ;;
         dev)
-            echo "ai.nangman.superzet-dev"
+            echo "ai.nangman.superzent-dev"
             ;;
         *)
             echo "Unsupported release channel: $channel" >&2
@@ -64,10 +64,10 @@ mac_bundle_id() {
 check_remaining_installations() {
     platform="$(uname -s)"
     if [ "$platform" = "Darwin" ]; then
-        remaining=$(ls -d /Applications/superzet*.app 2>/dev/null | wc -l)
+        remaining=$(ls -d /Applications/superzent*.app 2>/dev/null | wc -l)
         [ "$remaining" -eq 0 ]
     else
-        remaining=$(ls -d "$HOME/.local/superzet"*.app 2>/dev/null | wc -l)
+        remaining=$(ls -d "$HOME/.local/superzent"*.app 2>/dev/null | wc -l)
         [ "$remaining" -eq 0 ]
     fi
 }
@@ -78,7 +78,7 @@ prompt_remove_preferences() {
         return
     fi
 
-    printf "Do you want to keep your superzet preferences for %s? [Y/n] " "$channel"
+    printf "Do you want to keep your superzent preferences for %s? [Y/n] " "$channel"
     read -r response
     case "$response" in
         [nN]|[nN][oO])
@@ -93,7 +93,7 @@ prompt_remove_preferences() {
 
 main() {
     platform="$(uname -s)"
-    channel="${SUPERZET_CHANNEL:-${ZED_CHANNEL:-stable}}"
+    channel="${SUPERZENT_CHANNEL:-${ZED_CHANNEL:-stable}}"
 
     case "$platform" in
         Darwin)
@@ -108,7 +108,7 @@ main() {
             ;;
     esac
 
-    echo "superzet has been uninstalled"
+    echo "superzent has been uninstalled"
 }
 
 linux() {
@@ -120,12 +120,12 @@ linux() {
     cache_dir="$HOME/.cache/$name"
 
     rm -rf "$HOME/.local/$name.app"
-    rm -f "$HOME/.local/bin/superzet"
+    rm -f "$HOME/.local/bin/superzent"
     rm -f "$HOME/.local/share/applications/${app_id}.desktop"
     rm -rf "$data_dir" "$state_dir" "$cache_dir"
 
     if check_remaining_installations; then
-        rm -rf "$HOME/.superzet_server" "$HOME/.superzet_wsl_server"
+        rm -rf "$HOME/.superzent_server" "$HOME/.superzent_wsl_server"
     fi
 
     prompt_remove_preferences "$config_dir"
@@ -141,7 +141,7 @@ macos() {
         rm -rf "/Applications/$app_bundle"
     fi
 
-    rm -f "$HOME/.local/bin/superzet"
+    rm -f "$HOME/.local/bin/superzent"
     rm -rf "$HOME/Library/Application Support/$name"
     rm -rf "$HOME/.local/state/$name"
     rm -rf "$HOME/Library/Logs/$name"
@@ -153,7 +153,7 @@ macos() {
     rm -rf "$HOME/Library/Saved Application State/$bundle_id.savedState"
 
     if check_remaining_installations; then
-        rm -rf "$HOME/.superzet_server" "$HOME/.superzet_wsl_server"
+        rm -rf "$HOME/.superzent_server" "$HOME/.superzent_wsl_server"
     fi
 
     prompt_remove_preferences "$config_dir"

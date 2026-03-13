@@ -1,13 +1,13 @@
-title: Building superzet for Linux
-description: "Guide to building superzet for Linux development."
+title: Building superzent for Linux
+description: "Guide to building superzent for Linux development."
 
 ---
 
-# Building superzet for Linux
+# Building superzent for Linux
 
 ## Repository
 
-Clone the [superzet repository](https://github.com/currybab/superzet).
+Clone the [superzent repository](https://github.com/currybab/superzent).
 
 ## Dependencies
 
@@ -50,12 +50,12 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 ## Building from source
 
-Once the dependencies are installed, you can build `superzet` using [Cargo](https://doc.rust-lang.org/cargo/).
+Once the dependencies are installed, you can build `superzent` using [Cargo](https://doc.rust-lang.org/cargo/).
 
 For a debug build of the editor:
 
 ```sh
-cargo run -p superzet
+cargo run -p superzent
 ```
 
 And to run the tests:

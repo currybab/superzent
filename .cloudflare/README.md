@@ -2,7 +2,7 @@ We keep three Cloudflare workers in this repo, but only the release worker is
 part of the current automated deployment path.
 
 - `open-source-website-assets` is used for static open-source assets such as install helpers
-- `docs-proxy` is used for `https://superzet.dev/docs`
+- `docs-proxy` is used for `https://superzent.dev/docs`
 - `release-assets` is used for `https://releases.nangman.ai/releases`
 
 On push to `main`, only the release worker is deployed by the

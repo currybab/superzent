@@ -7,24 +7,24 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
     thread,
 };
-use superzet_model::{AgentPreset, AgentSession, WorkspaceEntry};
+use superzent_model::{AgentPreset, AgentSession, WorkspaceEntry};
 use task::{HideStrategy, RevealStrategy, RevealTarget, Shell, SpawnInTerminal, TaskId};
 use tiny_http::{Response, Server};
 use url::Url;
 use uuid::Uuid;
 
 pub const AGENT_HOOK_VERSION: &str = "1";
-pub const AGENT_HOOK_URL_ENV_VAR: &str = "SUPERZET_AGENT_HOOK_URL";
-pub const AGENT_HOOK_VERSION_ENV_VAR: &str = "SUPERZET_HOOK_VERSION";
-pub const AGENT_REAL_CLAUDE_BIN_ENV_VAR: &str = "SUPERZET_REAL_CLAUDE_BIN";
-pub const AGENT_REAL_CODEX_BIN_ENV_VAR: &str = "SUPERZET_REAL_CODEX_BIN";
-pub const AGENT_TERMINAL_ID_ENV_VAR: &str = "SUPERZET_TERMINAL_ID";
-pub const AGENT_WORKSPACE_ID_ENV_VAR: &str = "SUPERZET_WORKSPACE_ID";
+pub const AGENT_HOOK_URL_ENV_VAR: &str = "SUPERZENT_AGENT_HOOK_URL";
+pub const AGENT_HOOK_VERSION_ENV_VAR: &str = "SUPERZENT_HOOK_VERSION";
+pub const AGENT_REAL_CLAUDE_BIN_ENV_VAR: &str = "SUPERZENT_REAL_CLAUDE_BIN";
+pub const AGENT_REAL_CODEX_BIN_ENV_VAR: &str = "SUPERZENT_REAL_CODEX_BIN";
+pub const AGENT_TERMINAL_ID_ENV_VAR: &str = "SUPERZENT_TERMINAL_ID";
+pub const AGENT_WORKSPACE_ID_ENV_VAR: &str = "SUPERZENT_WORKSPACE_ID";
 
 const CLAUDE_SETTINGS_FILE_NAME: &str = "claude-settings.json";
 const HOOK_ENDPOINT_PATH: &str = "/agent-hook";
 const NOTIFY_SCRIPT_FILE_NAME: &str = "notify.sh";
-const WRAPPER_MARKER: &str = "# Superzet agent wrapper v1";
+const WRAPPER_MARKER: &str = "# Superzent agent wrapper v1";
 
 static HOOK_RUNTIME: OnceLock<AgentHookRuntime> = OnceLock::new();
 
@@ -100,7 +100,7 @@ pub fn spawn_for_workspace(
     let launch = prepare_workspace_launch(workspace, preset)?;
 
     Ok(SpawnInTerminal {
-        id: TaskId(format!("superzet:{}:{}", workspace.id, session.id)),
+        id: TaskId(format!("superzent:{}:{}", workspace.id, session.id)),
         full_label,
         label,
         command: Some(launch.command),
@@ -221,7 +221,7 @@ fn spawn_hook_server(
     subscribers: Arc<Mutex<Vec<smol::channel::Sender<AgentHookEvent>>>>,
 ) {
     thread::Builder::new()
-        .name("superzet-agent-hooks".to_string())
+        .name("superzent-agent-hooks".to_string())
         .spawn(move || {
             loop {
                 let Ok(request) = server.recv() else {
@@ -389,7 +389,7 @@ fn write_executable_file(path: &Path, contents: String) -> Result<()> {
 
 fn notify_script_content() -> String {
     r#"#!/bin/bash
-# Superzet agent notification hook
+# Superzent agent notification hook
 
 if [ -n "$1" ]; then
   INPUT="$1"
@@ -397,7 +397,7 @@ else
   INPUT=$(cat)
 fi
 
-if [ -z "$SUPERZET_AGENT_HOOK_URL" ] || [ -z "$SUPERZET_TERMINAL_ID" ]; then
+if [ -z "$SUPERZENT_AGENT_HOOK_URL" ] || [ -z "$SUPERZENT_TERMINAL_ID" ]; then
   exit 0
 fi
 
@@ -408,15 +408,15 @@ fi
 
 [ -z "$EVENT_TYPE" ] && exit 0
 
-curl -fsSG "$SUPERZET_AGENT_HOOK_URL" \
+curl -fsSG "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
   --data-urlencode "event_type=$EVENT_TYPE" \
-  --data-urlencode "terminal_id=$SUPERZET_TERMINAL_ID" \
-  --data-urlencode "workspace_id=$SUPERZET_WORKSPACE_ID" \
-  --data-urlencode "session_id=$SUPERZET_SESSION_ID" \
+  --data-urlencode "terminal_id=$SUPERZENT_TERMINAL_ID" \
+  --data-urlencode "workspace_id=$SUPERZENT_WORKSPACE_ID" \
+  --data-urlencode "session_id=$SUPERZENT_SESSION_ID" \
   --data-urlencode "cwd=$PWD" \
-  --data-urlencode "version=$SUPERZET_HOOK_VERSION" \
+  --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
   > /dev/null 2>&1
 
 exit 0
@@ -480,7 +480,7 @@ fn claude_wrapper_content(bin_dir: &Path, claude_settings_path: &Path) -> String
 {resolver}
 REAL_BIN="$(find_real_binary)"
 if [ -z "$REAL_BIN" ]; then
-  echo "Superzet: claude not found in PATH." >&2
+  echo "Superzent: claude not found in PATH." >&2
   exit 127
 fi
 
@@ -498,88 +498,88 @@ fn codex_wrapper_content(bin_dir: &Path, notify_script_path: &Path) -> String {
 {resolver}
 REAL_BIN="$(find_real_binary)"
 if [ -z "$REAL_BIN" ]; then
-  echo "Superzet: codex not found in PATH." >&2
+  echo "Superzent: codex not found in PATH." >&2
   exit 127
 fi
 
-if [ -n "$SUPERZET_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
+if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
   export CODEX_TUI_RECORD_SESSION=1
   if [ -z "$CODEX_TUI_SESSION_LOG_PATH" ]; then
-    _superzet_codex_ts="$(date +%s 2>/dev/null || echo "$$")"
-    export CODEX_TUI_SESSION_LOG_PATH="${{TMPDIR:-/tmp}}/superzet-codex-session-$$_${{_superzet_codex_ts}}.jsonl"
+    _superzent_codex_ts="$(date +%s 2>/dev/null || echo "$$")"
+    export CODEX_TUI_SESSION_LOG_PATH="${{TMPDIR:-/tmp}}/superzent-codex-session-$$_${{_superzent_codex_ts}}.jsonl"
   fi
 
   (
-    _superzet_log="$CODEX_TUI_SESSION_LOG_PATH"
-    _superzet_notify="{notify_script_path}"
-    _superzet_last_turn_id=""
-    _superzet_last_approval_id=""
-    _superzet_last_exec_call_id=""
-    _superzet_approval_fallback_seq=0
+    _superzent_log="$CODEX_TUI_SESSION_LOG_PATH"
+    _superzent_notify="{notify_script_path}"
+    _superzent_last_turn_id=""
+    _superzent_last_approval_id=""
+    _superzent_last_exec_call_id=""
+    _superzent_approval_fallback_seq=0
 
-    _superzet_emit_event() {{
-      _superzet_event="$1"
-      bash "$_superzet_notify" "$(printf '{{"hook_event_name":"%s"}}' "$_superzet_event")" >/dev/null 2>&1 || true
+    _superzent_emit_event() {{
+      _superzent_event="$1"
+      bash "$_superzent_notify" "$(printf '{{"hook_event_name":"%s"}}' "$_superzent_event")" >/dev/null 2>&1 || true
     }}
 
-    _superzet_i=0
-    while [ ! -f "$_superzet_log" ] && [ "$_superzet_i" -lt 200 ]; do
-      _superzet_i=$((_superzet_i + 1))
+    _superzent_i=0
+    while [ ! -f "$_superzent_log" ] && [ "$_superzent_i" -lt 200 ]; do
+      _superzent_i=$((_superzent_i + 1))
       sleep 0.05
     done
-    if [ ! -f "$_superzet_log" ]; then
+    if [ ! -f "$_superzent_log" ]; then
       exit 0
     fi
 
-    tail -n 0 -F "$_superzet_log" 2>/dev/null | while IFS= read -r _superzet_line; do
-      case "$_superzet_line" in
+    tail -n 0 -F "$_superzent_log" 2>/dev/null | while IFS= read -r _superzent_line; do
+      case "$_superzent_line" in
         *'"dir":"to_tui"'*'"kind":"codex_event"'*'"msg":{{"type":"task_started"'*)
-          _superzet_turn_id=$(printf '%s\n' "$_superzet_line" | awk -F'"turn_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
-          [ -n "$_superzet_turn_id" ] || _superzet_turn_id="task_started"
-          if [ "$_superzet_turn_id" != "$_superzet_last_turn_id" ]; then
-            _superzet_last_turn_id="$_superzet_turn_id"
-            _superzet_emit_event "Start"
+          _superzent_turn_id=$(printf '%s\n' "$_superzent_line" | awk -F'"turn_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
+          [ -n "$_superzent_turn_id" ] || _superzent_turn_id="task_started"
+          if [ "$_superzent_turn_id" != "$_superzent_last_turn_id" ]; then
+            _superzent_last_turn_id="$_superzent_turn_id"
+            _superzent_emit_event "Start"
           fi
           ;;
         *'"dir":"to_tui"'*'"kind":"codex_event"'*'"msg":{{"type":"'*'_approval_request"'*)
-          _superzet_approval_id=$(printf '%s\n' "$_superzet_line" | awk -F'"id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
-          [ -n "$_superzet_approval_id" ] || _superzet_approval_id=$(printf '%s\n' "$_superzet_line" | awk -F'"approval_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
-          [ -n "$_superzet_approval_id" ] || _superzet_approval_id=$(printf '%s\n' "$_superzet_line" | awk -F'"call_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
-          if [ -z "$_superzet_approval_id" ]; then
-            _superzet_approval_fallback_seq=$((_superzet_approval_fallback_seq + 1))
-            _superzet_approval_id="approval_request_${{_superzet_approval_fallback_seq}}"
+          _superzent_approval_id=$(printf '%s\n' "$_superzent_line" | awk -F'"id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
+          [ -n "$_superzent_approval_id" ] || _superzent_approval_id=$(printf '%s\n' "$_superzent_line" | awk -F'"approval_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
+          [ -n "$_superzent_approval_id" ] || _superzent_approval_id=$(printf '%s\n' "$_superzent_line" | awk -F'"call_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
+          if [ -z "$_superzent_approval_id" ]; then
+            _superzent_approval_fallback_seq=$((_superzent_approval_fallback_seq + 1))
+            _superzent_approval_id="approval_request_${{_superzent_approval_fallback_seq}}"
           fi
-          if [ "$_superzet_approval_id" != "$_superzet_last_approval_id" ]; then
-            _superzet_last_approval_id="$_superzet_approval_id"
-            _superzet_emit_event "PermissionRequest"
+          if [ "$_superzent_approval_id" != "$_superzent_last_approval_id" ]; then
+            _superzent_last_approval_id="$_superzent_approval_id"
+            _superzent_emit_event "PermissionRequest"
           fi
           ;;
         *'"dir":"to_tui"'*'"kind":"codex_event"'*'"msg":{{"type":"exec_command_begin"'*)
-          _superzet_exec_call_id=$(printf '%s\n' "$_superzet_line" | awk -F'"call_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
-          if [ -n "$_superzet_exec_call_id" ]; then
-            if [ "$_superzet_exec_call_id" != "$_superzet_last_exec_call_id" ]; then
-              _superzet_last_exec_call_id="$_superzet_exec_call_id"
-              _superzet_emit_event "Start"
+          _superzent_exec_call_id=$(printf '%s\n' "$_superzent_line" | awk -F'"call_id":"' 'NF > 1 {{ sub(/".*/, "", $2); print $2; exit }}')
+          if [ -n "$_superzent_exec_call_id" ]; then
+            if [ "$_superzent_exec_call_id" != "$_superzent_last_exec_call_id" ]; then
+              _superzent_last_exec_call_id="$_superzent_exec_call_id"
+              _superzent_emit_event "Start"
             fi
           else
-            _superzet_emit_event "Start"
+            _superzent_emit_event "Start"
           fi
           ;;
       esac
     done
   ) &
-  SUPERZET_CODEX_START_WATCHER_PID=$!
+  SUPERZENT_CODEX_START_WATCHER_PID=$!
 fi
 
 "$REAL_BIN" -c "notify=[\"bash\",\"{notify_script_path}\"]" "$@"
-SUPERZET_CODEX_STATUS=$?
+SUPERZENT_CODEX_STATUS=$?
 
-if [ -n "$SUPERZET_CODEX_START_WATCHER_PID" ]; then
-  kill "$SUPERZET_CODEX_START_WATCHER_PID" >/dev/null 2>&1 || true
-  wait "$SUPERZET_CODEX_START_WATCHER_PID" 2>/dev/null || true
+if [ -n "$SUPERZENT_CODEX_START_WATCHER_PID" ]; then
+  kill "$SUPERZENT_CODEX_START_WATCHER_PID" >/dev/null 2>&1 || true
+  wait "$SUPERZENT_CODEX_START_WATCHER_PID" 2>/dev/null || true
 fi
 
-exit "$SUPERZET_CODEX_STATUS"
+exit "$SUPERZENT_CODEX_STATUS"
 "#,
         resolver = wrapper_resolver_content("codex", AGENT_REAL_CODEX_BIN_ENV_VAR, bin_dir),
     )
@@ -588,7 +588,7 @@ exit "$SUPERZET_CODEX_STATUS"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use superzet_model::{WorkspaceAttentionStatus, WorkspaceKind, WorkspaceLocation};
+    use superzent_model::{WorkspaceAttentionStatus, WorkspaceKind, WorkspaceLocation};
 
     #[test]
     fn maps_supported_event_types() {

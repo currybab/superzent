@@ -7,19 +7,19 @@ use zed_actions::feedback::{EmailZed, FileBugReport, RequestFeature};
 actions!(
     zed,
     [
-        /// Opens the superzet repository on GitHub.
+        /// Opens the superzent repository on GitHub.
         OpenZedRepo,
     ]
 );
 
-const SUPERZET_REPO_URL: &str = "https://github.com/currybab/superzet";
+const SUPERZENT_REPO_URL: &str = "https://github.com/currybab/superzent";
 
-const REQUEST_FEATURE_URL: &str = "https://github.com/currybab/superzet/discussions/new/choose";
+const REQUEST_FEATURE_URL: &str = "https://github.com/currybab/superzent/discussions/new/choose";
 
 fn file_bug_report_url(specs: &SystemSpecs) -> String {
     format!(
         concat!(
-            "https://github.com/currybab/superzet/issues/new",
+            "https://github.com/currybab/superzent/issues/new",
             "?",
             "template=10_bug_report.yml",
             "&",
@@ -83,7 +83,7 @@ pub fn init(cx: &mut App) {
                 .detach();
             })
             .register_action(move |_, _: &OpenZedRepo, _, cx| {
-                cx.open_url(SUPERZET_REPO_URL);
+                cx.open_url(SUPERZENT_REPO_URL);
             });
     })
     .detach();

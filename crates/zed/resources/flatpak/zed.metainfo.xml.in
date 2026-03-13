@@ -6,12 +6,12 @@
 
     <name>$APP_NAME</name>
     <summary>Native workspace shell for coding agents</summary>
-    <developer id="ai.nangman.superzet">
+    <developer id="ai.nangman.superzent">
         <name translate="no">nangman</name>
     </developer>
     <description>
         <p>
-            Superzet combines a workspace shell for coding agents with an integrated editor, terminal, and diff workflow.
+            Superzent combines a workspace shell for coding agents with an integrated editor, terminal, and diff workflow.
         </p>
         <p>Features:</p>
         <ul>
@@ -34,12 +34,12 @@
         <content_attribute id="social-audio">intense</content_attribute>
     </content_rating>
 
-    <url type="homepage">https://github.com/currybab/superzet</url>
-    <url type="bugtracker">https://github.com/currybab/superzet/issues</url>
-    <url type="help">https://github.com/currybab/superzet#readme</url>
-    <url type="contact">https://github.com/currybab/superzet/discussions</url>
-    <url type="vcs-browser">https://github.com/currybab/superzet</url>
-    <url type="contribute">https://github.com/currybab/superzet/blob/main/CONTRIBUTING.md</url>
+    <url type="homepage">https://github.com/currybab/superzent</url>
+    <url type="bugtracker">https://github.com/currybab/superzent/issues</url>
+    <url type="help">https://github.com/currybab/superzent#readme</url>
+    <url type="contact">https://github.com/currybab/superzent/discussions</url>
+    <url type="vcs-browser">https://github.com/currybab/superzent</url>
+    <url type="contribute">https://github.com/currybab/superzent/blob/main/CONTRIBUTING.md</url>
 
     <supports>
         <internet>offline-only</internet>
@@ -52,12 +52,12 @@
 
     <screenshots>
         <screenshot type="default">
-            <caption>superzet with a repository open and workspace navigation visible</caption>
-            <image>https://github.com/currybab/superzet/raw/main/apps/marketing/public/images/readme-hero.png</image>
+            <caption>superzent with a repository open and workspace navigation visible</caption>
+            <image>https://github.com/currybab/superzent/raw/main/apps/marketing/public/images/readme-hero.png</image>
         </screenshot>
         <screenshot>
-            <caption>superzet with code, terminal tabs, and a details sidebar</caption>
-            <image>https://github.com/currybab/superzet/raw/main/apps/marketing/public/images/readme-hero.png</image>
+            <caption>superzent with code, terminal tabs, and a details sidebar</caption>
+            <image>https://github.com/currybab/superzent/raw/main/apps/marketing/public/images/readme-hero.png</image>
         </screenshot>
     </screenshots>
 

@@ -1,6 +1,6 @@
-# superzet Docs
+# superzent Docs
 
-Welcome to `superzet`'s documentation.
+Welcome to `superzent`'s documentation.
 
 To preview the docs locally, install [mdBook](https://rust-lang.github.io/mdBook/) (`cargo install mdbook@0.4.40`) and run:
 

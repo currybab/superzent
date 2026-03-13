@@ -1,5 +1,5 @@
 [package]
-name = "superzet_git"
+name = "superzent_git"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
@@ -18,7 +18,7 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol.workspace = true
-superzet_model.workspace = true
+superzent_model.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

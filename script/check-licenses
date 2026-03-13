@@ -3,7 +3,7 @@
 set -euo pipefail
 
 AGPL_CRATES=("collab")
-RELEASE_CRATES=("cli" "remote_server" "superzet")
+RELEASE_CRATES=("cli" "remote_server" "superzent")
 
 check_symlink_target () {
     local symlink_path="$1"

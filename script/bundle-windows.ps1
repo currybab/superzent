@@ -100,10 +100,10 @@ function GenerateLicenses {
 }
 
 function BuildZedAndItsFriends {
-    Write-Output "Building superzet and its friends, for channel: $channel"
-    # Build superzet.exe, cli.exe and auto_update_helper.exe
-    cargo build --release --package superzet --package cli --package auto_update_helper --target $target
-    Copy-Item -Path ".\$CargoOutDir\superzet.exe" -Destination "$innoDir\superzet.exe" -Force
+    Write-Output "Building superzent and its friends, for channel: $channel"
+    # Build superzent.exe, cli.exe and auto_update_helper.exe
+    cargo build --release --package superzent --package cli --package auto_update_helper --target $target
+    Copy-Item -Path ".\$CargoOutDir\superzent.exe" -Destination "$innoDir\superzent.exe" -Force
     Copy-Item -Path ".\$CargoOutDir\cli.exe" -Destination "$innoDir\cli.exe" -Force
     Copy-Item -Path ".\$CargoOutDir\auto_update_helper.exe" -Destination "$innoDir\auto_update_helper.exe" -Force
     # Build explorer_command_injector.dll
@@ -133,7 +133,7 @@ function BuildRemoteServer {
         & "$innoDir\sign.ps1" $remoteServerSrc
     }
 
-    $remoteServerDst = "$env:ZED_WORKSPACE\target\superzet-remote-server-windows-$Architecture.zip"
+    $remoteServerDst = "$env:ZED_WORKSPACE\target\superzent-remote-server-windows-$Architecture.zip"
     Write-Output "Compressing remote_server to $remoteServerDst"
     Compress-Archive -Path $remoteServerSrc -DestinationPath $remoteServerDst -Force
 
@@ -142,14 +142,14 @@ function BuildRemoteServer {
 
 function ZipZedAndItsFriendsDebug {
     $items = @(
-        ".\$CargoOutDir\superzet.pdb",
+        ".\$CargoOutDir\superzent.pdb",
         ".\$CargoOutDir\cli.pdb",
         ".\$CargoOutDir\auto_update_helper.pdb",
         ".\$CargoOutDir\explorer_command_injector.pdb",
         ".\$CargoOutDir\remote_server.pdb"
     )
 
-    Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\superzet-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
+    Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\superzent-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
 }
 
 
@@ -163,10 +163,10 @@ function UploadToSentry {
         Write-Output "missing SENTRY_AUTH_TOKEN. skipping sentry upload."
         return
     }
-    Write-Output "Uploading superzet debug symbols to sentry..."
+    Write-Output "Uploading superzent debug symbols to sentry..."
     for ($i = 1; $i -le 3; $i++) {
         try {
-            sentry-cli debug-files upload --include-sources --wait -p superzet -o superzet $CargoOutDir
+            sentry-cli debug-files upload --include-sources --wait -p superzent -o superzent $CargoOutDir
             break
         }
         catch {
@@ -204,7 +204,7 @@ function SignZedAndItsFriends {
         return
     }
 
-    $files = "$innoDir\superzet.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
+    $files = "$innoDir\superzent.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
     & "$innoDir\sign.ps1" $files
 }
 
@@ -228,8 +228,8 @@ function DownloadConpty {
 function CollectFiles {
     Move-Item -Path "$innoDir\zed_explorer_command_injector.appx" -Destination "$innoDir\appx\zed_explorer_command_injector.appx" -Force
     Move-Item -Path "$innoDir\zed_explorer_command_injector.dll" -Destination "$innoDir\appx\zed_explorer_command_injector.dll" -Force
-    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\superzet.exe" -Force
-    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\superzet" -Force
+    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\superzent.exe" -Force
+    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\superzent" -Force
     Move-Item -Path "$innoDir\auto_update_helper.exe" -Destination "$innoDir\tools\auto_update_helper.exe" -Force
     if($Architecture -eq "aarch64") {
         New-Item -Type Directory -Path "$innoDir\arm64" -Force
@@ -252,30 +252,30 @@ function BuildInstaller {
         "stable" {
             $appId = "{{2DB0DA96-CA55-49BB-AF4F-64AF36A86712}"
             $appIconName = "app-icon-nightly"
-            $appName = "superzet"
-            $appDisplayName = "superzet"
-            $appSetupName = "superzet-$Architecture"
+            $appName = "superzent"
+            $appDisplayName = "superzent"
+            $appSetupName = "superzent-$Architecture"
             # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
-            $appMutex = "superzet-stable-Instance-Mutex"
-            $appExeName = "superzet"
-            $regValueName = "Superzet"
-            $appUserId = "Nangman.Superzet"
+            $appMutex = "superzent-stable-Instance-Mutex"
+            $appExeName = "superzent"
+            $regValueName = "Superzent"
+            $appUserId = "Nangman.Superzent"
             $appShellNameShort = "s&uperzet"
-            $appAppxFullName = "Nangman.Superzet_1.0.0.0_neutral__japxn1gcva8rg"
+            $appAppxFullName = "Nangman.Superzent_1.0.0.0_neutral__japxn1gcva8rg"
         }
         "dev" {
             $appId = "{{8357632E-24A4-4F32-BA97-E575B4D1FE5D}"
             $appIconName = "app-icon"
-            $appName = "superzet dev"
-            $appDisplayName = "superzet dev"
-            $appSetupName = "superzet-$Architecture"
+            $appName = "superzent dev"
+            $appDisplayName = "superzent dev"
+            $appSetupName = "superzent-$Architecture"
             # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
-            $appMutex = "superzet-dev-Instance-Mutex"
-            $appExeName = "superzet"
-            $regValueName = "SuperzetDev"
-            $appUserId = "Nangman.Superzet.Dev"
-            $appShellNameShort = "superzet &dev"
-            $appAppxFullName = "Nangman.Superzet.Dev_1.0.0.0_neutral__japxn1gcva8rg"
+            $appMutex = "superzent-dev-Instance-Mutex"
+            $appExeName = "superzent"
+            $regValueName = "SuperzentDev"
+            $appUserId = "Nangman.Superzent.Dev"
+            $appShellNameShort = "superzent &dev"
+            $appAppxFullName = "Nangman.Superzent.Dev_1.0.0.0_neutral__japxn1gcva8rg"
         }
         default {
             Write-Error "can't bundle installer for $channel."
@@ -334,8 +334,8 @@ function BuildInstaller {
 
 ParseZedWorkspace
 $innoDir = "$env:ZED_WORKSPACE\inno\$Architecture"
-$debugArchive = "$CargoOutDir\superzet-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
-$debugStoreKey = "$env:ZED_RELEASE_CHANNEL/superzet-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
+$debugArchive = "$CargoOutDir\superzent-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
+$debugStoreKey = "$env:ZED_RELEASE_CHANNEL/superzent-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
 
 CheckEnvironmentVariables
 PrepareForBundle
@@ -357,8 +357,8 @@ if($env:CI) {
 if ($buildSuccess) {
     Write-Output "Build successful"
     if ($Install) {
-        Write-Output "Installing superzet..."
-        Start-Process -FilePath "$env:ZED_WORKSPACE/target/superzet-$Architecture.exe"
+        Write-Output "Installing superzent..."
+        Start-Process -FilePath "$env:ZED_WORKSPACE/target/superzent-$Architecture.exe"
     }
     exit 0
 }

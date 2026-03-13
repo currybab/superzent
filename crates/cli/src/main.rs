@@ -28,7 +28,7 @@ use walkdir::WalkDir;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use std::io::IsTerminal;
 
-const URL_PREFIX: [&'static str; 5] = ["superzet://", "http://", "https://", "file://", "ssh://"];
+const URL_PREFIX: [&'static str; 5] = ["superzent://", "http://", "https://", "file://", "ssh://"];
 
 struct Detect;
 
@@ -45,21 +45,21 @@ trait InstalledApp {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "superzet",
+    name = "superzent",
     disable_version_flag = true,
-    before_help = "The superzet CLI binary.
-This CLI is a separate binary that invokes superzet.
+    before_help = "The superzent CLI binary.
+This CLI is a separate binary that invokes superzent.
 
 Examples:
-    `superzet`
-          Simply opens superzet
-    `superzet --foreground`
+    `superzent`
+          Simply opens superzent
+    `superzent --foreground`
           Runs in foreground (shows all logs)
-    `superzet path-to-your-project`
-          Open your project in superzet
-    `superzet -n path-to-file `
+    `superzent path-to-your-project`
+          Open your project in superzent
+    `superzent -n path-to-file `
           Open file/folder in a new window",
-    after_help = "To read from stdin, append '-', e.g. 'ps axf | superzet -'"
+    after_help = "To read from stdin, append '-', e.g. 'ps axf | superzent -'"
 )]
 struct Args {
     /// Wait for all of the given paths to be opened/closed before exiting.
@@ -78,32 +78,35 @@ struct Args {
     reuse: bool,
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     /// This overrides the default platform-specific data directory location:
-    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/superzet`.")]
-    #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\superzet`.")]
+    #[cfg_attr(
+        target_os = "macos",
+        doc = "`~/Library/Application Support/superzent`."
+    )]
+    #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\superzent`.")]
     #[cfg_attr(
         not(any(target_os = "windows", target_os = "macos")),
-        doc = "`$XDG_DATA_HOME/superzet`."
+        doc = "`$XDG_DATA_HOME/superzent`."
     )]
     #[arg(long, value_name = "DIR")]
     user_data_dir: Option<String>,
-    /// The paths to open in superzet (space-separated).
+    /// The paths to open in superzent (space-separated).
     ///
     /// Use `path:line:column` syntax to open a file at the given line and column.
     paths_with_position: Vec<String>,
-    /// Print superzet's version and the app path.
+    /// Print superzent's version and the app path.
     #[arg(short, long)]
     version: bool,
-    /// Run superzet in the foreground (useful for debugging)
+    /// Run superzent in the foreground (useful for debugging)
     #[arg(long)]
     foreground: bool,
-    /// Custom path to superzet.app or the superzet binary
-    #[arg(long = "superzet")]
+    /// Custom path to superzent.app or the superzent binary
+    #[arg(long = "superzent")]
     zed: Option<PathBuf>,
-    /// Run superzet in dev-server mode
+    /// Run superzent in dev-server mode
     #[arg(long)]
     dev_server_token: Option<String>,
     /// The username and WSL distribution to use when opening paths. If not specified,
-    /// superzet will attempt to open the paths directly.
+    /// superzent will attempt to open the paths directly.
     ///
     /// The username is optional, and if not specified, the default user for the distribution
     /// will be used.
@@ -114,7 +117,7 @@ struct Args {
     #[cfg(target_os = "windows")]
     #[arg(long, value_name = "USER@DISTRO")]
     wsl: Option<String>,
-    /// Not supported in the superzet CLI, only supported on the app binary
+    /// Not supported in the superzent CLI, only supported on the app binary
     /// Will attempt to give the correct command to run
     #[arg(long)]
     system_specs: bool,
@@ -122,7 +125,7 @@ struct Args {
     /// When directories are provided, recurses into them and shows all changed files in a single multi-diff view.
     #[arg(long, action = clap::ArgAction::Append, num_args = 2, value_names = ["OLD_PATH", "NEW_PATH"])]
     diff: Vec<String>,
-    /// Uninstall superzet from the user system
+    /// Uninstall superzent from the user system
     #[cfg(all(
         any(target_os = "linux", target_os = "macos"),
         not(feature = "no-bundled-uninstall")
@@ -131,7 +134,7 @@ struct Args {
     uninstall: bool,
 
     /// Used for SSH/Git password authentication, to remove the need for netcat as a dependency,
-    /// by having superzet act like netcat communicating over a Unix socket.
+    /// by having superzent act like netcat communicating over a Unix socket.
     #[arg(long, hide = true)]
     askpass: Option<String>,
 }
@@ -496,7 +499,7 @@ fn main() -> Result<()> {
     if args.system_specs {
         let path = app.path();
         let msg = [
-            "The `--system-specs` argument is not supported in the superzet CLI, only on the superzet app binary.",
+            "The `--system-specs` argument is not supported in the superzent CLI, only on the superzent app binary.",
             "To retrieve the system specs on the command line, run the following command:",
             &format!("{} --system-specs", path.display()),
         ];
@@ -527,8 +530,8 @@ fn main() -> Result<()> {
     }
 
     let (server, server_name) =
-        IpcOneShotServer::<IpcHandshake>::new().context("Handshake before superzet spawn")?;
-    let url = format!("superzet-cli://{server_name}");
+        IpcOneShotServer::<IpcHandshake>::new().context("Handshake before superzent spawn")?;
+    let url = format!("superzent-cli://{server_name}");
 
     let open_new_workspace = if args.new {
         Some(true)
@@ -543,7 +546,7 @@ fn main() -> Result<()> {
         {
             use collections::HashMap;
 
-            // On Linux, the desktop entry uses `cli` to spawn `superzet`.
+            // On Linux, the desktop entry uses `cli` to spawn `superzent`.
             // We need to handle env vars correctly since std::env::vars() may not contain
             // project-specific vars (e.g. those set by direnv).
             // By setting env to None here, the LSP will use worktree env vars instead,
@@ -593,7 +596,7 @@ fn main() -> Result<()> {
     let (expanded_diff_paths, temp_dirs) = expand_directory_diff_pairs(diff_paths)?;
     diff_paths = expanded_diff_paths;
     // Prevent automatic cleanup of temp directories containing empty stub files
-    // for directory diffs. The CLI process may exit before superzet has read these
+    // for directory diffs. The CLI process may exit before superzent has read these
     // files (e.g., when RPC-ing into an already-running instance). The files
     // live in the OS temp directory and will be cleaned up on reboot.
     for temp_dir in temp_dirs {
@@ -651,7 +654,7 @@ fn main() -> Result<()> {
             let exit_status = exit_status.clone();
             let user_data_dir_for_thread = user_data_dir.clone();
             move || {
-                let (_, handshake) = server.accept().context("Handshake after superzet spawn")?;
+                let (_, handshake) = server.accept().context("Handshake after superzent spawn")?;
                 let (tx, rx) = (handshake.requests, handshake.responses);
 
                 #[cfg(target_os = "windows")]
@@ -803,12 +806,12 @@ mod linux {
                 let cli = env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // libexec is the standard, lib/superzet is for Arch (and other non-libexec
-                // distros), ./superzet is for the target directory in development builds.
+                // libexec is the standard, lib/superzent is for Arch (and other non-libexec
+                // distros), ./superzent is for the target directory in development builds.
                 let possible_locations = [
-                    "../libexec/superzet-editor",
-                    "../lib/superzet/superzet-editor",
-                    "./superzet",
+                    "../libexec/superzent-editor",
+                    "../lib/superzent/superzent-editor",
+                    "./superzent",
                 ];
                 possible_locations
                     .iter()
@@ -825,7 +828,7 @@ mod linux {
     impl InstalledApp for App {
         fn zed_version_string(&self) -> String {
             format!(
-                "superzet {}{}{} – {}",
+                "superzent {}{}{} – {}",
                 if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
                     "".to_string()
                 } else {
@@ -846,7 +849,7 @@ mod linux {
                 .unwrap_or_else(|| paths::data_dir().clone());
 
             let sock_path = data_dir.join(format!(
-                "superzet-{}.sock",
+                "superzent-{}.sock",
                 *release_channel::RELEASE_CHANNEL_NAME
             ));
             let sock = UnixDatagram::unbound()?;
@@ -956,7 +959,7 @@ mod flatpak {
         if let Some(flatpak_dir) = get_flatpak_dir() {
             let mut args = vec!["/usr/bin/flatpak-spawn".into(), "--host".into()];
             args.append(&mut get_xdg_env_args());
-            args.push("--env=ZED_UPDATE_EXPLANATION=Please use flatpak to update superzet".into());
+            args.push("--env=ZED_UPDATE_EXPLANATION=Please use flatpak to update superzent".into());
             args.push(
                 format!(
                     "--env={EXTRA_LIB_ENV_NAME}={}",
@@ -964,17 +967,17 @@ mod flatpak {
                 )
                 .into(),
             );
-            args.push(flatpak_dir.join("bin").join("superzet").into());
+            args.push(flatpak_dir.join("bin").join("superzent").into());
 
             let mut is_app_location_set = false;
             for arg in &env::args_os().collect::<Vec<_>>()[1..] {
                 args.push(arg.clone());
-                is_app_location_set |= arg == "--superzet";
+                is_app_location_set |= arg == "--superzent";
             }
 
             if !is_app_location_set {
-                args.push("--superzet".into());
-                args.push(flatpak_dir.join("libexec").join("superzet-editor").into());
+                args.push("--superzent".into());
+                args.push(flatpak_dir.join("libexec").join("superzent-editor").into());
             }
 
             let error = exec::execvp("/usr/bin/flatpak-spawn", args);
@@ -985,14 +988,14 @@ mod flatpak {
 
     pub fn set_bin_if_no_escape(mut args: super::Args) -> super::Args {
         if env::var(NO_ESCAPE_ENV_NAME).is_ok()
-            && env::var("FLATPAK_ID").is_ok_and(|id| id.starts_with("ai.nangman.superzet"))
+            && env::var("FLATPAK_ID").is_ok_and(|id| id.starts_with("ai.nangman.superzent"))
             && args.zed.is_none()
         {
-            args.zed = Some("/app/libexec/superzet-editor".into());
+            args.zed = Some("/app/libexec/superzent-editor".into());
             unsafe {
                 env::set_var(
                     "ZED_UPDATE_EXPLANATION",
-                    "Please use flatpak to update superzet",
+                    "Please use flatpak to update superzent",
                 )
             };
         }
@@ -1005,7 +1008,7 @@ mod flatpak {
         }
 
         if let Ok(flatpak_id) = env::var("FLATPAK_ID") {
-            if !flatpak_id.starts_with("ai.nangman.superzet") {
+            if !flatpak_id.starts_with("ai.nangman.superzent") {
                 return None;
             }
 
@@ -1077,7 +1080,7 @@ mod windows {
     impl InstalledApp for App {
         fn zed_version_string(&self) -> String {
             format!(
-                "superzet {}{}{} – {}",
+                "superzent {}{}{} – {}",
                 if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
                     "".to_string()
                 } else {
@@ -1146,12 +1149,12 @@ mod windows {
                 let cli = std::env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // ../superzet.exe is the standard, lib/superzet is for MSYS2, ./superzet.exe is for the target
+                // ../superzent.exe is the standard, lib/superzent is for MSYS2, ./superzent.exe is for the target
                 // directory in development builds.
                 let possible_locations = [
-                    "../superzet.exe",
-                    "../lib/superzet/superzet-editor.exe",
-                    "./superzet.exe",
+                    "../superzent.exe",
+                    "../lib/superzent/superzent-editor.exe",
+                    "./superzent.exe",
                 ];
                 possible_locations
                     .iter()
@@ -1249,7 +1252,7 @@ mod mac_os {
 
     impl InstalledApp for Bundle {
         fn zed_version_string(&self) -> String {
-            format!("superzet {} – {}", self.version(), self.path().display(),)
+            format!("superzent {} – {}", self.version(), self.path().display(),)
         }
 
         fn launch(&self, url: String, user_data_dir: Option<&str>) -> anyhow::Result<()> {
@@ -1267,7 +1270,7 @@ mod mac_os {
                             kCFStringEncodingUTF8,
                             ptr::null(),
                         ));
-                        // equivalent to: open superzet-cli:... -a /Applications/superzet\ preview.app
+                        // equivalent to: open superzent-cli:... -a /Applications/superzent\ preview.app
                         let urls_to_open =
                             CFArray::from_copyable(&[url_to_open.as_concrete_TypeRef()]);
                         LSOpenFromURLSpec(
@@ -1293,10 +1296,11 @@ mod mac_os {
                     let executable_parent = executable
                         .parent()
                         .with_context(|| format!("Executable {executable:?} path has no parent"))?;
-                    let subprocess_stdout_file = fs::File::create(
-                        executable_parent.join("superzet_dev.log"),
-                    )
-                    .with_context(|| format!("Log file creation in {executable_parent:?}"))?;
+                    let subprocess_stdout_file =
+                        fs::File::create(executable_parent.join("superzent_dev.log"))
+                            .with_context(|| {
+                                format!("Log file creation in {executable_parent:?}")
+                            })?;
                     let subprocess_stdin_file =
                         subprocess_stdout_file.try_clone().with_context(|| {
                             format!("Cloning descriptor for file {subprocess_stdout_file:?}")
@@ -1326,7 +1330,7 @@ mod mac_os {
             user_data_dir: Option<&str>,
         ) -> io::Result<ExitStatus> {
             let path = match self {
-                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/superzet"),
+                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/superzent"),
                 Bundle::LocalPath { executable, .. } => executable.clone(),
             };
 
@@ -1340,7 +1344,7 @@ mod mac_os {
 
         fn path(&self) -> PathBuf {
             match self {
-                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/superzet"),
+                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/superzent"),
                 Bundle::LocalPath { executable, .. } => executable.clone(),
             }
         }

@@ -1,9 +1,9 @@
 ---
-title: Developing superzet
-description: Build, run, and release superzet from source.
+title: Developing superzent
+description: Build, run, and release superzent from source.
 ---
 
-# Developing superzet
+# Developing superzent
 
 See the platform-specific setup docs for build prerequisites:
 
@@ -16,13 +16,13 @@ See the platform-specific setup docs for build prerequisites:
 Run the app:
 
 ```sh
-cargo run -p superzet
+cargo run -p superzent
 ```
 
 Day-to-day development should stay on the default lightweight build:
 
 ```sh
-cargo check -p superzet
+cargo check -p superzent
 ```
 
 Run clippy:
@@ -34,7 +34,7 @@ Run clippy:
 Build the heavier upstream-like surface only when you actually need it:
 
 ```sh
-cargo check -p superzet --features full
+cargo check -p superzent --features full
 ```
 
 ## Release Flavors
@@ -55,7 +55,7 @@ That excludes:
 For day-to-day work:
 
 ```sh
-cargo check -p superzet
+cargo check -p superzent
 ./script/clippy
 ```
 
@@ -72,7 +72,7 @@ Development builds use a less intrusive credential path so you do not get repeat
 If you need to test real keychain access in a development build:
 
 ```sh
-ZED_DEVELOPMENT_USE_KEYCHAIN=1 cargo run -p superzet
+ZED_DEVELOPMENT_USE_KEYCHAIN=1 cargo run -p superzent
 ```
 
 ## Performance Measurements
@@ -81,7 +81,7 @@ You can still use the inherited frame measurement tooling:
 
 ```sh
 export ZED_MEASUREMENTS=1
-cargo run -p superzet --release
+cargo run -p superzent --release
 ```
 
 Then compare runs with:
@@ -96,5 +96,5 @@ script/histogram version-a version-b
 - [Upstream Sync](./development/upstream-sync.md)
 - [Release Notes](./development/release-notes.md)
 - [Debugging Crashes](./development/debugging-crashes.md)
-- [Contributing](https://github.com/currybab/superzet/blob/main/CONTRIBUTING.md)
-- [Security Policy](https://github.com/currybab/superzet/blob/main/SECURITY.md)
+- [Contributing](https://github.com/currybab/superzent/blob/main/CONTRIBUTING.md)
+- [Security Policy](https://github.com/currybab/superzent/blob/main/SECURITY.md)

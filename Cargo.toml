@@ -183,10 +183,10 @@ members = [
     "crates/story",
     "crates/storybook",
     "crates/streaming_diff",
-    "crates/superzet_git",
-    "crates/superzet_agent",
-    "crates/superzet_model",
-    "crates/superzet_ui",
+    "crates/superzent_git",
+    "crates/superzent_agent",
+    "crates/superzent_model",
+    "crates/superzent_ui",
     "crates/sum_tree",
     "crates/svg_preview",
     "crates/system_specs",
@@ -431,10 +431,10 @@ sqlez = { path = "crates/sqlez" }
 sqlez_macros = { path = "crates/sqlez_macros" }
 story = { path = "crates/story" }
 streaming_diff = { path = "crates/streaming_diff" }
-superzet_git = { path = "crates/superzet_git" }
-superzet_agent = { path = "crates/superzet_agent" }
-superzet_model = { path = "crates/superzet_model" }
-superzet_ui = { path = "crates/superzet_ui" }
+superzent_git = { path = "crates/superzent_git" }
+superzent_agent = { path = "crates/superzent_agent" }
+superzent_model = { path = "crates/superzent_model" }
+superzent_ui = { path = "crates/superzent_ui" }
 sum_tree = { path = "crates/sum_tree" }
 codestral = { path = "crates/codestral" }
 system_specs = { path = "crates/system_specs" }
@@ -470,7 +470,7 @@ web_search_providers = { path = "crates/web_search_providers" }
 workspace = { path = "crates/workspace" }
 worktree = { path = "crates/worktree" }
 x_ai = { path = "crates/x_ai" }
-superzet = { path = "crates/zed" }
+superzent = { path = "crates/zed" }
 zed_actions = { path = "crates/zed_actions" }
 zed_env_vars = { path = "crates/zed_env_vars" }
 edit_prediction = { path = "crates/edit_prediction" }
@@ -934,7 +934,7 @@ lto = "thin"
 codegen-units = 1
 
 [profile.release.package]
-superzet = { codegen-units = 16 }
+superzent = { codegen-units = 16 }
 
 [profile.release-fast]
 inherits = "release"

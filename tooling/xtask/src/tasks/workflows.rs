@@ -85,7 +85,7 @@ impl WorkflowFile {
 
 #[derive(PartialEq, Eq, strum::EnumIter)]
 pub enum WorkflowType {
-    /// Workflows living in the superzet repository
+    /// Workflows living in the superzent repository
     Zed,
     /// Workflows living in the `zed-extensions/workflows` repository that are
     /// required workflows for PRs to the extension organization
@@ -104,7 +104,7 @@ impl WorkflowType {
             ),
             workflow_name,
             (*self != WorkflowType::Zed)
-                .then_some(" within the superzet repository.")
+                .then_some(" within the superzent repository.")
                 .unwrap_or_default(),
         )
     }

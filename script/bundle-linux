@@ -43,13 +43,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-export SUPERZET_BUNDLE=true
+export SUPERZENT_BUNDLE=true
 export ZED_BUNDLE=true
 
-channel="${SUPERZET_RELEASE_CHANNEL:-${ZED_RELEASE_CHANNEL:-$(<crates/zed/RELEASE_CHANNEL)}}"
+channel="${SUPERZENT_RELEASE_CHANNEL:-${ZED_RELEASE_CHANNEL:-$(<crates/zed/RELEASE_CHANNEL)}}"
 target_dir="${CARGO_TARGET_DIR:-target}"
 
-version="$(script/get-crate-version superzet)"
+version="$(script/get-crate-version superzent)"
 # Set RELEASE_VERSION so it's compiled into GPUI and it knows about the version.
 export RELEASE_VERSION="${version}"
 
@@ -76,7 +76,7 @@ export CC=${CC:-$(which clang)}
 
 # Build binary in release mode
 export RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
-cargo build --release --target "${target_triple}" --package superzet --package cli
+cargo build --release --target "${target_triple}" --package superzent --package cli
 # Build remote_server in separate invocation to prevent feature unification from other crates
 # from influencing dynamic libraries required by it.
 if [[ "$remote_server_triple" == "$musl_triple" ]]; then
@@ -90,13 +90,13 @@ if ! command -v sentry-cli >/dev/null 2>&1; then
     echo "install with: 'curl -sL https://sentry.io/get-cli | bash'"
 else
     if [[ -n "${SENTRY_AUTH_TOKEN:-}" ]]; then
-        echo "Uploading superzet debug symbols to sentry..."
+        echo "Uploading superzent debug symbols to sentry..."
         # note: this uploads the unstripped binary which is needed because it contains
         # .eh_frame data for stack unwinding. see https://github.com/getsentry/symbolic/issues/783
         for attempt in 1 2 3; do
             echo "Attempting sentry upload (attempt $attempt/3)..."
-            if sentry-cli debug-files upload --include-sources --wait -p superzet -o superzet \
-                "${target_dir}/${target_triple}"/release/superzet \
+            if sentry-cli debug-files upload --include-sources --wait -p superzent -o superzent \
+                "${target_dir}/${target_triple}"/release/superzent \
                 "${target_dir}/${remote_server_triple}"/release/remote_server; then
                 echo "Sentry upload successful on attempt $attempt"
                 break
@@ -113,7 +113,7 @@ else
 fi
 
 # Strip debug symbols and save them for upload to DigitalOcean
-objcopy --strip-debug "${target_dir}/${target_triple}/release/superzet"
+objcopy --strip-debug "${target_dir}/${target_triple}/release/superzent"
 objcopy --strip-debug "${target_dir}/${target_triple}/release/cli"
 objcopy --strip-debug "${target_dir}/${remote_server_triple}/release/remote_server"
 
@@ -144,57 +144,57 @@ esac
 # Move everything that should end up in the final package
 # into a temp directory.
 temp_dir=$(mktemp -d)
-superzet_dir="${temp_dir}/superzet$suffix.app"
+superzent_dir="${temp_dir}/superzent$suffix.app"
 
 # Binary
-mkdir -p "${superzet_dir}/bin" "${superzet_dir}/libexec"
-cp "${target_dir}/${target_triple}/release/superzet" "${superzet_dir}/libexec/superzet-editor"
-cp "${target_dir}/${target_triple}/release/cli" "${superzet_dir}/bin/superzet"
+mkdir -p "${superzent_dir}/bin" "${superzent_dir}/libexec"
+cp "${target_dir}/${target_triple}/release/superzent" "${superzent_dir}/libexec/superzent-editor"
+cp "${target_dir}/${target_triple}/release/cli" "${superzent_dir}/bin/superzent"
 
 # Libs
 find_libs() {
-    ldd ${target_dir}/${target_triple}/release/superzet |\
+    ldd ${target_dir}/${target_triple}/release/superzent |\
         cut -d' ' -f3 |\
         grep -v '\<\(libstdc++.so\|libc.so\|libgcc_s.so\|libm.so\|libpthread.so\|libdl.so\|libasound.so\)'
 }
 
-mkdir -p "${superzet_dir}/lib"
-rm -rf "${superzet_dir}/lib/*"
-cp $(find_libs) "${superzet_dir}/lib"
+mkdir -p "${superzent_dir}/lib"
+rm -rf "${superzent_dir}/lib/*"
+cp $(find_libs) "${superzent_dir}/lib"
 
 # Icons
-mkdir -p "${superzet_dir}/share/icons/hicolor/512x512/apps"
-cp "crates/zed/resources/app-icon${icon_suffix}.png" "${superzet_dir}/share/icons/hicolor/512x512/apps/superzet.png"
-mkdir -p "${superzet_dir}/share/icons/hicolor/1024x1024/apps"
-cp "crates/zed/resources/app-icon${icon_suffix}@2x.png" "${superzet_dir}/share/icons/hicolor/1024x1024/apps/superzet.png"
+mkdir -p "${superzent_dir}/share/icons/hicolor/512x512/apps"
+cp "crates/zed/resources/app-icon${icon_suffix}.png" "${superzent_dir}/share/icons/hicolor/512x512/apps/superzent.png"
+mkdir -p "${superzent_dir}/share/icons/hicolor/1024x1024/apps"
+cp "crates/zed/resources/app-icon${icon_suffix}@2x.png" "${superzent_dir}/share/icons/hicolor/1024x1024/apps/superzent.png"
 
 # .desktop
 export DO_STARTUP_NOTIFY="true"
-export APP_CLI="superzet"
-export APP_ICON="superzet"
+export APP_CLI="superzent"
+export APP_ICON="superzent"
 export APP_ARGS="%U"
 if [[ "$channel" == "dev" ]]; then
-  export APP_NAME="superzet dev"
-  APP_ID="ai.nangman.superzet-dev"
+  export APP_NAME="superzent dev"
+  APP_ID="ai.nangman.superzent-dev"
 else
-  export APP_NAME="superzet"
-  APP_ID="ai.nangman.superzet"
+  export APP_NAME="superzent"
+  APP_ID="ai.nangman.superzent"
 fi
 
-mkdir -p "${superzet_dir}/share/applications"
-envsubst < "crates/zed/resources/zed.desktop.in" > "${superzet_dir}/share/applications/$APP_ID.desktop"
-chmod +x "${superzet_dir}/share/applications/$APP_ID.desktop"
+mkdir -p "${superzent_dir}/share/applications"
+envsubst < "crates/zed/resources/zed.desktop.in" > "${superzent_dir}/share/applications/$APP_ID.desktop"
+chmod +x "${superzent_dir}/share/applications/$APP_ID.desktop"
 
 # Copy generated licenses so they'll end up in archive too
-cp "assets/licenses.md" "${superzet_dir}/licenses.md"
+cp "assets/licenses.md" "${superzent_dir}/licenses.md"
 
 # Create archive out of everything that's in the temp directory
 arch=$(uname -m)
-archive="superzet-linux-${arch}.tar.gz"
+archive="superzent-linux-${arch}.tar.gz"
 
 rm -rf "${archive}"
-remove_match="superzet-linux-$(uname -m)\.tar\.gz"
+remove_match="superzent-linux-$(uname -m)\.tar\.gz"
 ls "${target_dir}/release" | grep -E ${remove_match} | xargs -d "\n" -I {} rm -f "${target_dir}/release/{}" || true
-tar -czvf "${target_dir}/release/$archive" -C ${temp_dir} "superzet$suffix.app"
+tar -czvf "${target_dir}/release/$archive" -C ${temp_dir} "superzent$suffix.app"
 
-gzip -f --stdout --best "${target_dir}/${remote_server_triple}/release/remote_server" > "${target_dir}/superzet-remote-server-linux-${arch}.gz"
+gzip -f --stdout --best "${target_dir}/${remote_server_triple}/release/remote_server" > "${target_dir}/superzent-remote-server-linux-${arch}.gz"

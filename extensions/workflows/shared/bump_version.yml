@@ -1,4 +1,4 @@
-# Generated from xtask::workflows::extensions::bump_version within the superzet repository.
+# Generated from xtask::workflows::extensions::bump_version within the superzent repository.
 # Rebuild with `cargo xtask workflows`.
 name: extensions::bump_version
 on:

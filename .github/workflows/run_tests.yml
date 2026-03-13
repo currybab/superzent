@@ -232,7 +232,7 @@ jobs:
         SCCACHE_BUCKET: sccache-zed
     - name: run_tests::cargo_nextest_for_platform
       run: |
-        FILTER='not (package(acp_thread) | package(agent) | package(agent_ui) | package(collab) | package(copilot) | package(debugger_ui) | (package(editor) and test(edit_prediction_tests)) | (package(project) and test(disable_ai_settings_tests)) | (package(project) and test(context_server_store)) | (package(superzet) and test(test_action_namespaces)) | (package(workspace) and test(test_sidebar_disabled_when_disable_ai_is_enabled)) | (package(superzet) and test(test_disable_ai_crash)))'
+        FILTER='not (package(acp_thread) | package(agent) | package(agent_ui) | package(collab) | package(copilot) | package(debugger_ui) | (package(editor) and test(edit_prediction_tests)) | (package(project) and test(disable_ai_settings_tests)) | (package(project) and test(context_server_store)) | (package(superzent) and test(test_action_namespaces)) | (package(workspace) and test(test_sidebar_disabled_when_disable_ai_is_enabled)) | (package(superzent) and test(test_disable_ai_crash)))'
         if [ -n "$CHANGED_PACKAGES" ]; then
           FILTER="($CHANGED_PACKAGES) and ($FILTER)"
         fi

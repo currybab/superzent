@@ -38,20 +38,20 @@ const SHOULD_SHOW_UPDATE_NOTIFICATION_KEY: &str = "auto-updater-should-show-upda
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REMOTE_SERVER_CACHE_LIMIT: usize = 5;
 const DEFAULT_RELEASES_URL: &str = "https://releases.nangman.ai";
-const UP_TO_DATE_MESSAGE: &str = "Superzet is already up to date.";
+const UP_TO_DATE_MESSAGE: &str = "Superzent is already up to date.";
 
 fn update_explanation_from_compile_env() -> Option<&'static str> {
-    option_env!("SUPERZET_UPDATE_EXPLANATION").or(option_env!("ZED_UPDATE_EXPLANATION"))
+    option_env!("SUPERZENT_UPDATE_EXPLANATION").or(option_env!("ZED_UPDATE_EXPLANATION"))
 }
 
 fn update_explanation_from_env() -> Option<String> {
-    env::var("SUPERZET_UPDATE_EXPLANATION")
+    env::var("SUPERZENT_UPDATE_EXPLANATION")
         .ok()
         .or_else(|| env::var("ZED_UPDATE_EXPLANATION").ok())
 }
 
 fn releases_base_url() -> String {
-    env::var("SUPERZET_RELEASES_URL")
+    env::var("SUPERZENT_RELEASES_URL")
         .ok()
         .filter(|url| !url.is_empty())
         .unwrap_or_else(|| DEFAULT_RELEASES_URL.to_string())
@@ -278,7 +278,7 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
     if let Some(message) = update_explanation_from_compile_env() {
         drop(window.prompt(
             gpui::PromptLevel::Info,
-            "superzet was installed via a package manager.",
+            "superzent was installed via a package manager.",
             Some(message),
             &["Ok"],
             cx,
@@ -289,7 +289,7 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
     if let Some(message) = update_explanation_from_env() {
         drop(window.prompt(
             gpui::PromptLevel::Info,
-            "superzet was installed via a package manager.",
+            "superzent was installed via a package manager.",
             Some(&message),
             &["Ok"],
             cx,
@@ -340,7 +340,7 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
             let path = format!("/releases/{release_channel}/{current_version}");
             build_releases_url(&path)
         }
-        ReleaseChannel::Dev => "https://github.com/currybab/superzet/commits/main/".to_string(),
+        ReleaseChannel::Dev => "https://github.com/currybab/superzent/commits/main/".to_string(),
     };
     Some(url)
 }
@@ -359,7 +359,7 @@ impl InstallerDir {
     async fn new() -> Result<Self> {
         Ok(Self(
             tempfile::Builder::new()
-                .prefix("superzet-auto-update")
+                .prefix("superzent-auto-update")
                 .tempdir()?,
         ))
     }
@@ -377,7 +377,7 @@ impl InstallerDir {
     async fn new() -> Result<Self> {
         let installer_dir = std::env::current_exe()?
             .parent()
-            .context("No parent dir for superzet.exe")?
+            .context("No parent dir for superzent.exe")?
             .join("updates");
         if smol::fs::metadata(&installer_dir).await.is_ok() {
             smol::fs::remove_dir_all(&installer_dir).await?;
@@ -412,7 +412,7 @@ impl AutoUpdater {
         // On windows, executable files cannot be overwritten while they are
         // running, so we must wait to overwrite the application until quitting
         // or restarting. When quitting the app, we spawn the auto update helper
-        // to finish the auto update process after superzet exits. When restarting
+        // to finish the auto update process after superzent exits. When restarting
         // the app after an update, we use `set_restart_path` to run the auto
         // update helper instead of the app, so that it can overwrite the app
         // and then spawn the new binary.
@@ -509,7 +509,7 @@ impl AutoUpdater {
         true
     }
 
-    // If you are packaging superzet and need to override the place it downloads SSH remotes from,
+    // If you are packaging superzent and need to override the place it downloads SSH remotes from,
     // you can override this function. You should also update get_remote_server_release_url to return
     // Ok(None).
     pub async fn download_remote_server_release(
@@ -527,7 +527,7 @@ impl AutoUpdater {
                 .context("auto-update not initialized")
         })?;
 
-        set_status("Fetching Superzet remote server release", cx);
+        set_status("Fetching Superzent remote server release", cx);
         let release = Self::get_release_asset(
             &this,
             release_channel,
@@ -549,10 +549,10 @@ impl AutoUpdater {
 
         if smol::fs::metadata(&version_path).await.is_err() {
             log::info!(
-                "downloading superzet-remote-server {os} {arch} version {}",
+                "downloading superzent-remote-server {os} {arch} version {}",
                 release.version
             );
-            set_status("Downloading Superzet remote server", cx);
+            set_status("Downloading Superzent remote server", cx);
             download_remote_server_binary(&version_path, release, client).await?;
         }
 
@@ -680,7 +680,8 @@ impl AutoUpdater {
         });
 
         let fetched_release_data =
-            Self::get_release_asset(&this, release_channel, None, "superzet", OS, ARCH, cx).await?;
+            Self::get_release_asset(&this, release_channel, None, "superzent", OS, ARCH, cx)
+                .await?;
         let fetched_version = fetched_release_data.clone().version;
         let app_commit_sha = Ok(cx.update(|cx| AppCommitSha::try_global(cx).map(|sha| sha.full())));
         let newer_version = Self::check_if_fetched_version_is_newer(
@@ -789,9 +790,9 @@ impl AutoUpdater {
 
     async fn target_path(installer_dir: &InstallerDir) -> Result<PathBuf> {
         let filename = match OS {
-            "macos" => anyhow::Ok("superzet.dmg"),
-            "linux" => Ok("superzet.tar.gz"),
-            "windows" => Ok("superzet.exe"),
+            "macos" => anyhow::Ok("superzent.dmg"),
+            "linux" => Ok("superzent.tar.gz"),
+            "windows" => Ok("superzent.exe"),
             unsupported_os => anyhow::bail!("not supported: {unsupported_os}"),
         }?;
 
@@ -965,7 +966,7 @@ async fn install_release_linux(
     let home_dir = PathBuf::from(env::var("HOME").context("no HOME env var set")?);
     let running_app_path = cx.update(|cx| cx.app_path())?;
 
-    let extracted = temp_dir.path().join("superzet");
+    let extracted = temp_dir.path().join("superzent");
     fs::create_dir_all(&extracted)
         .await
         .context("failed to create directory into which to extract update")?;
@@ -991,12 +992,12 @@ async fn install_release_linux(
     } else {
         String::default()
     };
-    let app_folder_name = format!("superzet{}.app", suffix);
+    let app_folder_name = format!("superzent{}.app", suffix);
 
     let from = extracted.join(&app_folder_name);
     let mut to = home_dir.join(".local");
 
-    let expected_suffix = format!("{}/libexec/superzet-editor", app_folder_name);
+    let expected_suffix = format!("{}/libexec/superzent-editor", app_folder_name);
 
     if let Some(prefix) = running_app_path
         .to_str()
@@ -1014,7 +1015,7 @@ async fn install_release_linux(
 
     anyhow::ensure!(
         output.status.success(),
-        "failed to copy superzet update from {:?} to {:?}: {:?}",
+        "failed to copy superzent update from {:?} to {:?}: {:?}",
         from,
         to,
         String::from_utf8_lossy(&output.stderr)
@@ -1033,7 +1034,7 @@ async fn install_release_macos(
         .file_name()
         .with_context(|| format!("invalid running app path {running_app_path:?}"))?;
 
-    let mount_path = temp_dir.path().join("superzet");
+    let mount_path = temp_dir.path().join("superzent");
     let mut mounted_app_path: OsString = mount_path.join(running_app_filename).into();
 
     mounted_app_path.push("/");
@@ -1076,7 +1077,7 @@ async fn install_release_macos(
 async fn cleanup_windows() -> Result<()> {
     let parent = std::env::current_exe()?
         .parent()
-        .context("No parent dir for superzet.exe")?
+        .context("No parent dir for superzent.exe")?
         .to_owned();
 
     // keep in sync with crates/auto_update_helper/src/updater.rs
@@ -1105,7 +1106,7 @@ async fn install_release_windows(downloaded_installer: PathBuf) -> Result<Option
     // deleting the old one, and launching the new binary.
     let helper_path = std::env::current_exe()?
         .parent()
-        .context("No parent dir for superzet.exe")?
+        .context("No parent dir for superzent.exe")?
         .join("tools")
         .join("auto_update_helper.exe");
     Ok(Some(helper_path))
@@ -1166,14 +1167,14 @@ mod tests {
 
     fn with_releases_url_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
         let _guard = releases_url_env_lock().lock().unwrap();
-        let previous_value = env::var("SUPERZET_RELEASES_URL").ok();
+        let previous_value = env::var("SUPERZENT_RELEASES_URL").ok();
 
         match value {
             Some(value) => unsafe {
-                env::set_var("SUPERZET_RELEASES_URL", value);
+                env::set_var("SUPERZENT_RELEASES_URL", value);
             },
             None => unsafe {
-                env::remove_var("SUPERZET_RELEASES_URL");
+                env::remove_var("SUPERZENT_RELEASES_URL");
             },
         }
 
@@ -1181,10 +1182,10 @@ mod tests {
 
         match previous_value {
             Some(value) => unsafe {
-                env::set_var("SUPERZET_RELEASES_URL", value);
+                env::set_var("SUPERZENT_RELEASES_URL", value);
             },
             None => unsafe {
-                env::remove_var("SUPERZET_RELEASES_URL");
+                env::remove_var("SUPERZENT_RELEASES_URL");
             },
         }
 

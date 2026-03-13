@@ -25,10 +25,10 @@
 //! ## Usage
 //!
 //! Run the visual tests:
-//!   cargo run -p superzet --bin zed_visual_test_runner --features visual-tests
+//!   cargo run -p superzent --bin zed_visual_test_runner --features visual-tests
 //!
 //! Update baseline images (when UI intentionally changes):
-//!   UPDATE_BASELINE=1 cargo run -p superzet --bin zed_visual_test_runner --features visual-tests
+//!   UPDATE_BASELINE=1 cargo run -p superzent --bin zed_visual_test_runner --features visual-tests
 //!
 //! ## Environment Variables
 //!

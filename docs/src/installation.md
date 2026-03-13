@@ -1,9 +1,9 @@
 ---
-title: Install superzet
-description: Install the current public release of superzet.
+title: Install superzent
+description: Install the current public release of superzent.
 ---
 
-# Installing superzet
+# Installing superzent
 
 ## Public Release
 
@@ -11,13 +11,13 @@ The current public release target is macOS on Apple Silicon.
 
 Download the latest DMG from GitHub Releases:
 
-- [superzet releases](https://github.com/currybab/superzet/releases)
+- [superzent releases](https://github.com/currybab/superzent/releases)
 
 Install it by:
 
-1. downloading `superzet-aarch64.dmg`
+1. downloading `superzent-aarch64.dmg`
 2. opening the DMG
-3. dragging `superzet` into `/Applications`
+3. dragging `superzent` into `/Applications`
 
 After the first bundled install, release builds can update in-app through the `releases.nangman.ai/releases` update feed.
 
@@ -26,21 +26,21 @@ After the first bundled install, release builds can update in-app through the `r
 For development builds or unsupported public release targets:
 
 ```sh
-git clone git@github.com:currybab/superzet.git
-cd superzet
-cargo run -p superzet
+git clone git@github.com:currybab/superzent.git
+cd superzent
+cargo run -p superzent
 ```
 
 Default source builds use the lightweight local shell surface:
 
 ```sh
-cargo build -p superzet
+cargo build -p superzent
 ```
 
 To opt back into the heavier upstream-like surface:
 
 ```sh
-cargo build -p superzet --features full
+cargo build -p superzent --features full
 ```
 
 ## Signed macOS Bundles

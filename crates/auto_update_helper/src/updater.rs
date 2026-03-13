@@ -172,10 +172,10 @@ pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
         // Move old files
         // Not deleting because installing new files can fail
         Job::mkdir(p("old")),
-        Job::move_file(p("superzet.exe"), p("old\\superzet.exe")),
+        Job::move_file(p("superzent.exe"), p("old\\superzent.exe")),
         Job::mkdir(p("old\\bin")),
-        Job::move_file(p("bin\\superzet.exe"), p("old\\bin\\superzet.exe")),
-        Job::move_file(p("bin\\superzet"), p("old\\bin\\superzet")),
+        Job::move_file(p("bin\\superzent.exe"), p("old\\bin\\superzent.exe")),
+        Job::move_file(p("bin\\superzent"), p("old\\bin\\superzent")),
         //
         // TODO: remove after a few weeks once everyone is on the new version and this file never exists
         Job::move_if_exists(p("OpenConsole.exe"), p("old\\OpenConsole.exe")),
@@ -189,9 +189,9 @@ pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
         //
         Job::move_file(p("conpty.dll"), p("old\\conpty.dll")),
         // Copy new files
-        Job::move_file(p("install\\superzet.exe"), p("superzet.exe")),
-        Job::move_file(p("install\\bin\\superzet.exe"), p("bin\\superzet.exe")),
-        Job::move_file(p("install\\bin\\superzet"), p("bin\\superzet")),
+        Job::move_file(p("install\\superzent.exe"), p("superzent.exe")),
+        Job::move_file(p("install\\bin\\superzent.exe"), p("bin\\superzent.exe")),
+        Job::move_file(p("install\\bin\\superzent"), p("bin\\superzent")),
         //
         Job::mkdir_if_exists(p("x64"), p("install\\x64")),
         Job::mkdir_if_exists(p("arm64"), p("install\\arm64")),
@@ -279,9 +279,9 @@ pub(crate) static JOBS: LazyLock<[Job; 9]> = LazyLock::new(|| {
 fn release_file_handles(app_dir: &Path) -> Result<()> {
     // Files that commonly get locked by Explorer or other processes
     let files_to_release = [
-        app_dir.join("superzet.exe"),
-        app_dir.join("bin\\superzet.exe"),
-        app_dir.join("bin\\superzet"),
+        app_dir.join("superzent.exe"),
+        app_dir.join("bin\\superzent.exe"),
+        app_dir.join("bin\\superzent"),
         app_dir.join("conpty.dll"),
     ];
 
@@ -428,7 +428,7 @@ pub(crate) fn perform_update(app_dir: &Path, hwnd: Option<isize>, launch: bool) 
 
     if launch {
         #[allow(clippy::disallowed_methods, reason = "doesn't run in the main binary")]
-        let _ = std::process::Command::new(app_dir.join("superzet.exe")).spawn();
+        let _ = std::process::Command::new(app_dir.join("superzent.exe")).spawn();
     }
     log::info!("Update completed successfully");
     Ok(())

@@ -32,11 +32,11 @@ jobs:
       run: ./script/clear-target-dir-if-larger-than 300
     - name: run_bundling::bundle_mac_aarch64
       run: ./script/bundle-mac aarch64-apple-darwin
-    - name: '@actions/upload-artifact superzet-aarch64.dmg'
+    - name: '@actions/upload-artifact superzent-aarch64.dmg'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: superzet-aarch64.dmg
-        path: target/aarch64-apple-darwin/release/superzet-aarch64.dmg
+        name: superzent-aarch64.dmg
+        path: target/aarch64-apple-darwin/release/superzent-aarch64.dmg
         if-no-files-found: error
     timeout-minutes: 60
 concurrency:

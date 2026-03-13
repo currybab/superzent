@@ -2,23 +2,23 @@ use anyhow::{Result, bail};
 use editor::Editor;
 use gpui::{AnyElement, Context, Entity, ScrollHandle, SharedString, Subscription, Window};
 use std::collections::BTreeMap;
-use superzet_model::{AgentPreset, AgentPresetDraft, SuperzetStore};
+use superzent_model::{AgentPreset, AgentPresetDraft, SuperzentStore};
 use ui::{Button, ButtonStyle, Color, Divider, IconButton, IconName, Label, Tooltip, prelude::*};
 
 use crate::SettingsWindow;
 
-pub(crate) fn render_superzet_agent_presets_page(
+pub(crate) fn render_superzent_agent_presets_page(
     _settings_window: &SettingsWindow,
     scroll_handle: &ScrollHandle,
     window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
-    let page = window.use_keyed_state("superzet-agent-presets-page", cx, |_, cx| {
+    let page = window.use_keyed_state("superzent-agent-presets-page", cx, |_, cx| {
         AgentPresetsPage::new(cx)
     });
 
     v_flex()
-        .id("superzet-agent-presets-page")
+        .id("superzent-agent-presets-page")
         .min_w_0()
         .min_h_0()
         .w_full()
@@ -32,14 +32,14 @@ pub(crate) fn render_superzet_agent_presets_page(
 }
 
 struct AgentPresetsPage {
-    store: Entity<SuperzetStore>,
+    store: Entity<SuperzentStore>,
     last_error: Option<SharedString>,
     _subscription: Subscription,
 }
 
 impl AgentPresetsPage {
     fn new(cx: &mut Context<Self>) -> Self {
-        let store = SuperzetStore::global(cx);
+        let store = SuperzentStore::global(cx);
         let subscription = cx.observe(&store, |_, _, cx| cx.notify());
 
         Self {
@@ -165,7 +165,7 @@ impl AgentPresetsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let label_editor = preset_editor(
-            format!("superzet-preset-label-{}", preset.id),
+            format!("superzent-preset-label-{}", preset.id),
             &preset.label,
             false,
             "Preset name",
@@ -173,7 +173,7 @@ impl AgentPresetsPage {
             cx,
         );
         let command_editor = preset_editor(
-            format!("superzet-preset-command-{}", preset.id),
+            format!("superzent-preset-command-{}", preset.id),
             &preset.command,
             false,
             "Executable to launch",
@@ -181,7 +181,7 @@ impl AgentPresetsPage {
             cx,
         );
         let args_editor = preset_editor(
-            format!("superzet-preset-args-{}", preset.id),
+            format!("superzent-preset-args-{}", preset.id),
             &preset.args.join("\n"),
             true,
             "One argument per line",
@@ -189,7 +189,7 @@ impl AgentPresetsPage {
             cx,
         );
         let env_editor = preset_editor(
-            format!("superzet-preset-env-{}", preset.id),
+            format!("superzent-preset-env-{}", preset.id),
             &render_env_lines(&preset.env),
             true,
             "KEY=VALUE per line",
@@ -232,7 +232,7 @@ impl AgentPresetsPage {
                             .gap_1()
                             .child(
                                 IconButton::new(
-                                    format!("superzet-preset-up-{}", preset.id),
+                                    format!("superzent-preset-up-{}", preset.id),
                                     IconName::ArrowUp,
                                 )
                                 .style(ButtonStyle::Subtle)
@@ -245,7 +245,7 @@ impl AgentPresetsPage {
                             )
                             .child(
                                 IconButton::new(
-                                    format!("superzet-preset-down-{}", preset.id),
+                                    format!("superzent-preset-down-{}", preset.id),
                                     IconName::ArrowDown,
                                 )
                                 .style(ButtonStyle::Subtle)
@@ -258,7 +258,7 @@ impl AgentPresetsPage {
                             )
                             .child(
                                 IconButton::new(
-                                    format!("superzet-preset-delete-{}", preset.id),
+                                    format!("superzent-preset-delete-{}", preset.id),
                                     IconName::Trash,
                                 )
                                 .style(ButtonStyle::Subtle)
@@ -288,7 +288,7 @@ impl AgentPresetsPage {
                     .justify_end()
                     .gap_2()
                     .child(
-                        Button::new(format!("superzet-preset-reset-{}", preset.id), "Reset")
+                        Button::new(format!("superzent-preset-reset-{}", preset.id), "Reset")
                             .style(ButtonStyle::Subtle)
                             .on_click(cx.listener({
                                 let reset_label_editor = label_editor.clone();
@@ -329,7 +329,7 @@ impl AgentPresetsPage {
                             })),
                     )
                     .child(
-                        Button::new(format!("superzet-preset-save-{}", preset.id), "Save")
+                        Button::new(format!("superzent-preset-save-{}", preset.id), "Save")
                             .style(ButtonStyle::Filled)
                             .on_click(cx.listener({
                                 let preset_id = preset.id.clone();
@@ -386,7 +386,7 @@ impl Render for AgentPresetsPage {
                     .w_full()
                     .justify_end()
                     .child(
-                        Button::new("superzet-add-preset", "Add Preset")
+                        Button::new("superzent-add-preset", "Add Preset")
                             .style(ButtonStyle::Filled)
                             .icon(IconName::Plus)
                             .on_click(cx.listener(|this, _, _, cx| this.add_preset(cx))),

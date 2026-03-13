@@ -337,7 +337,7 @@ fn render_worktree_auto_trust_switch(tab_index: &mut isize, cx: &mut App) -> imp
         ui::ToggleState::Unselected
     };
 
-    let tooltip_description = "superzet only allows services like language servers, project settings, and MCP servers to run after you mark a new project as trusted.";
+    let tooltip_description = "superzent only allows services like language servers, project settings, and MCP servers to run after you mark a new project as trusted.";
 
     SwitchField::new(
         "onboarding-auto-trust-worktrees",

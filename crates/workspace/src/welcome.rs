@@ -26,7 +26,7 @@ pub struct OpenRecentProject {
 actions!(
     zed,
     [
-        /// Show the superzet welcome screen
+        /// Show the superzent welcome screen
         ShowWelcome
     ]
 );
@@ -374,9 +374,9 @@ impl Render for WelcomePage {
         };
 
         let welcome_label = if self.fallback_to_recent_projects {
-            "Welcome back to superzet"
+            "Welcome back to superzent"
         } else {
-            "Welcome to superzet"
+            "Welcome to superzent"
         };
 
         h_flex()

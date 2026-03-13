@@ -228,13 +228,13 @@ impl HttpClientWithUrl {
 
     /// Builds the extension marketplace URL using the given path.
     ///
-    /// superzet keeps its own app/server surface, but extensions still come from the
+    /// superzent keeps its own app/server surface, but extensions still come from the
     /// upstream Zed marketplace by default. Custom or local server URLs keep their
     /// existing override behavior.
     pub fn build_extension_api_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
-            "https://zed.dev" | "https://superzet.dev" => "https://api.zed.dev",
+            "https://zed.dev" | "https://superzent.dev" => "https://api.zed.dev",
             "https://staging.zed.dev" => "https://api-staging.zed.dev",
             "http://localhost:3000" => "http://localhost:8080",
             other => other,
@@ -378,8 +378,8 @@ mod tests {
     }
 
     #[test]
-    fn extension_api_uses_zed_marketplace_for_superzet_default() {
-        let url = client("https://superzet.dev")
+    fn extension_api_uses_zed_marketplace_for_superzent_default() {
+        let url = client("https://superzent.dev")
             .build_extension_api_url("/extensions", &[])
             .unwrap();
 

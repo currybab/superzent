@@ -3,9 +3,9 @@ AppId={#AppId}
 AppName={#AppName}
 AppVerName={#AppDisplayName}
 AppPublisher=nangman
-AppPublisherURL=https://github.com/currybab/superzet
-AppSupportURL=https://github.com/currybab/superzet/discussions
-AppUpdatesURL=https://github.com/currybab/superzet/releases
+AppPublisherURL=https://github.com/currybab/superzent
+AppSupportURL=https://github.com/currybab/superzent/discussions
+AppUpdatesURL=https://github.com/currybab/superzent/releases
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
@@ -65,7 +65,7 @@ Name: "addtopath"; Description: "{cm:AddToPath}"; GroupDescription: "{cm:Other}"
 Name: "{app}"; AfterInstall: DisableAppDirInheritance
 
 [Files]
-Source: "{#ResourcesDir}\superzet.exe"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
+Source: "{#ResourcesDir}\superzent.exe"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
 Source: "{#ResourcesDir}\bin\*"; DestDir: "{code:GetInstallDir}\bin"; Flags: ignoreversion
 Source: "{#ResourcesDir}\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "{#ResourcesDir}\appx\*"; DestDir: "{app}\appx";  BeforeInstall: RemoveAppxPackage; AfterInstall: AddAppxPackage; Flags: ignoreversion; Check: IsWindows11OrLater
@@ -1256,10 +1256,10 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}\command"; Valu
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{code:AddToPath|{app}\bin}"; Tasks: addtopath; Check: NeedsAddToPath(ExpandConstant('{app}\bin'))
 
 ; URI Scheme
-Root: HKCU; Subkey: "Software\Classes\superzet"; ValueType: "string"; ValueData: "URL:superzet Protocol"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\superzet"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\superzet\DefaultIcon"; ValueType: "string"; ValueData: "{app}\superzet.exe,1"
-Root: HKCU; Subkey: "Software\Classes\superzet\shell\open\command"; ValueType: "string"; ValueData: """{app}\superzet.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\superzent"; ValueType: "string"; ValueData: "URL:superzent Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\superzent"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\superzent\DefaultIcon"; ValueType: "string"; ValueData: "{app}\superzent.exe,1"
+Root: HKCU; Subkey: "Software\Classes\superzent\shell\open\command"; ValueType: "string"; ValueData: """{app}\superzent.exe"" ""%1"""
 
 [Code]
 function WizardNotSilent(): Boolean;

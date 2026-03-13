@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Common ways to debug superzet issues before filing a bug.
+description: Common ways to debug superzent issues before filing a bug.
 ---
 
 # Troubleshooting
@@ -21,7 +21,7 @@ Start with the app log:
 
 Common macOS log location:
 
-- `~/Library/Logs/superzet/superzet.log`
+- `~/Library/Logs/superzent/superzent.log`
 
 If your build or bundle still writes to inherited upstream paths, include the actual path you found in the issue.
 
@@ -41,7 +41,7 @@ For performance investigations, run a release build with measurements enabled:
 
 ```sh
 export ZED_MEASUREMENTS=1
-cargo run -p superzet --release
+cargo run -p superzent --release
 ```
 
 Then compare runs with:

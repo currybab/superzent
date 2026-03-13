@@ -1,11 +1,11 @@
 ---
-title: Getting Started with superzet
-description: Get started with superzet, the local-first workspace shell for coding agents.
+title: Getting Started with superzent
+description: Get started with superzent, the local-first workspace shell for coding agents.
 ---
 
 # Getting Started
 
-`superzet` is a local-first shell for working across repositories, worktrees, terminals, diffs, and editor panes in one native app window.
+`superzent` is a local-first shell for working across repositories, worktrees, terminals, diffs, and editor panes in one native app window.
 
 ## Quick Start
 
@@ -26,7 +26,7 @@ The main window is built around multiple local workspaces. Use the welcome page 
 
 ### 3. Work from terminals first
 
-The default `superzet` workflow expects you to run external coding agents and local tooling from terminals.
+The default `superzent` workflow expects you to run external coding agents and local tooling from terminals.
 
 - Use `Cmd+T` for a center-pane terminal tab
 - Use `` Ctrl+` `` to show or hide the terminal panel

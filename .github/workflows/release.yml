@@ -33,13 +33,13 @@ jobs:
     runs-on: macos-latest
     env:
       CARGO_TARGET_DIR: target
-      SUPERZET_RELEASE_CHANNEL: stable
-      SUPERZET_MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-      SUPERZET_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      SUPERZET_APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
-      SUPERZET_APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-      SUPERZET_APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-      SUPERZET_MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+      SUPERZENT_RELEASE_CHANNEL: stable
+      SUPERZENT_MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      SUPERZENT_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      SUPERZENT_APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+      SUPERZENT_APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+      SUPERZENT_APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+      SUPERZENT_MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
     steps:
     - name: steps::checkout_repo
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -53,11 +53,11 @@ jobs:
       run: ./script/clear-target-dir-if-larger-than 300
     - name: release::bundle_mac_stable
       run: ./script/bundle-mac aarch64-apple-darwin
-    - name: '@actions/upload-artifact superzet-aarch64.dmg'
+    - name: '@actions/upload-artifact superzent-aarch64.dmg'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: superzet-aarch64.dmg
-        path: target/aarch64-apple-darwin/release/superzet-aarch64.dmg
+        name: superzent-aarch64.dmg
+        path: target/aarch64-apple-darwin/release/superzent-aarch64.dmg
         if-no-files-found: error
     timeout-minutes: 360
   bundle_linux_remote_server_stable_x86_64:
@@ -67,11 +67,11 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       CARGO_INCREMENTAL: 0
-      SUPERZET_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
-      SUPERZET_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
+      SUPERZENT_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
+      SUPERZENT_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
       ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
       ZED_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
-      SUPERZET_RELEASE_CHANNEL: stable
+      SUPERZENT_RELEASE_CHANNEL: stable
       CC: clang-18
       CXX: clang++-18
     steps:
@@ -108,12 +108,12 @@ jobs:
         export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         cargo zigbuild --release --target "x86_64-unknown-linux-musl" --package remote_server
         objcopy --strip-debug "target/x86_64-unknown-linux-musl/release/remote_server"
-        gzip -f --stdout --best "target/x86_64-unknown-linux-musl/release/remote_server" > "target/superzet-remote-server-linux-x86_64.gz"
-    - name: '@actions/upload-artifact superzet-remote-server-linux-x86_64.gz'
+        gzip -f --stdout --best "target/x86_64-unknown-linux-musl/release/remote_server" > "target/superzent-remote-server-linux-x86_64.gz"
+    - name: '@actions/upload-artifact superzent-remote-server-linux-x86_64.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: superzet-remote-server-linux-x86_64.gz
-        path: target/superzet-remote-server-linux-x86_64.gz
+        name: superzent-remote-server-linux-x86_64.gz
+        path: target/superzent-remote-server-linux-x86_64.gz
         if-no-files-found: error
     timeout-minutes: 60
   bundle_linux_remote_server_stable_aarch64:
@@ -123,11 +123,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       CARGO_INCREMENTAL: 0
-      SUPERZET_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
-      SUPERZET_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
+      SUPERZENT_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
+      SUPERZENT_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
       ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
       ZED_MINIDUMP_ENDPOINT: ${{ secrets.ZED_SENTRY_MINIDUMP_ENDPOINT }}
-      SUPERZET_RELEASE_CHANNEL: stable
+      SUPERZENT_RELEASE_CHANNEL: stable
       CC: clang-18
       CXX: clang++-18
     steps:
@@ -164,12 +164,12 @@ jobs:
         export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         cargo zigbuild --release --target "aarch64-unknown-linux-musl" --package remote_server
         objcopy --strip-debug "target/aarch64-unknown-linux-musl/release/remote_server"
-        gzip -f --stdout --best "target/aarch64-unknown-linux-musl/release/remote_server" > "target/superzet-remote-server-linux-aarch64.gz"
-    - name: '@actions/upload-artifact superzet-remote-server-linux-aarch64.gz'
+        gzip -f --stdout --best "target/aarch64-unknown-linux-musl/release/remote_server" > "target/superzent-remote-server-linux-aarch64.gz"
+    - name: '@actions/upload-artifact superzent-remote-server-linux-aarch64.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: superzet-remote-server-linux-aarch64.gz
-        path: target/superzet-remote-server-linux-aarch64.gz
+        name: superzent-remote-server-linux-aarch64.gz
+        path: target/superzent-remote-server-linux-aarch64.gz
         if-no-files-found: error
     timeout-minutes: 60
   publish_release:
@@ -190,10 +190,10 @@ jobs:
     - name: release::publish_release
       run: |
         mkdir -p release-artifacts
-        cp "./artifacts/superzet-aarch64.dmg/superzet-aarch64.dmg" "release-artifacts/superzet-aarch64.dmg"
-        cp "./artifacts/superzet-remote-server-linux-x86_64.gz/superzet-remote-server-linux-x86_64.gz" "release-artifacts/superzet-remote-server-linux-x86_64.gz"
-        cp "./artifacts/superzet-remote-server-linux-aarch64.gz/superzet-remote-server-linux-aarch64.gz" "release-artifacts/superzet-remote-server-linux-aarch64.gz"
-        shasum -a 256 "release-artifacts/superzet-aarch64.dmg" > "release-artifacts/sha256sums.txt"
+        cp "./artifacts/superzent-aarch64.dmg/superzent-aarch64.dmg" "release-artifacts/superzent-aarch64.dmg"
+        cp "./artifacts/superzent-remote-server-linux-x86_64.gz/superzent-remote-server-linux-x86_64.gz" "release-artifacts/superzent-remote-server-linux-x86_64.gz"
+        cp "./artifacts/superzent-remote-server-linux-aarch64.gz/superzent-remote-server-linux-aarch64.gz" "release-artifacts/superzent-remote-server-linux-aarch64.gz"
+        shasum -a 256 "release-artifacts/superzent-aarch64.dmg" > "release-artifacts/sha256sums.txt"
 
         if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release create "$GITHUB_REF_NAME" \

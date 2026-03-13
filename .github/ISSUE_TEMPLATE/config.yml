@@ -2,8 +2,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Feature request
-    url: https://github.com/currybab/superzet/discussions/new/choose
+    url: https://github.com/currybab/superzent/discussions/new/choose
     about: Use GitHub Discussions for feature ideas, roadmap feedback, and open-ended product discussion.
   - name: Questions and support
-    url: https://github.com/currybab/superzet/discussions
+    url: https://github.com/currybab/superzent/discussions
     about: Ask usage questions or share setup issues that are not yet confirmed bugs.

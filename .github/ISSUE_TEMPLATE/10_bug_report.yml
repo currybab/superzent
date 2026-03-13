@@ -1,21 +1,21 @@
 name: Report a bug
-description: Report a problem with superzet.
+description: Report a problem with superzent.
 type: Bug
 labels: "state:needs triage"
 body:
   - type: markdown
     attributes:
       value: |
-        Before filing, please search existing issues: https://github.com/currybab/superzet/issues
+        Before filing, please search existing issues: https://github.com/currybab/superzent/issues
 
         Feature request? Please use Discussions instead:
-        https://github.com/currybab/superzet/discussions/new/choose
+        https://github.com/currybab/superzent/discussions/new/choose
   - type: textarea
     attributes:
       label: Reproduction steps
       description: List the smallest set of steps needed to reproduce the problem from a clean launch.
       placeholder: |
-        1. Start superzet
+        1. Start superzent
         2. Open a repository
         3. Click ...
     validations:
@@ -31,10 +31,10 @@ body:
   - type: textarea
     id: environment
     attributes:
-      label: superzet version and system specs
+      label: superzent version and system specs
       description: In the app, copy system specs from the command palette and paste them here.
       placeholder: |
-        superzet: v0.1.0
+        superzent: v0.1.0
         OS: macOS 15.3
         Memory: 36 GiB
         Architecture: aarch64
@@ -45,7 +45,7 @@ body:
       label: Attach log output
       description: Open the app log from the command palette and paste the relevant lines here after redacting secrets.
       value: |
-        <details><summary>superzet.log</summary>
+        <details><summary>superzent.log</summary>
 
         ```log
 

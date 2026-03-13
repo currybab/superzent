@@ -44,7 +44,7 @@ struct ExplorerCommandInjector;
 impl IExplorerCommand_Impl for ExplorerCommandInjector_Impl {
     fn GetTitle(&self, _: Ref<IShellItemArray>) -> Result<windows_core::PWSTR> {
         let command_description =
-            retrieve_command_description().unwrap_or(HSTRING::from("Open with superzet"));
+            retrieve_command_description().unwrap_or(HSTRING::from("Open with superzent"));
         unsafe { SHStrDupW(&command_description) }
     }
 
@@ -176,19 +176,19 @@ fn get_zed_install_folder() -> Option<PathBuf> {
 
 #[inline]
 fn get_zed_exe_path() -> Option<String> {
-    get_zed_install_folder().map(|path| path.join("superzet.exe").to_string_lossy().into_owned())
+    get_zed_install_folder().map(|path| path.join("superzent.exe").to_string_lossy().into_owned())
 }
 
 #[inline]
 fn retrieve_command_description() -> Result<HSTRING> {
     #[cfg(all(feature = "stable", not(feature = "dev")))]
-    const REG_PATH: &str = "Software\\Classes\\SuperzetEditorContextMenu";
+    const REG_PATH: &str = "Software\\Classes\\SuperzentEditorContextMenu";
     #[cfg(all(feature = "dev", not(feature = "stable")))]
-    const REG_PATH: &str = "Software\\Classes\\SuperzetEditorDevContextMenu";
+    const REG_PATH: &str = "Software\\Classes\\SuperzentEditorDevContextMenu";
 
     // Make cargo clippy happy
     #[cfg(all(feature = "stable", feature = "dev"))]
-    const REG_PATH: &str = "Software\\Classes\\SuperzetEditorClippyContextMenu";
+    const REG_PATH: &str = "Software\\Classes\\SuperzentEditorClippyContextMenu";
 
     let key = windows_registry::CURRENT_USER.open(REG_PATH)?;
     key.get_hstring("Title")

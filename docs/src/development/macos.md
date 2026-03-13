@@ -1,13 +1,13 @@
-title: Building superzet for macOS
-description: "Guide to building superzet for macOS development."
+title: Building superzent for macOS
+description: "Guide to building superzent for macOS development."
 
 ---
 
-# Building superzet for macOS
+# Building superzent for macOS
 
 ## Repository
 
-Clone the [superzet repository](https://github.com/currybab/superzet).
+Clone the [superzent repository](https://github.com/currybab/superzent).
 
 ## Dependencies
 
@@ -36,26 +36,26 @@ Clone the [superzet repository](https://github.com/currybab/superzet).
   brew install cmake
   ```
 
-## Building superzet from Source
+## Building superzent from Source
 
-Once you have the dependencies installed, you can build `superzet` using [Cargo](https://doc.rust-lang.org/cargo/).
+Once you have the dependencies installed, you can build `superzent` using [Cargo](https://doc.rust-lang.org/cargo/).
 
 For a debug build:
 
 ```sh
-cargo run -p superzet
+cargo run -p superzent
 ```
 
 For a release build:
 
 ```sh
-cargo run -p superzet --release
+cargo run -p superzent --release
 ```
 
 And to run the tests:
 
 ```sh
-cargo test -p superzet
+cargo test -p superzent
 ```
 
 ## Visual Regression Tests
@@ -74,7 +74,7 @@ You must grant Screen Recording permission to your terminal:
 ### Running Visual Tests
 
 ```sh
-cargo run -p superzet --bin zed_visual_test_runner --features visual-tests
+cargo run -p superzent --bin zed_visual_test_runner --features visual-tests
 ```
 
 ### Baseline Images

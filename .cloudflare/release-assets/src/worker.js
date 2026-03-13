@@ -1,4 +1,4 @@
-const REPOSITORY = "currybab/superzet";
+const REPOSITORY = "currybab/superzent";
 const GITHUB_API_BASE_URL = `https://api.github.com/repos/${REPOSITORY}`;
 
 function jsonResponse(body, status = 200) {
@@ -47,19 +47,19 @@ function assetNameFromQuery(searchParams) {
   const os = searchParams.get("os");
   const arch = searchParams.get("arch");
 
-  if (asset === "superzet") {
+  if (asset === "superzent") {
     if (os === "macos" && arch === "aarch64") {
-      return "superzet-aarch64.dmg";
+      return "superzent-aarch64.dmg";
     }
   }
 
-  if (asset === "superzet-remote-server") {
+  if (asset === "superzent-remote-server") {
     if (os === "linux" && arch === "x86_64") {
-      return "superzet-remote-server-linux-x86_64.gz";
+      return "superzent-remote-server-linux-x86_64.gz";
     }
 
     if (os === "linux" && arch === "aarch64") {
-      return "superzet-remote-server-linux-aarch64.gz";
+      return "superzent-remote-server-linux-aarch64.gz";
     }
   }
 
@@ -69,7 +69,7 @@ function assetNameFromQuery(searchParams) {
 async function githubFetch(path, env) {
   const headers = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "superzet-release-assets-worker",
+    "User-Agent": "superzent-release-assets-worker",
   };
 
   if (env.GITHUB_RELEASES_TOKEN) {

@@ -48,9 +48,9 @@
 - [All Actions](./all-actions.md)
 - [CLI Reference](./reference/cli.md)
 
-# Developing superzet
+# Developing superzent
 
-- [Developing superzet](./development.md)
+- [Developing superzent](./development.md)
   - [macOS](./development/macos.md)
   - [Linux](./development/linux.md)
   - [Windows](./development/windows.md)

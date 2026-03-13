@@ -380,7 +380,7 @@ pub struct AgentSession {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SuperzetState {
+pub struct SuperzentState {
     pub active_project_id: Option<String>,
     pub active_workspace_id: Option<String>,
     pub projects: Vec<ProjectEntry>,
@@ -389,7 +389,7 @@ pub struct SuperzetState {
     pub presets: Vec<AgentPreset>,
 }
 
-impl Default for SuperzetState {
+impl Default for SuperzentState {
     fn default() -> Self {
         Self {
             active_project_id: None,
@@ -402,27 +402,27 @@ impl Default for SuperzetState {
     }
 }
 
-pub struct SuperzetStore {
+pub struct SuperzentStore {
     state_path: PathBuf,
-    state: SuperzetState,
+    state: SuperzentState,
 }
 
-struct GlobalSuperzetStore(Entity<SuperzetStore>);
+struct GlobalSuperzentStore(Entity<SuperzentStore>);
 
-impl Global for GlobalSuperzetStore {}
+impl Global for GlobalSuperzentStore {}
 
-impl SuperzetStore {
+impl SuperzentStore {
     pub fn init(cx: &mut App) {
         let store = cx.new(|_| Self::load());
-        cx.set_global(GlobalSuperzetStore(store));
+        cx.set_global(GlobalSuperzentStore(store));
     }
 
     pub fn global(cx: &App) -> Entity<Self> {
-        cx.global::<GlobalSuperzetStore>().0.clone()
+        cx.global::<GlobalSuperzentStore>().0.clone()
     }
 
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalSuperzetStore>()
+        cx.try_global::<GlobalSuperzentStore>()
             .map(|store| store.0.clone())
     }
 
@@ -573,7 +573,7 @@ impl SuperzetStore {
         self.state
             .presets
             .first()
-            .expect("Superzet requires at least one agent preset")
+            .expect("Superzent requires at least one agent preset")
     }
 
     pub fn preset(&self, id: &str) -> Option<&AgentPreset> {
@@ -1213,10 +1213,10 @@ impl SuperzetStore {
         let mut state = fs::read_to_string(&state_path)
             .ok()
             .and_then(|contents| {
-                serde_json::from_str::<SuperzetState>(&contents)
+                serde_json::from_str::<SuperzentState>(&contents)
                     .ok()
                     .or_else(|| {
-                        serde_json::from_str::<LegacySuperzetState>(&contents)
+                        serde_json::from_str::<LegacySuperzentState>(&contents)
                             .ok()
                             .map(Into::into)
                     })
@@ -1399,7 +1399,7 @@ impl SuperzetStore {
 
     fn persist_and_notify(&self, cx: &mut Context<Self>) {
         if let Err(error) = self.persist() {
-            log::error!("failed to persist Superzet state: {error:#}");
+            log::error!("failed to persist Superzent state: {error:#}");
         }
         cx.notify();
     }
@@ -1437,7 +1437,7 @@ fn update_workspace_metadata(
 }
 
 #[derive(Deserialize)]
-struct LegacySuperzetState {
+struct LegacySuperzentState {
     active_project_id: Option<String>,
     active_workspace_id: Option<String>,
     projects: Vec<LegacyProjectEntry>,
@@ -1483,8 +1483,8 @@ struct LegacyWorkspaceEntry {
     last_opened_at: DateTime<Utc>,
 }
 
-impl From<LegacySuperzetState> for SuperzetState {
-    fn from(value: LegacySuperzetState) -> Self {
+impl From<LegacySuperzentState> for SuperzentState {
+    fn from(value: LegacySuperzentState) -> Self {
         Self {
             active_project_id: value.active_project_id,
             active_workspace_id: value.active_workspace_id,
@@ -1560,7 +1560,7 @@ struct LegacyTaskWorkspace {
     last_event_at: DateTime<Utc>,
 }
 
-fn load_legacy_state() -> Option<SuperzetState> {
+fn load_legacy_state() -> Option<SuperzentState> {
     let legacy_path = legacy_state_path();
     let contents = fs::read_to_string(&legacy_path).ok()?;
     let legacy = serde_json::from_str::<LegacyState>(&contents).ok()?;
@@ -1575,7 +1575,7 @@ fn load_legacy_state() -> Option<SuperzetState> {
         .map(|preset| preset.id.clone())
         .unwrap_or_else(|| "codex".to_string());
 
-    let mut state = SuperzetState {
+    let mut state = SuperzentState {
         active_project_id: None,
         active_workspace_id: legacy.active_task_id.clone(),
         projects: Vec::new(),
@@ -1693,11 +1693,11 @@ fn load_legacy_state() -> Option<SuperzetState> {
 }
 
 fn state_path() -> PathBuf {
-    paths::data_dir().join("superzet").join("state.json")
+    paths::data_dir().join("state.json")
 }
 
 fn legacy_state_path() -> PathBuf {
-    paths::data_dir().join("superzet").join("tasks.json")
+    paths::data_dir().join("tasks.json")
 }
 
 fn default_presets() -> Vec<AgentPreset> {
@@ -1777,7 +1777,7 @@ impl AgentPresetDraft {
     }
 }
 
-impl SuperzetStore {
+impl SuperzentStore {
     fn unique_preset_id(&self, base_id: &str) -> String {
         let existing_ids = self
             .state
@@ -1983,9 +1983,9 @@ mod tests {
             ),
         ];
 
-        let store = SuperzetStore {
+        let store = SuperzentStore {
             state_path: PathBuf::from("/tmp/state.json"),
-            state: SuperzetState {
+            state: SuperzentState {
                 active_project_id: None,
                 active_workspace_id: None,
                 projects: Vec::new(),
@@ -2003,9 +2003,9 @@ mod tests {
 
     #[test]
     fn startup_workspace_prefers_active_workspace() {
-        let store = SuperzetStore {
+        let store = SuperzentStore {
             state_path: PathBuf::from("/tmp/state.json"),
-            state: SuperzetState {
+            state: SuperzentState {
                 active_project_id: Some("project".to_string()),
                 active_workspace_id: Some("worktree".to_string()),
                 projects: vec![project_entry("project", "/tmp/repo")],
@@ -2029,9 +2029,9 @@ mod tests {
 
     #[test]
     fn normalize_falls_back_to_first_project_primary_workspace() {
-        let mut store = SuperzetStore {
+        let mut store = SuperzentStore {
             state_path: PathBuf::from("/tmp/state.json"),
-            state: SuperzetState {
+            state: SuperzentState {
                 active_project_id: Some("missing".to_string()),
                 active_workspace_id: Some("missing".to_string()),
                 projects: vec![
@@ -2105,9 +2105,9 @@ mod tests {
             last_opened_at: Utc::now(),
         };
 
-        let store = SuperzetStore {
+        let store = SuperzentStore {
             state_path: PathBuf::from("/tmp/state.json"),
-            state: SuperzetState {
+            state: SuperzentState {
                 active_project_id: None,
                 active_workspace_id: None,
                 projects: Vec::new(),

@@ -666,7 +666,7 @@ pub fn open_settings_editor(
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("superzet — settings".into()),
+                    title: Some("superzent — settings".into()),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(12.0), px(12.0))),
                 }),
@@ -1241,7 +1241,7 @@ fn render_settings_item_link(
         .read_from_clipboard()
         .and_then(|entry| entry.text())
         .map_or(false, |maybe_url| {
-            json_path.is_some() && maybe_url.strip_prefix("superzet://settings/") == json_path
+            json_path.is_some() && maybe_url.strip_prefix("superzent://settings/") == json_path
         });
 
     let (link_icon, link_icon_color) = if clipboard_has_link {
@@ -1270,7 +1270,7 @@ fn render_settings_item_link(
                 .tooltip(Tooltip::text("Copy Link"))
                 .when_some(json_path, |this, path| {
                     this.on_click(cx.listener(move |_, _, _, cx| {
-                        let link = format!("superzet://settings/{}", path);
+                        let link = format!("superzent://settings/{}", path);
                         cx.write_to_clipboard(ClipboardItem::new_string(link));
                         cx.notify();
                     }))

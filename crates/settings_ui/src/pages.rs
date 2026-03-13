@@ -5,7 +5,7 @@ mod audio_test_window;
 #[allow(dead_code)]
 #[cfg(feature = "ai")]
 mod edit_prediction_provider_setup;
-mod superzet_agent_presets;
+mod superzent_agent_presets;
 #[allow(dead_code)]
 #[cfg(feature = "ai")]
 mod tool_permissions_setup;
@@ -13,7 +13,7 @@ mod tool_permissions_setup;
 pub(crate) use audio_input_output_setup::{
     render_input_audio_device_dropdown, render_output_audio_device_dropdown,
 };
-pub(crate) use superzet_agent_presets::render_superzet_agent_presets_page;
+pub(crate) use superzent_agent_presets::render_superzent_agent_presets_page;
 
 #[cfg(feature = "ai")]
 pub use tool_permissions_setup::{

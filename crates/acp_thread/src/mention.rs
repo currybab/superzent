@@ -320,7 +320,7 @@ impl MentionUri {
                 url.set_path(&abs_path.to_string_lossy());
                 url
             }
-            MentionUri::PastedImage => Url::parse("superzet:///agent/pasted-image").unwrap(),
+            MentionUri::PastedImage => Url::parse("superzent:///agent/pasted-image").unwrap(),
             MentionUri::Directory { abs_path } => {
                 let mut url = Url::parse("file:///").unwrap();
                 url.set_path(&abs_path.to_string_lossy());
@@ -350,7 +350,7 @@ impl MentionUri {
                     url.set_path(&path.to_string_lossy());
                     url
                 } else {
-                    let mut url = Url::parse("superzet:///").unwrap();
+                    let mut url = Url::parse("superzent:///").unwrap();
                     url.set_path("/agent/untitled-buffer");
                     url
                 };
@@ -362,13 +362,13 @@ impl MentionUri {
                 url
             }
             MentionUri::Thread { name, id } => {
-                let mut url = Url::parse("superzet:///").unwrap();
+                let mut url = Url::parse("superzent:///").unwrap();
                 url.set_path(&format!("/agent/thread/{id}"));
                 url.query_pairs_mut().append_pair("name", name);
                 url
             }
             MentionUri::TextThread { path, name } => {
-                let mut url = Url::parse("superzet:///").unwrap();
+                let mut url = Url::parse("superzent:///").unwrap();
                 url.set_path(&format!(
                     "/agent/text-thread/{}",
                     path.to_string_lossy().trim_start_matches('/')
@@ -377,7 +377,7 @@ impl MentionUri {
                 url
             }
             MentionUri::Rule { name, id } => {
-                let mut url = Url::parse("superzet:///").unwrap();
+                let mut url = Url::parse("superzent:///").unwrap();
                 url.set_path(&format!("/agent/rule/{id}"));
                 url.query_pairs_mut().append_pair("name", name);
                 url
@@ -386,7 +386,7 @@ impl MentionUri {
                 include_errors,
                 include_warnings,
             } => {
-                let mut url = Url::parse("superzet:///").unwrap();
+                let mut url = Url::parse("superzent:///").unwrap();
                 url.set_path("/agent/diagnostics");
                 if *include_warnings {
                     url.query_pairs_mut()
@@ -399,13 +399,13 @@ impl MentionUri {
             }
             MentionUri::Fetch { url } => url.clone(),
             MentionUri::TerminalSelection { line_count } => {
-                let mut url = Url::parse("superzet:///agent/terminal-selection").unwrap();
+                let mut url = Url::parse("superzent:///agent/terminal-selection").unwrap();
                 url.query_pairs_mut()
                     .append_pair("lines", &line_count.to_string());
                 url
             }
             MentionUri::GitDiff { base_ref } => {
-                let mut url = Url::parse("superzet:///agent/git-diff").unwrap();
+                let mut url = Url::parse("superzent:///agent/git-diff").unwrap();
                 url.query_pairs_mut().append_pair("base", base_ref);
                 url
             }
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_parse_untitled_selection_uri() {
-        let selection_uri = uri!("superzet:///agent/untitled-buffer#L1:10");
+        let selection_uri = uri!("superzent:///agent/untitled-buffer#L1:10");
         let parsed = MentionUri::parse(selection_uri, PathStyle::local()).unwrap();
         match &parsed {
             MentionUri::Selection {
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_parse_thread_uri() {
-        let thread_uri = "superzet:///agent/thread/session123?name=Thread+name";
+        let thread_uri = "superzent:///agent/thread/session123?name=Thread+name";
         let parsed = MentionUri::parse(thread_uri, PathStyle::local()).unwrap();
         match &parsed {
             MentionUri::Thread {
@@ -579,7 +579,8 @@ mod tests {
 
     #[test]
     fn test_parse_rule_uri() {
-        let rule_uri = "superzet:///agent/rule/d8694ff2-90d5-4b6f-be33-33c1763acd52?name=Some+rule";
+        let rule_uri =
+            "superzent:///agent/rule/d8694ff2-90d5-4b6f-be33-33c1763acd52?name=Some+rule";
         let parsed = MentionUri::parse(rule_uri, PathStyle::local()).unwrap();
         match &parsed {
             MentionUri::Rule { id, name } => {
@@ -619,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_parse_diagnostics_uri() {
-        let uri = "superzet:///agent/diagnostics?include_warnings=true";
+        let uri = "superzent:///agent/diagnostics?include_warnings=true";
         let parsed = MentionUri::parse(uri, PathStyle::local()).unwrap();
         match &parsed {
             MentionUri::Diagnostics {
@@ -636,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_parse_diagnostics_uri_warnings_only() {
-        let uri = "superzet:///agent/diagnostics?include_warnings=true&include_errors=false";
+        let uri = "superzent:///agent/diagnostics?include_warnings=true&include_errors=false";
         let parsed = MentionUri::parse(uri, PathStyle::local()).unwrap();
         match &parsed {
             MentionUri::Diagnostics {
@@ -660,8 +661,8 @@ mod tests {
 
     #[test]
     fn test_invalid_zed_path() {
-        assert!(MentionUri::parse("superzet:///invalid/path", PathStyle::local()).is_err());
-        assert!(MentionUri::parse("superzet:///agent/unknown/test", PathStyle::local()).is_err());
+        assert!(MentionUri::parse("superzent:///invalid/path", PathStyle::local()).is_err());
+        assert!(MentionUri::parse("superzent:///agent/unknown/test", PathStyle::local()).is_err());
     }
 
     #[test]
@@ -716,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_parse_terminal_selection_uri() {
-        let terminal_uri = "superzet:///agent/terminal-selection?lines=42";
+        let terminal_uri = "superzent:///agent/terminal-selection?lines=42";
         let parsed = MentionUri::parse(terminal_uri, PathStyle::local()).unwrap();
         match &parsed {
             MentionUri::TerminalSelection { line_count } => {
@@ -728,7 +729,7 @@ mod tests {
         assert_eq!(parsed.name(), "Terminal (42 lines)");
 
         // Test single line
-        let single_line_uri = "superzet:///agent/terminal-selection?lines=1";
+        let single_line_uri = "superzent:///agent/terminal-selection?lines=1";
         let parsed_single = MentionUri::parse(single_line_uri, PathStyle::local()).unwrap();
         assert_eq!(parsed_single.name(), "Terminal (1 line)");
     }

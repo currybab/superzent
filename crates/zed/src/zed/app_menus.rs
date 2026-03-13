@@ -1,6 +1,6 @@
 use gpui::{App, Menu, MenuItem, OsAction};
 use release_channel::ReleaseChannel;
-use superzet_ui;
+use superzent_ui;
 use zed_actions::dev;
 
 pub fn app_menus(cx: &mut App) -> Vec<Menu> {
@@ -40,7 +40,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
         MenuItem::separator(),
         MenuItem::action("Workspace Sidebar", workspace::ToggleWorkspaceSidebar),
         MenuItem::action("Workspace Details", workspace::ToggleRightDock),
-        MenuItem::action("Reveal Changes", superzet_ui::RevealChanges),
+        MenuItem::action("Reveal Changes", superzent_ui::RevealChanges),
         MenuItem::separator(),
         MenuItem::action("Diagnostics", diagnostics::Deploy),
         MenuItem::separator(),
@@ -56,9 +56,9 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
 
     vec![
         Menu {
-            name: "superzet".into(),
+            name: "superzent".into(),
             items: vec![
-                MenuItem::action("About superzet", zed_actions::About),
+                MenuItem::action("About superzent", zed_actions::About),
                 MenuItem::action("Check for Updates", auto_update::Check),
                 MenuItem::separator(),
                 MenuItem::submenu(Menu {
@@ -99,20 +99,20 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action("Install CLI", install_cli::InstallCliBinary),
                 MenuItem::separator(),
                 #[cfg(target_os = "macos")]
-                MenuItem::action("Hide superzet", super::Hide),
+                MenuItem::action("Hide superzent", super::Hide),
                 #[cfg(target_os = "macos")]
                 MenuItem::action("Hide Others", super::HideOthers),
                 #[cfg(target_os = "macos")]
                 MenuItem::action("Show All", super::ShowAll),
                 MenuItem::separator(),
-                MenuItem::action("Quit superzet", Quit),
+                MenuItem::action("Quit superzent", Quit),
             ],
         },
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("Add Project", superzet_ui::AddProject),
-                MenuItem::action("New Workspace", superzet_ui::NewWorkspace),
+                MenuItem::action("Add Project", superzent_ui::AddProject),
+                MenuItem::action("New Workspace", superzent_ui::NewWorkspace),
                 MenuItem::action("New Window", workspace::NewWindow),
                 MenuItem::separator(),
                 MenuItem::action("New File", workspace::NewFile),
@@ -255,12 +255,12 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
         Menu {
             name: "Run".into(),
             items: vec![
-                MenuItem::action("Reveal Changes", superzet_ui::RevealChanges),
+                MenuItem::action("Reveal Changes", superzent_ui::RevealChanges),
                 MenuItem::action(
                     "Open Workspace in New Window",
-                    superzet_ui::OpenWorkspaceInNewWindow,
+                    superzent_ui::OpenWorkspaceInNewWindow,
                 ),
-                MenuItem::action("Delete Workspace", superzet_ui::DeleteWorkspace),
+                MenuItem::action("Delete Workspace", superzent_ui::DeleteWorkspace),
                 MenuItem::separator(),
                 MenuItem::action(
                     "Spawn Task",
@@ -305,26 +305,26 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action(
                     "File Bug Report...",
                     super::OpenBrowser {
-                        url: "https://github.com/currybab/superzet/issues/new".into(),
+                        url: "https://github.com/currybab/superzent/issues/new".into(),
                     },
                 ),
                 MenuItem::action(
                     "Request Feature...",
                     super::OpenBrowser {
-                        url: "https://github.com/currybab/superzet/discussions".into(),
+                        url: "https://github.com/currybab/superzent/discussions".into(),
                     },
                 ),
                 MenuItem::separator(),
                 MenuItem::action(
                     "Documentation",
                     super::OpenBrowser {
-                        url: "https://github.com/currybab/superzet".into(),
+                        url: "https://github.com/currybab/superzent".into(),
                     },
                 ),
                 MenuItem::action(
-                    "superzet repository",
+                    "superzent repository",
                     super::OpenBrowser {
-                        url: "https://github.com/currybab/superzet".into(),
+                        url: "https://github.com/currybab/superzent".into(),
                     },
                 ),
             ],

@@ -806,7 +806,7 @@ mod tests {
     // WSL
     // wsl.exe --distribution NixOS --cd /home/user -- /usr/bin/zsh -c "echo hello"
     // wsl.exe --distribution NixOS --cd /home/user -- /usr/bin/zsh -c "\"echo hello\"" | grep hello"
-    // wsl.exe --distribution NixOS --cd ~ env RUST_LOG=info,remote=debug .superzet_wsl_server/superzet-remote-server-dev-build proxy --identifier dev-workspace-53
+    // wsl.exe --distribution NixOS --cd ~ env RUST_LOG=info,remote=debug .superzent_wsl_server/superzent-remote-server-dev-build proxy --identifier dev-workspace-53
     // PowerShell from Nushell
     // nu -c overlay use "C:\Users\kubko\dev\python\39007\tests\.venv\Scripts\activate.nu"; ^"C:\Program Files\PowerShell\7\pwsh.exe" -C "C:\Users\kubko\dev\python\39007\tests\.venv\Scripts\python.exe -m pytest \"test_foo.py::test_foo\""
     // PowerShell from CMD

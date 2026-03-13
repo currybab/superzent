@@ -1,9 +1,9 @@
 ---
-title: Update superzet
-description: How release updates work in superzet.
+title: Update superzent
+description: How release updates work in superzent.
 ---
 
-# Update superzet
+# Update superzent
 
 ## In-App Updates
 

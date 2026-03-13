@@ -437,7 +437,7 @@ impl remote::RemoteClientDelegate for RemoteClientDelegate {
             .await
             .with_context(|| {
                 format!(
-                    "Downloading Superzet remote server binary (version: {}, os: {}, arch: {})",
+                    "Downloading Superzent remote server binary (version: {}, os: {}, arch: {})",
                     version
                         .as_ref()
                         .map(|v| format!("{}", v))

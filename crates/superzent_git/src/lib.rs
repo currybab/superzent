@@ -5,7 +5,7 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
 };
-use superzet_model::{
+use superzent_model::{
     GitChangeSummary, ProjectEntry, ProjectLocation, WorkspaceAttentionStatus, WorkspaceEntry,
     WorkspaceKind, WorkspaceLocation,
 };
@@ -35,7 +35,7 @@ pub struct CreateWorkspaceOptions {
 }
 
 #[derive(Default, Deserialize)]
-struct SuperzetConfig {
+struct SuperzentConfig {
     #[serde(default)]
     teardown: Vec<String>,
     #[serde(default)]
@@ -108,7 +108,7 @@ pub fn create_workspace(
     let branch_name = branch_name.to_string();
 
     let parent = repo_root.parent().unwrap_or(repo_root.as_path());
-    let worktree_root = parent.join(".superzet-worktrees").join(repo_name);
+    let worktree_root = parent.join(".superzent-worktrees").join(repo_name);
     fs::create_dir_all(&worktree_root)?;
 
     let worktree_directory_name = unique_worktree_directory_name(&worktree_root, &branch_name);
@@ -288,7 +288,7 @@ fn run_repo_hooks(
     workspace_name: &str,
     phase: HookPhase,
 ) -> Result<()> {
-    let config = load_superzet_config(repo_root)?;
+    let config = load_superzent_config(repo_root)?;
     let commands = match phase {
         HookPhase::Teardown => config.teardown,
     };
@@ -301,13 +301,13 @@ fn run_repo_hooks(
 }
 
 fn prepare_workspace_contents(repo_root: &Path, worktree_path: &Path) -> Result<Vec<String>> {
-    let config = load_superzet_config(repo_root)?;
+    let config = load_superzent_config(repo_root)?;
     let mut warnings = Vec::new();
 
-    let superzet_source = repo_root.join(".superzet");
-    if superzet_source.exists() {
-        copy_repo_path(&superzet_source, &worktree_path.join(".superzet"))
-            .with_context(|| format!("failed to copy {}", superzet_source.display()))?;
+    let superzent_source = repo_root.join(".superzent");
+    if superzent_source.exists() {
+        copy_repo_path(&superzent_source, &worktree_path.join(".superzent"))
+            .with_context(|| format!("failed to copy {}", superzent_source.display()))?;
     }
 
     for copy_entry in &config.copy {
@@ -324,10 +324,10 @@ fn prepare_workspace_contents(repo_root: &Path, worktree_path: &Path) -> Result<
     Ok(warnings)
 }
 
-fn load_superzet_config(repo_root: &Path) -> Result<SuperzetConfig> {
-    let config_path = repo_root.join(".superzet").join("config.json");
+fn load_superzent_config(repo_root: &Path) -> Result<SuperzentConfig> {
+    let config_path = repo_root.join(".superzent").join("config.json");
     if !config_path.exists() {
-        return Ok(SuperzetConfig::default());
+        return Ok(SuperzentConfig::default());
     }
 
     let contents = fs::read_to_string(&config_path)
@@ -499,7 +499,7 @@ mod tests {
                 "worktree",
                 "add",
                 "-b",
-                "feature/superzet-test",
+                "feature/superzent-test",
                 worktree_path.to_str().unwrap(),
                 "HEAD",
             ],
@@ -543,7 +543,7 @@ mod tests {
                 "worktree",
                 "add",
                 "-b",
-                "feature/superzet-test",
+                "feature/superzent-test",
                 worktree_path.to_str().unwrap(),
                 "HEAD",
             ],
@@ -562,7 +562,7 @@ mod tests {
             .repo_path
             .parent()
             .unwrap()
-            .join(".superzet-worktrees")
+            .join(".superzent-worktrees")
             .join("repo");
 
         assert_eq!(
@@ -587,13 +587,13 @@ mod tests {
             &registration.project,
             "codex",
             CreateWorkspaceOptions {
-                branch_name: "feature/superzet-test".to_string(),
+                branch_name: "feature/superzent-test".to_string(),
             },
         )
         .unwrap();
 
-        assert_eq!(outcome.workspace.name, "feature/superzet-test");
-        assert_eq!(outcome.workspace.branch, "feature/superzet-test");
+        assert_eq!(outcome.workspace.name, "feature/superzent-test");
+        assert_eq!(outcome.workspace.branch, "feature/superzent-test");
         assert_eq!(
             outcome
                 .workspace
@@ -601,23 +601,23 @@ mod tests {
                 .expect("workspace should be local")
                 .file_name()
                 .and_then(|name| name.to_str()),
-            Some("feature-superzet-test")
+            Some("feature-superzent-test")
         );
 
         delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap();
     }
 
     #[test]
-    fn create_workspace_copies_superzet_directory_and_extra_paths() {
+    fn create_workspace_copies_superzent_directory_and_extra_paths() {
         let repo = init_repo();
-        fs::create_dir_all(repo.repo_path.join(".superzet")).unwrap();
+        fs::create_dir_all(repo.repo_path.join(".superzent")).unwrap();
         fs::write(
-            repo.repo_path.join(".superzet").join("config.json"),
+            repo.repo_path.join(".superzent").join("config.json"),
             r#"{"copy":["templates"]}"#,
         )
         .unwrap();
         fs::write(
-            repo.repo_path.join(".superzet").join("setup.sh"),
+            repo.repo_path.join(".superzent").join("setup.sh"),
             "#!/bin/zsh\necho setup\n",
         )
         .unwrap();
@@ -627,7 +627,7 @@ mod tests {
             "preset\n",
         )
         .unwrap();
-        commit_all_changes(&repo.repo_path, "add superzet files");
+        commit_all_changes(&repo.repo_path, "add superzent files");
 
         let registration = register_project(&repo.repo_path, "codex").unwrap();
         let outcome = create_workspace(
@@ -644,7 +644,7 @@ mod tests {
                 .workspace
                 .local_worktree_path()
                 .expect("workspace should be local")
-                .join(".superzet")
+                .join(".superzent")
                 .join("setup.sh")
                 .exists()
         );
@@ -664,9 +664,9 @@ mod tests {
     #[test]
     fn create_workspace_rejects_copy_paths_outside_repo() {
         let repo = init_repo();
-        fs::create_dir_all(repo.repo_path.join(".superzet")).unwrap();
+        fs::create_dir_all(repo.repo_path.join(".superzent")).unwrap();
         fs::write(
-            repo.repo_path.join(".superzet").join("config.json"),
+            repo.repo_path.join(".superzent").join("config.json"),
             r#"{"copy":["../outside"]}"#,
         )
         .unwrap();
@@ -692,9 +692,9 @@ mod tests {
     #[test]
     fn create_workspace_reports_missing_copy_sources_as_warning() {
         let repo = init_repo();
-        fs::create_dir_all(repo.repo_path.join(".superzet")).unwrap();
+        fs::create_dir_all(repo.repo_path.join(".superzent")).unwrap();
         fs::write(
-            repo.repo_path.join(".superzet").join("config.json"),
+            repo.repo_path.join(".superzent").join("config.json"),
             r#"{"copy":["missing-directory"]}"#,
         )
         .unwrap();
@@ -731,8 +731,8 @@ mod tests {
         fs::create_dir_all(&repo_path).unwrap();
 
         git(&repo_path, &["init", "-b", "main"]);
-        git(&repo_path, &["config", "user.name", "Superzet Tests"]);
-        git(&repo_path, &["config", "user.email", "tests@superzet.dev"]);
+        git(&repo_path, &["config", "user.name", "Superzent Tests"]);
+        git(&repo_path, &["config", "user.email", "tests@superzent.dev"]);
         fs::write(repo_path.join("README.md"), "hello\n").unwrap();
         git(&repo_path, &["add", "README.md"]);
         git(&repo_path, &["commit", "-m", "init"]);

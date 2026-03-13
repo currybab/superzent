@@ -48,29 +48,29 @@ var!(MACOS_SIGNING_IDENTITY);
 pub fn bundle_envs(platform: Platform) -> Env {
     let env = Env::default()
         .add("CARGO_INCREMENTAL", 0)
-        .add("SUPERZET_CLIENT_CHECKSUM_SEED", ZED_CLIENT_CHECKSUM_SEED)
-        .add("SUPERZET_MINIDUMP_ENDPOINT", ZED_SENTRY_MINIDUMP_ENDPOINT)
+        .add("SUPERZENT_CLIENT_CHECKSUM_SEED", ZED_CLIENT_CHECKSUM_SEED)
+        .add("SUPERZENT_MINIDUMP_ENDPOINT", ZED_SENTRY_MINIDUMP_ENDPOINT)
         .add("ZED_CLIENT_CHECKSUM_SEED", ZED_CLIENT_CHECKSUM_SEED)
         .add("ZED_MINIDUMP_ENDPOINT", ZED_SENTRY_MINIDUMP_ENDPOINT);
 
     match platform {
         Platform::Linux => env,
         Platform::Mac => env
-            .add("SUPERZET_MACOS_CERTIFICATE", MACOS_CERTIFICATE)
+            .add("SUPERZENT_MACOS_CERTIFICATE", MACOS_CERTIFICATE)
             .add(
-                "SUPERZET_MACOS_CERTIFICATE_PASSWORD",
+                "SUPERZENT_MACOS_CERTIFICATE_PASSWORD",
                 MACOS_CERTIFICATE_PASSWORD,
             )
-            .add("SUPERZET_APPLE_NOTARIZATION_KEY", APPLE_NOTARIZATION_KEY)
+            .add("SUPERZENT_APPLE_NOTARIZATION_KEY", APPLE_NOTARIZATION_KEY)
             .add(
-                "SUPERZET_APPLE_NOTARIZATION_KEY_ID",
+                "SUPERZENT_APPLE_NOTARIZATION_KEY_ID",
                 APPLE_NOTARIZATION_KEY_ID,
             )
             .add(
-                "SUPERZET_APPLE_NOTARIZATION_ISSUER_ID",
+                "SUPERZENT_APPLE_NOTARIZATION_ISSUER_ID",
                 APPLE_NOTARIZATION_ISSUER_ID,
             )
-            .add("SUPERZET_MACOS_SIGNING_IDENTITY", MACOS_SIGNING_IDENTITY)
+            .add("SUPERZENT_MACOS_SIGNING_IDENTITY", MACOS_SIGNING_IDENTITY)
             .add("MACOS_CERTIFICATE", MACOS_CERTIFICATE)
             .add("MACOS_CERTIFICATE_PASSWORD", MACOS_CERTIFICATE_PASSWORD)
             .add("APPLE_NOTARIZATION_KEY", APPLE_NOTARIZATION_KEY)
@@ -329,7 +329,7 @@ impl serde::Serialize for WorkflowSecret {
 }
 
 pub mod assets {
-    pub const MAC_AARCH64: &str = "superzet-aarch64.dmg";
-    pub const REMOTE_SERVER_LINUX_AARCH64: &str = "superzet-remote-server-linux-aarch64.gz";
-    pub const REMOTE_SERVER_LINUX_X86_64: &str = "superzet-remote-server-linux-x86_64.gz";
+    pub const MAC_AARCH64: &str = "superzent-aarch64.dmg";
+    pub const REMOTE_SERVER_LINUX_AARCH64: &str = "superzent-remote-server-linux-aarch64.gz";
+    pub const REMOTE_SERVER_LINUX_X86_64: &str = "superzent-remote-server-linux-x86_64.gz";
 }

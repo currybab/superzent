@@ -37,10 +37,10 @@ use std::{
     ffi::{CStr, c_char},
     sync::{Mutex, OnceLock},
 };
-use superzet_agent::{AGENT_TERMINAL_ID_ENV_VAR, AgentHookEvent, AgentHookEventType};
-use superzet_model::{
+use superzent_agent::{AGENT_TERMINAL_ID_ENV_VAR, AgentHookEvent, AgentHookEventType};
+use superzent_model::{
     AgentPreset, GitChangeSummary, ProjectEntry, ProjectLocation, StoredSshConnection,
-    StoredSshPortForward, SuperzetStore, TaskStatus, WorkspaceAttentionStatus, WorkspaceEntry,
+    StoredSshPortForward, SuperzentStore, TaskStatus, WorkspaceAttentionStatus, WorkspaceEntry,
     WorkspaceKind, WorkspaceLocation, aggregate_workspace_attention_status,
 };
 use task::{Shell, ShellKind};
@@ -62,7 +62,7 @@ use workspace::{
 use zed_actions::{OpenRemote, OpenSettingsAt};
 
 actions!(
-    superzet,
+    superzent,
     [
         AddProject,
         NewWorkspace,
@@ -87,7 +87,7 @@ struct LiveTerminalAttention {
 }
 
 struct WorkspaceAttentionController {
-    store: Entity<SuperzetStore>,
+    store: Entity<SuperzentStore>,
     terminal_ids_by_entity: BTreeMap<EntityId, String>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     _hook_task: Task<Result<()>>,
@@ -96,8 +96,8 @@ struct WorkspaceAttentionController {
 
 impl WorkspaceAttentionController {
     fn new(cx: &mut Context<Self>) -> Self {
-        let store = SuperzetStore::global(cx);
-        let hook_task = match superzet_agent::subscribe() {
+        let store = SuperzentStore::global(cx);
+        let hook_task = match superzent_agent::subscribe() {
             Ok(receiver) => cx.spawn(async move |this, cx| {
                 while let Ok(event) = receiver.recv().await {
                     this.update(cx, |this, cx| {
@@ -107,7 +107,7 @@ impl WorkspaceAttentionController {
                 Ok(())
             }),
             Err(error) => {
-                log::error!("failed to subscribe to Superzet agent hooks: {error:#}");
+                log::error!("failed to subscribe to Superzent agent hooks: {error:#}");
                 Task::ready(Ok(()))
             }
         };
@@ -366,7 +366,7 @@ impl WorkspaceAttentionController {
         }
 
         let title = notification.title().to_string();
-        let body = format!("{workspace_name} in superzet");
+        let body = format!("{workspace_name} in superzent");
 
         dispatch_native_terminal_notification(&title, &body, workspace_id);
     }
@@ -388,7 +388,7 @@ impl TerminalLifecycleNotification {
 }
 
 pub fn init(cx: &mut App) {
-    if SuperzetStore::try_global(cx).is_none() {
+    if SuperzentStore::try_global(cx).is_none() {
         return;
     }
 
@@ -417,7 +417,7 @@ pub fn init(cx: &mut App) {
         let pane_handle = cx.entity();
         let pane_id = pane_handle.entity_id();
         let empty_state =
-            cx.new(|cx| SuperzetEmptyPaneView::new(pane_handle.downgrade(), pane_id, cx));
+            cx.new(|cx| SuperzentEmptyPaneView::new(pane_handle.downgrade(), pane_id, cx));
         pane.set_empty_state_view(empty_state.into(), cx);
     })
     .detach();
@@ -446,7 +446,7 @@ pub fn init(cx: &mut App) {
 }
 
 pub fn install_pane_accessory(pane: &Entity<Pane>, cx: &mut Context<Workspace>) {
-    let Some(store) = SuperzetStore::try_global(cx) else {
+    let Some(store) = SuperzentStore::try_global(cx) else {
         return;
     };
     let pane_handle = pane.clone();
@@ -467,7 +467,7 @@ fn render_terminal_preset_bar(
     cx: &mut Context<Pane>,
 ) -> Option<AnyElement> {
     let workspace_handle = pane.workspace()?;
-    let store = SuperzetStore::try_global(cx)?;
+    let store = SuperzentStore::try_global(cx)?;
     let (workspace_entry, presets) = {
         let store = store.read(cx);
         let workspace_entry =
@@ -497,7 +497,7 @@ fn render_terminal_preset_bar(
 
     Some(
         h_flex()
-            .id(format!("superzet-preset-bar-{}", workspace_entry.id))
+            .id(format!("superzent-preset-bar-{}", workspace_entry.id))
             .w_full()
             .items_center()
             .justify_between()
@@ -526,7 +526,7 @@ fn render_terminal_preset_bar(
                     .children(hidden_dropdown)
                     .child(
                         IconButton::new(
-                            format!("superzet-preset-settings-{}", workspace_entry.id),
+                            format!("superzent-preset-settings-{}", workspace_entry.id),
                             IconName::Settings,
                         )
                         .shape(ui::IconButtonShape::Square)
@@ -550,7 +550,7 @@ fn render_workspace_preset_button(
 ) -> AnyElement {
     Button::new(
         format!(
-            "superzet-preset-button-{}-{}",
+            "superzent-preset-button-{}-{}",
             workspace_entry.id, preset.id
         ),
         preset.label.clone(),
@@ -601,7 +601,7 @@ fn render_hidden_preset_dropdown(
     });
 
     DropdownMenu::new(
-        format!("superzet-preset-overflow-{workspace_id}"),
+        format!("superzent-preset-overflow-{workspace_id}"),
         "More",
         menu,
     )
@@ -681,7 +681,7 @@ fn launch_workspace_preset(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let Some(preset) = store.read(cx).preset(&preset_id).cloned() else {
         show_workspace_toast(
             &workspace_handle,
@@ -715,7 +715,7 @@ fn launch_workspace_preset_in_terminal(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let launch = match superzet_agent::prepare_workspace_launch(&workspace_entry, &preset) {
+    let launch = match superzent_agent::prepare_workspace_launch(&workspace_entry, &preset) {
         Ok(launch) => launch,
         Err(error) => {
             show_workspace_toast(
@@ -785,7 +785,7 @@ fn launch_workspace_preset_task(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let session = store.update(cx, |store, cx| {
         store.start_session(
             &workspace_entry.id,
@@ -805,7 +805,7 @@ fn launch_workspace_preset_task(
     };
 
     let spawn_in_terminal =
-        match superzet_agent::spawn_for_workspace(&workspace_entry, &session, &preset) {
+        match superzent_agent::spawn_for_workspace(&workspace_entry, &session, &preset) {
             Ok(spawn_in_terminal) => spawn_in_terminal,
             Err(error) => {
                 let reason = format!("Failed to prepare {}: {error}", preset.label);
@@ -998,7 +998,7 @@ fn show_workspace_toast(
     let message = message.into().to_string();
     workspace_handle.update(cx, |workspace, cx| {
         workspace.show_toast(
-            Toast::new(NotificationId::unique::<SuperzetSidebar>(), message),
+            Toast::new(NotificationId::unique::<SuperzentSidebar>(), message),
             cx,
         );
     });
@@ -1018,14 +1018,14 @@ fn show_workspace_toast_async(
 }
 
 fn update_store_async<R>(
-    store: &Entity<SuperzetStore>,
+    store: &Entity<SuperzentStore>,
     cx: &mut AsyncWindowContext,
-    update: impl FnOnce(&mut SuperzetStore, &mut Context<SuperzetStore>) -> R,
+    update: impl FnOnce(&mut SuperzentStore, &mut Context<SuperzentStore>) -> R,
 ) -> Option<R> {
     match cx.update(|_, cx| store.update(cx, update)) {
         Ok(result) => Some(result),
         Err(error) => {
-            log::error!("failed to update Superzet store: {error:#}");
+            log::error!("failed to update Superzent store: {error:#}");
             None
         }
     }
@@ -1038,7 +1038,7 @@ struct WorkspaceCreationResult {
 
 async fn resolve_remote_project_workspace(
     project: &ProjectEntry,
-    store: &Entity<SuperzetStore>,
+    store: &Entity<SuperzentStore>,
     app_state: Arc<WorkspaceAppState>,
     require_primary_workspace: bool,
     cx: &mut AsyncWindowContext,
@@ -1087,7 +1087,7 @@ async fn create_remote_workspace(
     project: ProjectEntry,
     branch_name: String,
     preset_id: String,
-    store: Entity<SuperzetStore>,
+    store: Entity<SuperzentStore>,
     app_state: Arc<WorkspaceAppState>,
     cx: &mut AsyncWindowContext,
 ) -> anyhow::Result<WorkspaceCreationResult> {
@@ -1188,7 +1188,7 @@ fn spawn_new_workspace_request(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let preset_id = store.read(cx).default_preset().id.clone();
     window
         .spawn(cx, async move |cx| {
@@ -1199,10 +1199,10 @@ fn spawn_new_workspace_request(
                         let branch_name = branch_name.clone();
                         let preset_id = preset_id.clone();
                         async move {
-                            superzet_git::create_workspace(
+                            superzent_git::create_workspace(
                                 &project,
                                 &preset_id,
-                                superzet_git::CreateWorkspaceOptions { branch_name },
+                                superzent_git::CreateWorkspaceOptions { branch_name },
                             )
                             .map(|outcome| WorkspaceCreationResult {
                                 workspace: outcome.workspace,
@@ -1346,7 +1346,7 @@ impl AddProjectChooserModal {
 impl Render for AddProjectChooserModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .key_context("SuperzetAddProjectChooserModal")
+            .key_context("SuperzentAddProjectChooserModal")
             .elevation_3(cx)
             .w(px(420.))
             .overflow_hidden()
@@ -1374,7 +1374,7 @@ impl Render for AddProjectChooserModal {
                         v_flex()
                             .gap_2()
                             .child(
-                                Button::new("superzet-add-local-project", "Local Project")
+                                Button::new("superzent-add-local-project", "Local Project")
                                     .full_width()
                                     .style(ButtonStyle::Filled)
                                     .icon(IconName::FolderOpen)
@@ -1386,7 +1386,7 @@ impl Render for AddProjectChooserModal {
                                     )),
                             )
                             .child(
-                                ButtonLike::new("superzet-add-remote-project")
+                                ButtonLike::new("superzent-add-remote-project")
                                     .full_width()
                                     .style(ButtonStyle::Subtle)
                                     .on_click(cx.listener(
@@ -1432,7 +1432,7 @@ impl Render for AddProjectChooserModal {
                     .px_4()
                     .pb_4()
                     .child(
-                        Button::new("superzet-add-project-cancel", "Cancel")
+                        Button::new("superzent-add-project-cancel", "Cancel")
                             .style(ButtonStyle::Subtle)
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(DismissEvent);
@@ -1516,7 +1516,7 @@ impl NewWorkspaceModal {
 impl Render for NewWorkspaceModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .key_context("SuperzetNewWorkspaceModal")
+            .key_context("SuperzentNewWorkspaceModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .elevation_3(cx)
@@ -1560,14 +1560,14 @@ impl Render for NewWorkspaceModal {
                     .px_4()
                     .pb_4()
                     .child(
-                        Button::new("superzet-new-workspace-cancel", "Cancel")
+                        Button::new("superzent-new-workspace-cancel", "Cancel")
                             .style(ButtonStyle::Subtle)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.cancel(&menu::Cancel, window, cx);
                             })),
                     )
                     .child(
-                        Button::new("superzet-new-workspace-create", "Create")
+                        Button::new("superzent-new-workspace-create", "Create")
                             .style(ButtonStyle::Filled)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.confirm(&menu::Confirm, window, cx);
@@ -1634,8 +1634,8 @@ impl Render for DraggedRowPreview {
     }
 }
 
-pub struct SuperzetSidebar {
-    store: Entity<SuperzetStore>,
+pub struct SuperzentSidebar {
+    store: Entity<SuperzentStore>,
     multi_workspace: WeakEntity<MultiWorkspace>,
     focus_handle: FocusHandle,
     width: Option<Pixels>,
@@ -1647,13 +1647,13 @@ pub struct SuperzetSidebar {
     _subscriptions: Vec<Subscription>,
 }
 
-impl SuperzetSidebar {
+impl SuperzentSidebar {
     pub fn new(
         multi_workspace: Entity<MultiWorkspace>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = SuperzetStore::global(cx);
+        let store = SuperzentStore::global(cx);
         let weak_multi_workspace = multi_workspace.downgrade();
         let mut subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
         subscriptions.push(
@@ -2445,7 +2445,7 @@ impl SuperzetSidebar {
                 cx.spawn_in(window, async move |_, cx| {
                     let refresh = cx
                         .background_spawn(async move {
-                            superzet_git::refresh_workspace_path(&worktree_path)
+                            superzent_git::refresh_workspace_path(&worktree_path)
                         })
                         .await;
 
@@ -2542,16 +2542,16 @@ enum EmptyPaneMode {
     Workspace,
 }
 
-struct SuperzetEmptyPaneView {
+struct SuperzentEmptyPaneView {
     pane: WeakEntity<Pane>,
     pane_id: EntityId,
-    store: Entity<SuperzetStore>,
+    store: Entity<SuperzentStore>,
     _subscriptions: Vec<Subscription>,
 }
 
-impl SuperzetEmptyPaneView {
+impl SuperzentEmptyPaneView {
     fn new(pane: WeakEntity<Pane>, pane_id: EntityId, cx: &mut Context<Self>) -> Self {
-        let store = SuperzetStore::global(cx);
+        let store = SuperzentStore::global(cx);
         Self {
             pane_id,
             pane,
@@ -2608,7 +2608,7 @@ impl SuperzetEmptyPaneView {
     }
 }
 
-impl Render for SuperzetEmptyPaneView {
+impl Render for SuperzentEmptyPaneView {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.mode(cx);
         let (title, subtitle) = match mode {
@@ -2618,7 +2618,7 @@ impl Render for SuperzetEmptyPaneView {
 
         let buttons = match mode {
             EmptyPaneMode::Initial => vec![self.action_button(
-                "superzet-empty-add-project",
+                "superzent-empty-add-project",
                 "Add Project",
                 IconName::OpenFolder,
                 true,
@@ -2631,7 +2631,7 @@ impl Render for SuperzetEmptyPaneView {
             )],
             EmptyPaneMode::Workspace => vec![
                 self.action_button(
-                    "superzet-empty-new-terminal",
+                    "superzent-empty-new-terminal",
                     "New Terminal",
                     IconName::Terminal,
                     true,
@@ -2643,7 +2643,7 @@ impl Render for SuperzetEmptyPaneView {
                     cx,
                 ),
                 self.action_button(
-                    "superzet-empty-reveal-changes",
+                    "superzent-empty-reveal-changes",
                     "Reveal Changes",
                     IconName::GitBranchAlt,
                     false,
@@ -2654,7 +2654,7 @@ impl Render for SuperzetEmptyPaneView {
                     cx,
                 ),
                 self.action_button(
-                    "superzet-empty-search-files",
+                    "superzent-empty-search-files",
                     "Search Files",
                     IconName::MagnifyingGlass,
                     false,
@@ -2696,15 +2696,15 @@ impl Render for SuperzetEmptyPaneView {
     }
 }
 
-impl EventEmitter<SidebarEvent> for SuperzetSidebar {}
+impl EventEmitter<SidebarEvent> for SuperzentSidebar {}
 
-impl Focusable for SuperzetSidebar {
+impl Focusable for SuperzentSidebar {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for SuperzetSidebar {
+impl Render for SuperzentSidebar {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let projects = self.store.read(cx).projects().to_vec();
         let project_content = if projects.is_empty() {
@@ -2773,7 +2773,7 @@ impl Render for SuperzetSidebar {
                             .px_2()
                             .py_2()
                             .child(
-                                Button::new("superzet-sidebar-add-project", "Add Project")
+                                Button::new("superzent-sidebar-add-project", "Add Project")
                                     .full_width()
                                     .style(ui::ButtonStyle::Subtle)
                                     .icon(IconName::FolderOpen)
@@ -2804,7 +2804,7 @@ impl Render for SuperzetSidebar {
     }
 }
 
-impl WorkspaceSidebar for SuperzetSidebar {
+impl WorkspaceSidebar for SuperzentSidebar {
     fn width(&self, _: &App) -> Pixels {
         self.width.unwrap_or_else(|| px(300.))
     }
@@ -2823,7 +2823,7 @@ impl WorkspaceSidebar for SuperzetSidebar {
     }
 }
 
-pub struct SuperzetRightSidebar {
+pub struct SuperzentRightSidebar {
     project_panel: Entity<ProjectPanel>,
     git_panel: Entity<GitPanel>,
     focus_handle: FocusHandle,
@@ -2833,7 +2833,7 @@ pub struct SuperzetRightSidebar {
     _subscriptions: Vec<Subscription>,
 }
 
-impl SuperzetRightSidebar {
+impl SuperzentRightSidebar {
     pub fn load(
         workspace: WeakEntity<Workspace>,
         project_panel: Entity<ProjectPanel>,
@@ -2852,7 +2852,7 @@ impl SuperzetRightSidebar {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = SuperzetStore::global(cx);
+        let store = SuperzentStore::global(cx);
         Self {
             project_panel,
             git_panel,
@@ -2906,15 +2906,15 @@ impl SuperzetRightSidebar {
     }
 }
 
-impl EventEmitter<PanelEvent> for SuperzetRightSidebar {}
+impl EventEmitter<PanelEvent> for SuperzentRightSidebar {}
 
-impl Focusable for SuperzetRightSidebar {
+impl Focusable for SuperzentRightSidebar {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for SuperzetRightSidebar {
+impl Render for SuperzentRightSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
@@ -2930,14 +2930,14 @@ impl Render for SuperzetRightSidebar {
                             .gap_1()
                             .items_center()
                             .child(self.render_tab_button(
-                                "superzet-right-tab-changes",
+                                "superzent-right-tab-changes",
                                 "Changes",
                                 IconName::GitBranchAlt,
                                 RightSidebarTab::Changes,
                                 cx,
                             ))
                             .child(self.render_tab_button(
-                                "superzet-right-tab-files",
+                                "superzent-right-tab-files",
                                 "Files",
                                 IconName::FileTree,
                                 RightSidebarTab::Files,
@@ -2953,13 +2953,13 @@ impl Render for SuperzetRightSidebar {
     }
 }
 
-impl Panel for SuperzetRightSidebar {
+impl Panel for SuperzentRightSidebar {
     fn persistent_name() -> &'static str {
-        "Superzet Right Sidebar"
+        "Superzent Right Sidebar"
     }
 
     fn panel_key() -> &'static str {
-        "SuperzetRightSidebar"
+        "SuperzentRightSidebar"
     }
 
     fn position(&self, _: &gpui::Window, _: &App) -> DockPosition {
@@ -3012,7 +3012,7 @@ fn run_add_local_project(
     window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let workspace_handle = cx.entity();
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: false,
@@ -3034,7 +3034,7 @@ fn run_add_local_project(
                     .update_in(cx, |workspace, _, cx| {
                         workspace.show_toast(
                             Toast::new(
-                                NotificationId::unique::<SuperzetSidebar>(),
+                                NotificationId::unique::<SuperzentSidebar>(),
                                 format!("Failed to open picker: {error}"),
                             ),
                             cx,
@@ -3050,7 +3050,7 @@ fn run_add_local_project(
 
         let registration = cx
             .background_spawn(
-                async move { superzet_git::register_project(&path, &default_preset_id) },
+                async move { superzent_git::register_project(&path, &default_preset_id) },
             )
             .await;
 
@@ -3085,7 +3085,7 @@ fn run_add_local_project(
                     });
                     workspace.show_toast(
                         Toast::new(
-                            NotificationId::unique::<SuperzetSidebar>(),
+                            NotificationId::unique::<SuperzentSidebar>(),
                             format!("Added {}", primary_workspace.name),
                         ),
                         cx,
@@ -3100,7 +3100,7 @@ fn run_add_local_project(
                 }
                 Err(error) => workspace.show_toast(
                     Toast::new(
-                        NotificationId::unique::<SuperzetSidebar>(),
+                        NotificationId::unique::<SuperzentSidebar>(),
                         format!("Failed to add project: {error}"),
                     ),
                     cx,
@@ -3144,7 +3144,7 @@ fn run_new_workspace(
     window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let Some(project) = store
         .read(cx)
         .active_project()
@@ -3153,7 +3153,7 @@ fn run_new_workspace(
     else {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Add a project before creating a workspace.",
             ),
             cx,
@@ -3183,7 +3183,7 @@ fn run_reveal_changes(
     cx: &mut Context<Workspace>,
 ) {
     let workspace_handle = cx.entity();
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let Some(workspace_entry) = store
         .read(cx)
         .active_workspace()
@@ -3192,7 +3192,7 @@ fn run_reveal_changes(
     else {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Select a workspace first.",
             ),
             cx,
@@ -3209,7 +3209,7 @@ fn run_reveal_changes(
                 .update_in(cx, |workspace, _, cx| {
                     workspace.show_toast(
                         Toast::new(
-                            NotificationId::unique::<SuperzetSidebar>(),
+                            NotificationId::unique::<SuperzentSidebar>(),
                             format!("Failed to open workspace: {error}"),
                         ),
                         cx,
@@ -3229,9 +3229,9 @@ fn run_reveal_changes(
 
         active_workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.open_panel::<SuperzetRightSidebar>(window, cx);
-                workspace.focus_panel::<SuperzetRightSidebar>(window, cx);
-                if let Some(panel) = workspace.panel::<SuperzetRightSidebar>(cx) {
+                workspace.open_panel::<SuperzentRightSidebar>(window, cx);
+                workspace.focus_panel::<SuperzentRightSidebar>(window, cx);
+                if let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) {
                     panel.update(cx, |panel, cx| {
                         panel.set_active_tab(RightSidebarTab::Changes, cx)
                     });
@@ -3259,7 +3259,7 @@ fn run_open_workspace_in_new_window(
     _window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let Some(workspace_entry) = store
         .read(cx)
         .active_workspace()
@@ -3268,7 +3268,7 @@ fn run_open_workspace_in_new_window(
     else {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Select a workspace first.",
             ),
             cx,
@@ -3287,7 +3287,7 @@ fn run_delete_workspace(
     window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let Some(workspace_entry) = store
         .read(cx)
         .active_workspace()
@@ -3296,7 +3296,7 @@ fn run_delete_workspace(
     else {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Select a workspace first.",
             ),
             cx,
@@ -3306,7 +3306,7 @@ fn run_delete_workspace(
     if workspace_entry.kind == WorkspaceKind::Primary || !workspace_entry.managed {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Primary workspaces cannot be deleted.",
             ),
             cx,
@@ -3316,7 +3316,7 @@ fn run_delete_workspace(
     let Some(project) = store.read(cx).project(&workspace_entry.project_id).cloned() else {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Missing project metadata.",
             ),
             cx,
@@ -3348,7 +3348,7 @@ fn run_delete_workspace(
                 cx.background_spawn({
                     let repo_root = repo_root.clone();
                     async move {
-                        superzet_git::delete_workspace(&workspace_to_delete, &repo_root, false)
+                        superzent_git::delete_workspace(&workspace_to_delete, &repo_root, false)
                     }
                 })
                 .await
@@ -3387,7 +3387,7 @@ fn run_delete_workspace(
                 });
                 workspace.show_toast(
                     Toast::new(
-                        NotificationId::unique::<SuperzetSidebar>(),
+                        NotificationId::unique::<SuperzentSidebar>(),
                         format!("Deleted {}", workspace_entry.name),
                     ),
                     cx,
@@ -3414,7 +3414,7 @@ fn run_delete_workspace(
             Err(error) => {
                 workspace.show_toast(
                     Toast::new(
-                        NotificationId::unique::<SuperzetSidebar>(),
+                        NotificationId::unique::<SuperzentSidebar>(),
                         format!("Failed to remove workspace: {error}"),
                     ),
                     cx,
@@ -3434,11 +3434,11 @@ fn run_close_project(
     window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
 ) {
-    let store = SuperzetStore::global(cx);
+    let store = SuperzentStore::global(cx);
     let Some(project) = store.read(cx).project(project_id).cloned() else {
         workspace.show_toast(
             Toast::new(
-                NotificationId::unique::<SuperzetSidebar>(),
+                NotificationId::unique::<SuperzentSidebar>(),
                 "Missing project metadata.",
             ),
             cx,
@@ -3463,7 +3463,7 @@ fn run_close_project(
         PromptLevel::Warning,
         "Close project?",
         Some(&format!(
-            "Close `{}` and remove its {} from superzet?\n\nFiles, worktrees, and git history will remain on disk.",
+            "Close `{}` and remove its {} from superzent?\n\nFiles, worktrees, and git history will remain on disk.",
             project.name,
             project_workspace_label(workspace_count),
         )),
@@ -3659,7 +3659,10 @@ fn show_project_close_toast(
                 let active_workspace = multi_workspace.workspace().clone();
                 active_workspace.update(cx, |workspace, cx| {
                     workspace.show_toast(
-                        Toast::new(NotificationId::unique::<SuperzetSidebar>(), message.clone()),
+                        Toast::new(
+                            NotificationId::unique::<SuperzentSidebar>(),
+                            message.clone(),
+                        ),
                         cx,
                     );
                 });
@@ -3672,7 +3675,10 @@ fn show_project_close_toast(
 
     if let Ok(()) = current_workspace.update(cx, |workspace, cx| {
         workspace.show_toast(
-            Toast::new(NotificationId::unique::<SuperzetSidebar>(), message.clone()),
+            Toast::new(
+                NotificationId::unique::<SuperzentSidebar>(),
+                message.clone(),
+            ),
             cx,
         );
     }) {
@@ -3977,15 +3983,15 @@ fn active_repository_for_workspace(
 
 fn workspace_location_to_locator(
     location: &WorkspaceLocation,
-) -> superzet_model::WorkspaceLocator<'_> {
+) -> superzent_model::WorkspaceLocator<'_> {
     match location {
         WorkspaceLocation::Local { worktree_path } => {
-            superzet_model::WorkspaceLocator::Local(worktree_path)
+            superzent_model::WorkspaceLocator::Local(worktree_path)
         }
         WorkspaceLocation::Ssh {
             connection,
             worktree_path,
-        } => superzet_model::WorkspaceLocator::Ssh {
+        } => superzent_model::WorkspaceLocator::Ssh {
             connection,
             worktree_path,
         },
@@ -4082,7 +4088,7 @@ fn remote_path_basename(path: &str) -> String {
 
 fn build_remote_workspace_bundle(
     workspace: &Entity<Workspace>,
-    store: &SuperzetStore,
+    store: &SuperzentStore,
     cx: &App,
 ) -> Option<(ProjectEntry, WorkspaceEntry)> {
     let workspace_location = match workspace_location_snapshot(workspace, cx)? {
@@ -4230,7 +4236,7 @@ fn attention_priority(status: &WorkspaceAttentionStatus) -> u8 {
 fn render_workspace_attention_indicator(
     workspace_id: &str,
     attention_status: &WorkspaceAttentionStatus,
-    _cx: &mut Context<SuperzetSidebar>,
+    _cx: &mut Context<SuperzentSidebar>,
 ) -> AnyElement {
     match attention_status {
         WorkspaceAttentionStatus::Idle => div()
@@ -4253,7 +4259,7 @@ fn render_workspace_attention_indicator(
             .child(Indicator::dot().color(Color::Warning))
             .with_animation(
                 gpui::ElementId::from(SharedString::from(format!(
-                    "superzet-working-indicator-{workspace_id}"
+                    "superzent-working-indicator-{workspace_id}"
                 ))),
                 Animation::new(Duration::from_millis(900)).repeat(),
                 |indicator: gpui::Div, delta: f32| {
@@ -4269,7 +4275,7 @@ fn render_workspace_attention_indicator(
             .child(Indicator::dot().color(Color::Error))
             .with_animation(
                 gpui::ElementId::from(SharedString::from(format!(
-                    "superzet-permission-indicator-{workspace_id}"
+                    "superzent-permission-indicator-{workspace_id}"
                 ))),
                 Animation::new(Duration::from_millis(650)).repeat(),
                 |indicator: gpui::Div, delta: f32| {
@@ -4284,7 +4290,7 @@ fn render_workspace_attention_indicator(
 fn should_show_native_notification(
     mode: TerminalAgentNotificationMode,
     workspace_id: &str,
-    store: &Entity<SuperzetStore>,
+    store: &Entity<SuperzentStore>,
     cx: &App,
 ) -> bool {
     match mode {
@@ -4329,7 +4335,7 @@ fn native_terminal_notification_delegate_class() -> &'static Class {
 
     DELEGATE_CLASS.get_or_init(|| unsafe {
         if let Some(mut decl) =
-            ClassDecl::new("SuperzetNotificationCenterDelegate", class!(NSObject))
+            ClassDecl::new("SuperzentNotificationCenterDelegate", class!(NSObject))
         {
             decl.add_method(
                 sel!(userNotificationCenter:didActivateNotification:),
@@ -4341,7 +4347,7 @@ fn native_terminal_notification_delegate_class() -> &'static Class {
                     as extern "C" fn(&Object, Sel, id, id) -> BOOL,
             );
             decl.register()
-        } else if let Some(existing_class) = Class::get("SuperzetNotificationCenterDelegate") {
+        } else if let Some(existing_class) = Class::get("SuperzentNotificationCenterDelegate") {
             existing_class
         } else {
             class!(NSObject)
@@ -4405,6 +4411,8 @@ fn dispatch_native_terminal_notification(title: &str, body: &str, workspace_id: 
 }
 
 #[cfg(target_os = "macos")]
+/// Allow NSString::alloc use here because it sets autorelease
+#[allow(clippy::disallowed_methods)]
 unsafe fn ns_string(string: &str) -> id {
     unsafe { NSString::alloc(nil).init_str(string).autorelease() }
 }

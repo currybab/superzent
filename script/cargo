@@ -261,7 +261,7 @@ function defaultWorktreeTargetDir() {
 
   const hash = crypto.createHash("sha1").update(root).digest("hex").slice(0, 12);
   const repoName = sanitizeName(path.basename(root));
-  return path.join(os.tmpdir(), "superzet-targets", `${repoName}-${hash}`);
+  return path.join(os.tmpdir(), "superzent-targets", `${repoName}-${hash}`);
 }
 
 function ensureReleaseChannelEnv(env) {

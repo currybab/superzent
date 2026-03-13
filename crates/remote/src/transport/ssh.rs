@@ -697,7 +697,7 @@ impl SshRemoteConnection {
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Dev => {
                 anyhow::bail!(
-                    "SUPERZET_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
+                    "SUPERZENT_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",
                     dst_path
                 )
             }
@@ -892,9 +892,9 @@ impl SshRemoteConnection {
         let size = src_stat.len();
 
         let t0 = Instant::now();
-        delegate.set_status(Some("Uploading Superzet remote development server"), cx);
+        delegate.set_status(Some("Uploading Superzent remote development server"), cx);
         log::info!(
-            "uploading superzet remote development server to {:?} ({}kb)",
+            "uploading superzent remote development server to {:?} ({}kb)",
             tmp_path,
             size / 1024
         );
@@ -912,7 +912,7 @@ impl SshRemoteConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Extracting Superzet remote development server"), cx);
+        delegate.set_status(Some("Extracting Superzent remote development server"), cx);
 
         if self.ssh_platform.os.is_windows() {
             self.extract_server_binary_windows(dst_path, tmp_path).await

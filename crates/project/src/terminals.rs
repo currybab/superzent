@@ -133,7 +133,7 @@ impl Project {
             let mut env = env_task.await.unwrap_or_default();
             env.extend(settings.env);
             if remote_client.is_none() {
-                maybe_inject_superzet_agent_environment(&mut env);
+                maybe_inject_superzent_agent_environment(&mut env);
             }
 
             let activation_script = maybe!(async {
@@ -408,9 +408,9 @@ impl Project {
             let mut env = env_task.await.unwrap_or_default();
             env.extend(settings.env);
             if remote_client.is_none()
-                && !environment_overrides.contains_key(superzet_agent::AGENT_TERMINAL_ID_ENV_VAR)
+                && !environment_overrides.contains_key(superzent_agent::AGENT_TERMINAL_ID_ENV_VAR)
             {
-                maybe_inject_superzet_agent_environment(&mut env);
+                maybe_inject_superzent_agent_environment(&mut env);
             }
             env.extend(environment_overrides);
 
@@ -650,9 +650,9 @@ impl Project {
     }
 }
 
-fn maybe_inject_superzet_agent_environment(env: &mut HashMap<String, String>) {
-    if let Err(error) = superzet_agent::inject_terminal_environment(env) {
-        log::error!("failed to prepare Superzet agent terminal environment: {error:#}");
+fn maybe_inject_superzent_agent_environment(env: &mut HashMap<String, String>) {
+    if let Err(error) = superzent_agent::inject_terminal_environment(env) {
+        log::error!("failed to prepare Superzent agent terminal environment: {error:#}");
     }
 }
 

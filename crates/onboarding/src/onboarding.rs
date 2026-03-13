@@ -49,7 +49,7 @@ pub struct ImportCursorSettings {
 }
 
 pub const FIRST_OPEN: &str = "first_open";
-pub const DOCS_URL: &str = "https://superzet.dev/docs";
+pub const DOCS_URL: &str = "https://superzent.dev/docs";
 
 actions!(
     onboarding,
@@ -288,7 +288,7 @@ impl Render for Onboarding {
                                             .child(
                                                 v_flex()
                                                     .child(
-                                                        Headline::new("Welcome to superzet")
+                                                        Headline::new("Welcome to superzent")
                                                             .size(HeadlineSize::Small),
                                                     )
                                                     .child(

@@ -1,22 +1,22 @@
 ---
-title: superzet on macOS
-description: Install and run the current public preview of superzet on macOS.
+title: superzent on macOS
+description: Install and run the current public preview of superzent on macOS.
 ---
 
-# superzet on macOS
+# superzent on macOS
 
-macOS is the first public release target for `superzet`.
+macOS is the first public release target for `superzent`.
 
 ## Installing the Preview Build
 
 Download the latest preview DMG from:
 
-- [GitHub Releases](https://github.com/currybab/superzet/releases)
+- [GitHub Releases](https://github.com/currybab/superzent/releases)
 
 Then:
 
-1. open `superzet-aarch64.dmg`
-2. drag `superzet.app` into `/Applications`
+1. open `superzent-aarch64.dmg`
+2. drag `superzent.app` into `/Applications`
 3. launch the app from Applications
 
 ## Building From Source
@@ -24,7 +24,7 @@ Then:
 For local development:
 
 ```sh
-cargo run -p superzet
+cargo run -p superzent
 ```
 
 For a bundled macOS build:
@@ -51,7 +51,7 @@ Development builds and source builds should be updated manually.
 If macOS blocks the app after download, remove the quarantine attribute:
 
 ```sh
-xattr -cr /Applications/superzet.app
+xattr -cr /Applications/superzent.app
 ```
 
 ### Log file
@@ -59,5 +59,5 @@ xattr -cr /Applications/superzet.app
 Use the command palette to open the log, or inspect:
 
 ```sh
-~/Library/Logs/superzet/superzet.log
+~/Library/Logs/superzent/superzent.log
 ```

@@ -1,9 +1,9 @@
 [book]
-authors = ["superzet contributors"]
+authors = ["superzent contributors"]
 language = "en"
 multilingual = false
 src = "src"
-title = "superzet"
+title = "superzent"
 site-url = "/docs/"
 
 [build]
@@ -19,8 +19,8 @@ extra-watch-dirs = ["../crates/docs_preprocessor"]
 command = "cargo run -p docs_preprocessor -- postprocess"
 # Set here instead of above as we only use it replace the `#description#` we set in the template
 # when no front-matter is provided value
-default-description = "Learn how to use and develop superzet, the local-first workspace shell for coding agents."
-default-title = "superzet Documentation"
+default-description = "Learn how to use and develop superzent, the local-first workspace shell for coding agents."
+default-title = "superzent Documentation"
 no-section-label = true
 preferred-dark-theme = "dark"
 additional-css = ["theme/page-toc.css", "theme/plugins.css", "theme/highlight.css", "theme/consent-banner.css"]

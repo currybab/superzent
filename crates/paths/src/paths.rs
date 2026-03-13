@@ -1,4 +1,4 @@
-//! Paths to locations used by Superzet.
+//! Paths to locations used by Superzent.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use util::rel_path::RelPath;
 
 /// A default editorconfig file name to use when resolving project settings.
 pub const EDITORCONFIG_NAME: &str = ".editorconfig";
-pub const REMOTE_SERVER_BINARY_NAME_PREFIX: &str = "superzet-remote-server";
+pub const REMOTE_SERVER_BINARY_NAME_PREFIX: &str = "superzent-remote-server";
 
 /// A custom data directory override, set only by `set_custom_data_dir`.
 /// This is used to override the default data directory location.
@@ -33,9 +33,9 @@ static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn namespaced_app_dir_name(release_channel_name: &str) -> String {
     if release_channel_name == "stable" {
-        "superzet".to_string()
+        "superzent".to_string()
     } else {
-        format!("superzet-{release_channel_name}")
+        format!("superzent-{release_channel_name}")
     }
 }
 
@@ -44,18 +44,18 @@ fn app_dir_name() -> &'static str {
     APP_DIR_NAME.get_or_init(|| namespaced_app_dir_name(RELEASE_CHANNEL.dev_name()))
 }
 
-/// Returns the relative path to the Superzet remote server directory on the ssh host.
+/// Returns the relative path to the Superzent remote server directory on the ssh host.
 pub fn remote_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::unix(".superzet_server").unwrap());
+        LazyLock::new(|| RelPath::unix(".superzent_server").unwrap());
     *CACHED
 }
 
 // Remove this once 223 goes stable
-/// Returns the relative path to the Superzet WSL server directory on the WSL host.
+/// Returns the relative path to the Superzent WSL server directory on the WSL host.
 pub fn remote_wsl_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::unix(".superzet_wsl_server").unwrap());
+        LazyLock::new(|| RelPath::unix(".superzent_wsl_server").unwrap());
     *CACHED
 }
 
@@ -218,13 +218,13 @@ pub fn remote_server_state_dir() -> &'static PathBuf {
 /// Returns the path to the `Zed.log` file.
 pub fn log_file() -> &'static PathBuf {
     static LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
-    LOG_FILE.get_or_init(|| logs_dir().join("superzet.log"))
+    LOG_FILE.get_or_init(|| logs_dir().join("superzent.log"))
 }
 
 /// Returns the path to the `Zed.log.old` file.
 pub fn old_log_file() -> &'static PathBuf {
     static OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
-    OLD_LOG_FILE.get_or_init(|| logs_dir().join("superzet.log.old"))
+    OLD_LOG_FILE.get_or_init(|| logs_dir().join("superzent.log.old"))
 }
 
 /// Returns the path to the database directory.
@@ -614,24 +614,24 @@ mod tests {
 
     #[test]
     fn namespaced_app_dir_name_keeps_stable_unsuffixed() {
-        assert_eq!(namespaced_app_dir_name("stable"), "superzet");
+        assert_eq!(namespaced_app_dir_name("stable"), "superzent");
     }
 
     #[test]
     fn namespaced_app_dir_name_suffixes_non_stable_channels() {
-        assert_eq!(namespaced_app_dir_name("dev"), "superzet-dev");
+        assert_eq!(namespaced_app_dir_name("dev"), "superzent-dev");
     }
 
     #[test]
-    fn remote_server_paths_use_superzet_namespaces() {
-        assert_eq!(REMOTE_SERVER_BINARY_NAME_PREFIX, "superzet-remote-server");
+    fn remote_server_paths_use_superzent_namespaces() {
+        assert_eq!(REMOTE_SERVER_BINARY_NAME_PREFIX, "superzent-remote-server");
         assert_eq!(
             remote_server_dir_relative().as_std_path(),
-            Path::new(".superzet_server")
+            Path::new(".superzent_server")
         );
         assert_eq!(
             remote_wsl_server_dir_relative().as_std_path(),
-            Path::new(".superzet_wsl_server")
+            Path::new(".superzent_wsl_server")
         );
     }
 }

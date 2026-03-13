@@ -4,7 +4,7 @@ use gpui::{AsyncApp, actions};
 actions!(
     cli,
     [
-        /// Registers the superzet:// URL scheme handler.
+        /// Registers the superzent:// URL scheme handler.
         RegisterZedScheme
     ]
 );

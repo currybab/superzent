@@ -1,10 +1,10 @@
-# superzet
+# superzent
 
 <p align="center">
-  <img src="assets/branding/logo_nightly.png" alt="superzet" width="180" />
+  <img src="assets/branding/logo_nightly.png" alt="superzent" width="180" />
 </p>
 
-`superzet` is a local-first workspace shell for coding agents.
+`superzent` is a local-first workspace shell for coding agents.
 
 It is built on top of a Zed fork, but the product scope is narrower: one window, multiple local workspaces with git worktree, fast file navigation, diff views, and terminal-heavy agent workflows.
 
@@ -31,7 +31,7 @@ Deliberately out of scope for the default build:
 Now:
 
 - stabilize the local-first workspace shell
-- keep release, update, and docs surfaces aligned with `superzet`
+- keep release, update, and docs surfaces aligned with `superzent`
 
 Next:
 
@@ -54,15 +54,15 @@ Not planned:
 ## Build From Source
 
 ```bash
-git clone git@github.com:currybab/superzet.git
-cd superzet
-cargo run -p superzet
+git clone git@github.com:currybab/superzent.git
+cd superzent
+cargo run -p superzent
 ```
 
 For day-to-day development, stay on the default lightweight shell:
 
 ```bash
-cargo check -p superzet
+cargo check -p superzent
 ```
 
 Before cutting a release, run the local maintainer preflight:
@@ -74,7 +74,7 @@ Before cutting a release, run the local maintainer preflight:
 Only use the inherited upstream surface when you are explicitly debugging it:
 
 ```bash
-cargo check -p superzet --features full
+cargo check -p superzent --features full
 ```
 
 For a signed macOS bundle:
@@ -88,7 +88,7 @@ For a signed macOS bundle:
 The current public desktop release flow is macOS Apple Silicon only.
 
 - Tag releases as `vX.Y.Z`
-- GitHub Actions builds `superzet-aarch64.dmg`
+- GitHub Actions builds `superzent-aarch64.dmg`
 - The release workflow also uploads Linux `remote_server` support assets
 - `releases.nangman.ai/releases/...` is served by a thin Cloudflare worker that points the app at those GitHub assets
 
@@ -108,7 +108,7 @@ To publish a release with in-app updates, you need:
   - `APPLE_NOTARIZATION_ISSUER_ID`
 - the mac signing identity in the `MACOS_SIGNING_IDENTITY` repository variable
 
-The app prefers `SUPERZET_*` runtime env vars for release/update overrides, but legacy `ZED_*` aliases still work during the transition.
+The app prefers `SUPERZENT_*` runtime env vars for release/update overrides, but legacy `ZED_*` aliases still work during the transition.
 
 ## Open Source Notes
 

@@ -68,8 +68,8 @@ fn get_uid_as_u32(uid: &sysinfo::Uid) -> u32 {
 
 fn instance_handshake() -> &'static str {
     match *release_channel::RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "superzet dev instance running",
-        ReleaseChannel::Stable => "superzet instance running",
+        ReleaseChannel::Dev => "superzent dev instance running",
+        ReleaseChannel::Stable => "superzent instance running",
     }
 }
 

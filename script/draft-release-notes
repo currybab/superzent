@@ -1,7 +1,7 @@
 #!/usr/bin/env node --redirect-warnings=/dev/null
 
 const { execFileSync } = require("child_process");
-const REPOSITORY = "currybab/superzet";
+const REPOSITORY = "currybab/superzent";
 const REPOSITORY_URL = `https://github.com/${REPOSITORY}`;
 
 main();

@@ -85,7 +85,7 @@ use objc::{class, msg_send, sel, sel_impl};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn files_not_created_on_launch(errors: HashMap<io::ErrorKind, Vec<&Path>>) {
-    let message = "superzet failed to launch";
+    let message = "superzent failed to launch";
     let error_details = errors
         .into_iter()
         .flat_map(|(kind, paths)| {
@@ -147,7 +147,7 @@ fn fail_to_open_window_async(e: anyhow::Error, cx: &mut AsyncApp) {
 
 fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
     eprintln!(
-        "superzet failed to open a window: {e:?}. See https://github.com/currybab/superzet for troubleshooting steps."
+        "superzent failed to open a window: {e:?}. See https://github.com/currybab/superzent for troubleshooting steps."
     );
     #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
@@ -163,14 +163,14 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
                 process::exit(1);
             };
 
-            let notification_id = "ai.nangman.superzet.Oops";
+            let notification_id = "ai.nangman.superzent.Oops";
             proxy
                 .add_notification(
                     notification_id,
-                    Notification::new("superzet failed to launch")
+                    Notification::new("superzent failed to launch")
                         .body(Some(
                             format!(
-                                "{e:?}. See https://github.com/currybab/superzet for troubleshooting steps."
+                                "{e:?}. See https://github.com/currybab/superzent for troubleshooting steps."
                             )
                             .as_str(),
                         ))
@@ -262,14 +262,14 @@ fn main() {
 
     let args = Args::parse();
 
-    // `superzet --askpass` makes superzet operate in nc/netcat mode for use with askpass
+    // `superzent --askpass` makes superzent operate in nc/netcat mode for use with askpass
     #[cfg(not(target_os = "windows"))]
     if let Some(socket) = &args.askpass {
         askpass::main(socket);
         return;
     }
 
-    // `superzet --crash-handler` makes superzet operate in minidump crash handler mode
+    // `superzent --crash-handler` makes superzent operate in minidump crash handler mode
     if let Some(socket) = &args.crash_handler {
         crashes::crash_server(socket.as_path());
         return;
@@ -299,7 +299,7 @@ fn main() {
         return;
     }
 
-    // `superzet --nc` makes superzet operate in nc/netcat mode for use with MCP
+    // `superzent --nc` makes superzent operate in nc/netcat mode for use with MCP
     if let Some(socket) = &args.nc {
         match nc::main(socket) {
             Ok(()) => return,
@@ -319,7 +319,7 @@ fn main() {
         }
     }
 
-    // `superzet --printenv` outputs environment variables as JSON to stdout
+    // `superzent --printenv` outputs environment variables as JSON to stdout
     if args.printenv {
         util::shell_env::print_env();
         return;
@@ -375,7 +375,7 @@ fn main() {
             app_commit_sha,
             *release_channel::RELEASE_CHANNEL,
         );
-        println!("superzet system specs (from CLI):\n{}", system_specs);
+        println!("superzent system specs (from CLI):\n{}", system_specs);
         return;
     }
 
@@ -387,7 +387,7 @@ fn main() {
         .unwrap();
 
     log::info!(
-        "========== starting superzet version {}, sha {} ==========",
+        "========== starting superzent version {}, sha {} ==========",
         app_version,
         app_commit_sha
             .as_ref()
@@ -419,7 +419,7 @@ fn main() {
                 app_version.patch,
             )
             .to_string(),
-            binary: "superzet".to_string(),
+            binary: "superzent".to_string(),
             release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
             commit_sha: app_commit_sha
                 .as_ref()
@@ -455,7 +455,7 @@ fn main() {
         }
     };
     if failed_single_instance_check {
-        println!("superzet is already running");
+        println!("superzent is already running");
         return;
     }
 
@@ -558,7 +558,7 @@ fn main() {
         handle_keymap_file_changes(user_keymap_file_rx, user_keymap_watcher, cx);
 
         let user_agent = format!(
-            "superzet/{} ({}; {})",
+            "superzent/{} ({}; {})",
             AppVersion::global(cx),
             std::env::consts::OS,
             std::env::consts::ARCH
@@ -642,8 +642,8 @@ fn main() {
         Client::set_global(client.clone(), cx);
 
         zed::init(cx);
-        superzet_model::SuperzetStore::init(cx);
-        superzet_ui::init(cx);
+        superzent_model::SuperzentStore::init(cx);
+        superzent_ui::init(cx);
         #[cfg(feature = "ai")]
         agent::ThreadStore::init_global(cx);
         project::Project::init(&client, cx);
@@ -1120,7 +1120,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                                     .project()
                                     .update(cx, |project, _| project.lsp_store())
                             })?;
-                            let uri = format!("superzet://schemas/{}", schema_path);
+                            let uri = format!("superzent://schemas/{}", schema_path);
                             let json_schema_content =
                                 json_schema_store::handle_schema_request(lsp_store, uri, cx)
                                     .await?;
@@ -1169,8 +1169,8 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                 });
             }
             OpenRequestKind::Setting { setting_path } => {
-                // superzet://settings/languages/$(language)/tab_size  - DONT SUPPORT
-                // superzet://settings/languages/Rust/tab_size  - SUPPORT
+                // superzent://settings/languages/$(language)/tab_size  - DONT SUPPORT
+                // superzent://settings/languages/Rust/tab_size  - SUPPORT
                 // languages.$(language).tab_size
                 // [ languages $(language) tab_size]
                 cx.spawn(async move |cx| {
@@ -1451,7 +1451,7 @@ pub(crate) async fn restore_or_create_workspace(
     }
 
     let result = async {
-        if restore_superzet_startup_workspace(app_state.clone(), cx).await? {
+        if restore_superzent_startup_workspace(app_state.clone(), cx).await? {
             return Ok(());
         }
 
@@ -1571,7 +1571,7 @@ pub(crate) async fn restore_or_create_workspace(
             cx.update(|cx| show_onboarding_view(app_state, cx)).await?;
         } else {
             cx.update(|cx| {
-                let should_open_empty_workspace = superzet_model::SuperzetStore::try_global(cx)
+                let should_open_empty_workspace = superzent_model::SuperzentStore::try_global(cx)
                     .is_some_and(|store| store.read(cx).startup_workspace().is_none());
                 workspace::open_new(
                     Default::default(),
@@ -1637,12 +1637,12 @@ fn finish_restore_or_create_workspace(cx: &mut App) {
     }
 }
 
-async fn restore_superzet_startup_workspace(
+async fn restore_superzent_startup_workspace(
     app_state: Arc<AppState>,
     cx: &mut AsyncApp,
 ) -> Result<bool> {
-    let Some(store): Option<Entity<superzet_model::SuperzetStore>> =
-        cx.update(|cx| superzet_model::SuperzetStore::try_global(cx))
+    let Some(store): Option<Entity<superzent_model::SuperzentStore>> =
+        cx.update(|cx| superzent_model::SuperzentStore::try_global(cx))
     else {
         return Ok(false);
     };
@@ -1656,7 +1656,7 @@ async fn restore_superzet_startup_workspace(
             .find(|workspace| {
                 matches!(
                     workspace.location,
-                    superzet_model::WorkspaceLocation::Local { .. }
+                    superzent_model::WorkspaceLocation::Local { .. }
                 )
             })
             .cloned()
@@ -1667,7 +1667,7 @@ async fn restore_superzet_startup_workspace(
     };
 
     if let Some(worktree_path) = startup_workspace.local_worktree_path().map(PathBuf::from) {
-        return restore_local_superzet_startup_workspace(
+        return restore_local_superzent_startup_workspace(
             store,
             startup_workspace.id,
             worktree_path,
@@ -1682,7 +1682,7 @@ async fn restore_superzet_startup_workspace(
             .local_worktree_path()
             .map(PathBuf::from)
     {
-        if restore_local_superzet_startup_workspace(
+        if restore_local_superzent_startup_workspace(
             store.clone(),
             fallback_local_workspace.id,
             worktree_path,
@@ -1709,8 +1709,8 @@ async fn restore_superzet_startup_workspace(
     }
 }
 
-async fn restore_local_superzet_startup_workspace(
-    store: Entity<superzet_model::SuperzetStore>,
+async fn restore_local_superzent_startup_workspace(
+    store: Entity<superzent_model::SuperzentStore>,
     workspace_id: String,
     worktree_path: PathBuf,
     app_state: Arc<AppState>,
@@ -1763,7 +1763,7 @@ async fn restore_local_superzet_startup_workspace(
                         log::error!("Failed to restore startup workspace group item: {error:#}");
                     }
                     cx.update(|cx| {
-                        store.update(cx, |store: &mut superzet_model::SuperzetStore, cx| {
+                        store.update(cx, |store: &mut superzent_model::SuperzentStore, cx| {
                             store.record_workspace_opened(&workspace_id, cx);
                         });
                     });
@@ -1792,7 +1792,7 @@ async fn restore_local_superzet_startup_workspace(
     {
         Ok(_) => {
             cx.update(|cx| {
-                store.update(cx, |store: &mut superzet_model::SuperzetStore, cx| {
+                store.update(cx, |store: &mut superzent_model::SuperzentStore, cx| {
                     store.record_workspace_opened(&workspace_id, cx);
                 });
             });
@@ -1910,14 +1910,14 @@ fn stdout_is_a_pty() -> bool {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "superzet", disable_version_flag = true, max_term_width = 100)]
+#[command(name = "superzent", disable_version_flag = true, max_term_width = 100)]
 struct Args {
     /// A sequence of space-separated paths or urls that you want to open.
     ///
     /// Use `path:line:row` syntax to open a file at a specific location.
     /// Non-existing paths and directories will ignore `:line:row` suffix.
     ///
-    /// URLs can either be `file://` or `superzet://` scheme.
+    /// URLs can either be `file://` or `superzent://` scheme.
     paths_or_urls: Vec<String>,
 
     /// Pairs of file paths to diff. Can be specified multiple times.
@@ -1928,14 +1928,14 @@ struct Args {
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     ///
     /// This overrides the default platform-specific data directory location.
-    /// On macOS, the default is `~/Library/Application Support/superzet`.
-    /// On Linux/FreeBSD, the default is `$XDG_DATA_HOME/superzet`.
-    /// On Windows, the default is `%LOCALAPPDATA%\\superzet`.
+    /// On macOS, the default is `~/Library/Application Support/superzent`.
+    /// On Linux/FreeBSD, the default is `$XDG_DATA_HOME/superzent`.
+    /// On Windows, the default is `%LOCALAPPDATA%\\superzent`.
     #[arg(long, value_name = "DIR", verbatim_doc_comment)]
     user_data_dir: Option<String>,
 
     /// The username and WSL distribution to use when opening paths. If not specified,
-    /// superzet will attempt to open the paths directly.
+    /// superzent will attempt to open the paths directly.
     ///
     /// The username is optional, and if not specified, the default user for the distribution
     /// will be used.
@@ -1947,29 +1947,29 @@ struct Args {
     #[arg(long, value_name = "USER@DISTRO")]
     wsl: Option<String>,
 
-    /// Instructs superzet to run as a dev server on this machine. (not implemented)
+    /// Instructs superzent to run as a dev server on this machine. (not implemented)
     #[arg(long)]
     dev_server_token: Option<String>,
 
     /// Prints system specs.
     ///
     /// Useful for submitting issues on GitHub when encountering a bug that
-    /// prevents superzet from starting, so you can't run `superzet: copy system specs to
+    /// prevents superzent from starting, so you can't run `superzent: copy system specs to
     /// clipboard`
     #[arg(long)]
     system_specs: bool,
 
     /// Used for the MCP Server, to remove the need for netcat as a dependency,
-    /// by having superzet act like netcat communicating over a Unix socket.
+    /// by having superzent act like netcat communicating over a Unix socket.
     #[arg(long, hide = true)]
     nc: Option<String>,
 
-    /// Used for recording minidumps on crashes by having superzet run a separate
+    /// Used for recording minidumps on crashes by having superzent run a separate
     /// process communicating over a socket.
     #[arg(long, hide = true)]
     crash_handler: Option<PathBuf>,
 
-    /// Run superzet in the foreground, only used on Windows, to match the behavior on macOS.
+    /// Run superzent in the foreground, only used on Windows, to match the behavior on macOS.
     #[arg(long)]
     #[cfg(target_os = "windows")]
     #[arg(hide = true)]
@@ -1982,7 +1982,7 @@ struct Args {
     dock_action: Option<usize>,
 
     /// Used for SSH/Git password authentication, to remove the need for netcat as a dependency,
-    /// by having superzet act like netcat communicating over a Unix socket.
+    /// by having superzent act like netcat communicating over a Unix socket.
     #[arg(long)]
     #[cfg(not(target_os = "windows"))]
     #[arg(hide = true)]
@@ -2000,7 +2000,7 @@ struct Args {
     #[arg(long, hide = true)]
     record_etw_trace: bool,
 
-    /// The PID of the superzet process to trace for heap analysis.
+    /// The PID of the superzent process to trace for heap analysis.
     #[cfg(target_os = "windows")]
     #[arg(long, hide = true, allow_hyphen_values = true)]
     etw_zed_pid: Option<i64>,
@@ -2010,7 +2010,7 @@ struct Args {
     #[arg(long, hide = true)]
     etw_output: Option<PathBuf>,
 
-    /// Unix socket path for IPC with the parent superzet process.
+    /// Unix socket path for IPC with the parent superzent process.
     #[cfg(target_os = "windows")]
     #[arg(long, hide = true)]
     etw_socket: Option<String>,
@@ -2035,8 +2035,8 @@ fn parse_url_arg(arg: &str, cx: &App) -> String {
         Ok(path) => format!("file://{}", path.display()),
         Err(_) => {
             if arg.starts_with("file://")
-                || arg.starts_with("superzet://")
-                || arg.starts_with("superzet-cli://")
+                || arg.starts_with("superzent://")
+                || arg.starts_with("superzent-cli://")
                 || arg.starts_with("ssh://")
                 || parse_zed_link(arg, cx).is_some()
             {

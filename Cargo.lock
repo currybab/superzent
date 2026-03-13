@@ -13163,7 +13163,7 @@ dependencies = [
  "snippet",
  "snippet_provider",
  "sum_tree",
- "superzet_agent",
+ "superzent_agent",
  "task",
  "tempfile",
  "terminal",
@@ -15701,7 +15701,7 @@ dependencies = [
  "settings",
  "shell_command_parser",
  "strum 0.27.2",
- "superzet_model",
+ "superzent_model",
  "telemetry",
  "theme",
  "title_bar",
@@ -16612,7 +16612,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "superzet"
+name = "superzent"
 version = "0.1.2"
 dependencies = [
  "acp_thread",
@@ -16743,8 +16743,8 @@ dependencies = [
  "smol",
  "snippet_provider",
  "snippets_ui",
- "superzet_model",
- "superzet_ui",
+ "superzent_model",
+ "superzent_ui",
  "svg_preview",
  "sysinfo 0.37.2",
  "system_specs",
@@ -16789,7 +16789,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "superzet_agent"
+name = "superzent_agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16800,7 +16800,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "smol",
- "superzet_model",
+ "superzent_model",
  "task",
  "tiny_http",
  "url",
@@ -16808,7 +16808,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "superzet_git"
+name = "superzent_git"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16817,13 +16817,13 @@ dependencies = [
  "serde",
  "serde_json",
  "smol",
- "superzet_model",
+ "superzent_model",
  "tempfile",
  "uuid",
 ]
 
 [[package]]
-name = "superzet_model"
+name = "superzent_model"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16837,7 +16837,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "superzet_ui"
+name = "superzent_ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16856,9 +16856,9 @@ dependencies = [
  "remote",
  "settings",
  "smol",
- "superzet_agent",
- "superzet_git",
- "superzet_model",
+ "superzent_agent",
+ "superzent_git",
+ "superzent_model",
  "task",
  "terminal",
  "terminal_view",
@@ -17945,7 +17945,7 @@ dependencies = [
  "settings",
  "smallvec",
  "story",
- "superzet_model",
+ "superzent_model",
  "sysinfo 0.37.2",
  "telemetry",
  "terminal_view",

@@ -1,5 +1,5 @@
 name: Report a crash
-description: superzet crashes, freezes, or hangs.
+description: superzent crashes, freezes, or hangs.
 type: Crash
 labels: "state:needs triage"
 body:
@@ -8,17 +8,17 @@ body:
       label: Reproduction steps
       description: Describe the shortest reliable way to trigger the crash or hang.
       placeholder: |
-        1. Start superzet
+        1. Start superzent
         2. Open ...
         3. The app crashes
     validations:
       required: true
   - type: textarea
     attributes:
-      label: superzet version and system specs
+      label: superzent version and system specs
       description: In the app, copy system specs from the command palette and paste them here.
       placeholder: |
-        superzet: v0.1.0
+        superzent: v0.1.0
         OS: macOS 15.3
         Memory: 36 GiB
         Architecture: aarch64
@@ -29,7 +29,7 @@ body:
       label: Attach log output
       description: Open the app log from the command palette and paste the relevant lines here after redacting secrets.
       value: |
-        <details><summary>superzet.log</summary>
+        <details><summary>superzent.log</summary>
 
         ```log
 

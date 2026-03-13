@@ -253,7 +253,7 @@ impl WslRemoteConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Uploading Superzet remote server"), cx);
+        delegate.set_status(Some("Uploading Superzent remote server"), cx);
 
         if let Some(parent) = dst_path.parent() {
             let parent = parent.display(PathStyle::Posix);
@@ -269,7 +269,7 @@ impl WslRemoteConnection {
             .with_context(|| format!("source path does not exist: {}", src_path.display()))?;
         let size = src_stat.len();
         log::info!(
-            "uploading superzet remote server to WSL {:?} ({}kb)",
+            "uploading superzent remote server to WSL {:?} ({}kb)",
             dst_path,
             size / 1024
         );
@@ -302,7 +302,7 @@ impl WslRemoteConnection {
         delegate: &Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        delegate.set_status(Some("Extracting Superzet remote server"), cx);
+        delegate.set_status(Some("Extracting Superzent remote server"), cx);
 
         let tmp_path_str = tmp_path.display(PathStyle::Posix);
         let dst_path_str = dst_path.display(PathStyle::Posix);

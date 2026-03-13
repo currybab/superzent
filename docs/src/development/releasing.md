@@ -1,9 +1,9 @@
 ---
-title: Releasing superzet
-description: Stable release, update feed, and operator setup for superzet.
+title: Releasing superzent
+description: Stable release, update feed, and operator setup for superzent.
 ---
 
-# Releasing superzet
+# Releasing superzent
 
 ## Public Release Model
 
@@ -25,8 +25,8 @@ git push origin v0.1.0
 
 That triggers the release workflow, which:
 
-1. builds a stable bundle with `SUPERZET_RELEASE_CHANNEL=stable`
-2. notarizes `superzet-aarch64.dmg`
+1. builds a stable bundle with `SUPERZENT_RELEASE_CHANNEL=stable`
+2. notarizes `superzent-aarch64.dmg`
 3. uploads the DMG, Linux remote-server assets, and `sha256sums.txt` to the GitHub Release for that tag
 
 ## Required GitHub Configuration
@@ -69,7 +69,7 @@ The updater expects:
 ```json
 {
   "version": "0.1.0",
-  "url": "https://github.com/currybab/superzet/releases/download/..."
+  "url": "https://github.com/currybab/superzent/releases/download/..."
 }
 ```
 

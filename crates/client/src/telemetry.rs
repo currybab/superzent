@@ -85,20 +85,20 @@ fn env_var(primary: &str, legacy: &str) -> Option<String> {
 }
 
 static ZED_CLIENT_CHECKSUM_SEED: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
-    option_env!("SUPERZET_CLIENT_CHECKSUM_SEED")
+    option_env!("SUPERZENT_CLIENT_CHECKSUM_SEED")
         .or(option_env!("ZED_CLIENT_CHECKSUM_SEED"))
         .map(|s| s.as_bytes().into())
         .or_else(|| {
-            env_var("SUPERZET_CLIENT_CHECKSUM_SEED", "ZED_CLIENT_CHECKSUM_SEED")
+            env_var("SUPERZENT_CLIENT_CHECKSUM_SEED", "ZED_CLIENT_CHECKSUM_SEED")
                 .map(|s| s.as_bytes().into())
         })
 });
 
 pub static MINIDUMP_ENDPOINT: LazyLock<Option<String>> = LazyLock::new(|| {
-    option_env!("SUPERZET_MINIDUMP_ENDPOINT")
+    option_env!("SUPERZENT_MINIDUMP_ENDPOINT")
         .or(option_env!("ZED_MINIDUMP_ENDPOINT"))
         .map(str::to_string)
-        .or_else(|| env_var("SUPERZET_MINIDUMP_ENDPOINT", "ZED_MINIDUMP_ENDPOINT"))
+        .or_else(|| env_var("SUPERZENT_MINIDUMP_ENDPOINT", "ZED_MINIDUMP_ENDPOINT"))
 });
 
 static DOTNET_PROJECT_FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| {

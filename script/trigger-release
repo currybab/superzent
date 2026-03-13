@@ -14,4 +14,4 @@ version=$(./script/get-released-version "$channel" | sed 's/\.[^\.]*$/.x/')
 echo "Bumping $channel (v$version)"
 
 gh workflow run "bump_patch_version.yml" -f branch="v$version"
-echo "Follow along at: https://github.com/currybab/superzet/actions/workflows/bump_patch_version.yml"
+echo "Follow along at: https://github.com/currybab/superzent/actions/workflows/bump_patch_version.yml"

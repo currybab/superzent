@@ -19,15 +19,15 @@ resolve_env() {
     printf '%s' "${value}"
 }
 
-macos_certificate="$(resolve_env SUPERZET_MACOS_CERTIFICATE MACOS_CERTIFICATE)"
-macos_certificate_password="$(resolve_env SUPERZET_MACOS_CERTIFICATE_PASSWORD MACOS_CERTIFICATE_PASSWORD)"
-apple_notarization_key="$(resolve_env SUPERZET_APPLE_NOTARIZATION_KEY APPLE_NOTARIZATION_KEY)"
-apple_notarization_key_id="$(resolve_env SUPERZET_APPLE_NOTARIZATION_KEY_ID APPLE_NOTARIZATION_KEY_ID)"
-apple_notarization_issuer_id="$(resolve_env SUPERZET_APPLE_NOTARIZATION_ISSUER_ID APPLE_NOTARIZATION_ISSUER_ID)"
-signing_identity="$(resolve_env SUPERZET_MACOS_SIGNING_IDENTITY MACOS_SIGNING_IDENTITY)"
-sentry_auth_token="$(resolve_env SUPERZET_SENTRY_AUTH_TOKEN SENTRY_AUTH_TOKEN)"
-sentry_project="$(resolve_env SUPERZET_SENTRY_PROJECT SENTRY_PROJECT)"
-sentry_organization="$(resolve_env SUPERZET_SENTRY_ORG SENTRY_ORG)"
+macos_certificate="$(resolve_env SUPERZENT_MACOS_CERTIFICATE MACOS_CERTIFICATE)"
+macos_certificate_password="$(resolve_env SUPERZENT_MACOS_CERTIFICATE_PASSWORD MACOS_CERTIFICATE_PASSWORD)"
+apple_notarization_key="$(resolve_env SUPERZENT_APPLE_NOTARIZATION_KEY APPLE_NOTARIZATION_KEY)"
+apple_notarization_key_id="$(resolve_env SUPERZENT_APPLE_NOTARIZATION_KEY_ID APPLE_NOTARIZATION_KEY_ID)"
+apple_notarization_issuer_id="$(resolve_env SUPERZENT_APPLE_NOTARIZATION_ISSUER_ID APPLE_NOTARIZATION_ISSUER_ID)"
+signing_identity="$(resolve_env SUPERZENT_MACOS_SIGNING_IDENTITY MACOS_SIGNING_IDENTITY)"
+sentry_auth_token="$(resolve_env SUPERZENT_SENTRY_AUTH_TOKEN SENTRY_AUTH_TOKEN)"
+sentry_project="$(resolve_env SUPERZENT_SENTRY_PROJECT SENTRY_PROJECT)"
+sentry_organization="$(resolve_env SUPERZENT_SENTRY_ORG SENTRY_ORG)"
 
 if [[ -n "${sentry_auth_token}" ]]; then
     export SENTRY_AUTH_TOKEN="${sentry_auth_token}"
@@ -41,7 +41,7 @@ if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
     repo_name="${repo_name#-}"
     repo_name="${repo_name%-}"
     repo_hash="$(printf '%s' "$repo_root" | shasum | awk '{print substr($1, 1, 12)}')"
-    export CARGO_TARGET_DIR="${tmp_root}/superzet-targets/${repo_name}-${repo_hash}"
+    export CARGO_TARGET_DIR="${tmp_root}/superzent-targets/${repo_name}-${repo_hash}"
 fi
 
 # Function for displaying help info
@@ -81,13 +81,13 @@ shift $((OPTIND-1))
 
 # Get release channel
 pushd crates/zed
-channel="${SUPERZET_RELEASE_CHANNEL:-${ZED_RELEASE_CHANNEL:-$(<RELEASE_CHANNEL)}}"
-export SUPERZET_RELEASE_CHANNEL="${channel}"
+channel="${SUPERZENT_RELEASE_CHANNEL:-${ZED_RELEASE_CHANNEL:-$(<RELEASE_CHANNEL)}}"
+export SUPERZENT_RELEASE_CHANNEL="${channel}"
 export ZED_RELEASE_CHANNEL="${channel}"
 export RELEASE_CHANNEL="${channel}"
 popd
 
-export SUPERZET_BUNDLE=true
+export SUPERZENT_BUNDLE=true
 export ZED_BUNDLE=true
 
 cargo_bundle_version=$(cargo -q bundle --help 2>&1 | head -n 1 || echo "")
@@ -120,8 +120,8 @@ script/generate-licenses
 
 rustup target add $target_triple
 
-echo "Compiling superzet binaries"
-cargo build ${build_flag} --package superzet --package cli --target $target_triple
+echo "Compiling superzent binaries"
+cargo build ${build_flag} --package superzent --package cli --target $target_triple
 # Build remote_server in separate invocation to prevent feature unification from other crates
 # from influencing dynamic libraries required by it.
 cargo build ${build_flag} --package remote_server --target $target_triple
@@ -153,27 +153,27 @@ fi
 
 if [[ -n "${macos_certificate}" && -n "${macos_certificate_password}" && -n "${apple_notarization_key}" && -n "${apple_notarization_key_id}" && -n "${apple_notarization_issuer_id}" ]]; then
     if [[ -z "${signing_identity}" ]]; then
-        echo "SUPERZET_MACOS_SIGNING_IDENTITY or MACOS_SIGNING_IDENTITY is required for a signed release build."
+        echo "SUPERZENT_MACOS_SIGNING_IDENTITY or MACOS_SIGNING_IDENTITY is required for a signed release build."
         exit 1
     fi
 
     can_code_sign=true
 
     echo "Setting up keychain for code signing..."
-    security create-keychain -p "$macos_certificate_password" superzet.keychain || echo ""
-    security default-keychain -s superzet.keychain
-    security unlock-keychain -p "$macos_certificate_password" superzet.keychain
+    security create-keychain -p "$macos_certificate_password" superzent.keychain || echo ""
+    security default-keychain -s superzent.keychain
+    security unlock-keychain -p "$macos_certificate_password" superzent.keychain
     # Calling set-keychain-settings without `-t` disables the auto-lock timeout
-    security set-keychain-settings superzet.keychain
-    echo "$macos_certificate" | base64 --decode > /tmp/superzet-certificate.p12
-    security import /tmp/superzet-certificate.p12 -k superzet.keychain -P "$macos_certificate_password" -T /usr/bin/codesign
-    rm /tmp/superzet-certificate.p12
-    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$macos_certificate_password" superzet.keychain
+    security set-keychain-settings superzent.keychain
+    echo "$macos_certificate" | base64 --decode > /tmp/superzent-certificate.p12
+    security import /tmp/superzent-certificate.p12 -k superzent.keychain -P "$macos_certificate_password" -T /usr/bin/codesign
+    rm /tmp/superzent-certificate.p12
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$macos_certificate_password" superzent.keychain
 
     function cleanup() {
         echo "Cleaning up keychain"
         security default-keychain -s login.keychain
-        security delete-keychain superzet.keychain
+        security delete-keychain superzent.keychain
     }
 
     trap cleanup EXIT
@@ -242,10 +242,10 @@ function sign_app_binaries() {
         # sequence of codesign commands modeled after this example: https://developer.apple.com/forums/thread/701514
         /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$signing_identity" "${app_path}/Contents/MacOS/cli" -v
         /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$signing_identity" "${app_path}/Contents/MacOS/git" -v
-        /usr/bin/codesign --deep --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$signing_identity" "${app_path}/Contents/MacOS/superzet" -v
+        /usr/bin/codesign --deep --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$signing_identity" "${app_path}/Contents/MacOS/superzent" -v
         /usr/bin/codesign --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$signing_identity" "${app_path}" -v
     else
-        echo "One or more of the required signing variables are missing: SUPERZET_MACOS_CERTIFICATE, SUPERZET_MACOS_CERTIFICATE_PASSWORD, SUPERZET_APPLE_NOTARIZATION_KEY, SUPERZET_APPLE_NOTARIZATION_KEY_ID, SUPERZET_APPLE_NOTARIZATION_ISSUER_ID"
+        echo "One or more of the required signing variables are missing: SUPERZENT_MACOS_CERTIFICATE, SUPERZENT_MACOS_CERTIFICATE_PASSWORD, SUPERZENT_APPLE_NOTARIZATION_KEY, SUPERZENT_APPLE_NOTARIZATION_KEY_ID, SUPERZENT_APPLE_NOTARIZATION_ISSUER_ID"
         echo "Legacy aliases MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD, APPLE_NOTARIZATION_KEY, APPLE_NOTARIZATION_KEY_ID, and APPLE_NOTARIZATION_ISSUER_ID are still supported."
 
         echo "====== WARNING ======"
@@ -255,7 +255,7 @@ function sign_app_binaries() {
         # Local unsigned bundles omit associated domains so ad hoc signing can succeed.
         cat crates/zed/resources/zed.entitlements | sed '/com.apple.developer.associated-domains/,+1d' > "${app_path}/Contents/Resources/zed.entitlements"
 
-        unsigned_signing_key="$(resolve_env SUPERZET_MACOS_SIGNING_KEY MACOS_SIGNING_KEY)"
+        unsigned_signing_key="$(resolve_env SUPERZENT_MACOS_SIGNING_KEY MACOS_SIGNING_KEY)"
         codesign --force --deep --entitlements "${app_path}/Contents/Resources/zed.entitlements" --sign ${unsigned_signing_key:- -} "${app_path}" -v
     fi
 
@@ -282,7 +282,7 @@ function sign_app_binaries() {
     else
         dmg_target_directory="${CARGO_TARGET_DIR}/${target_triple}/${target_dir}"
         dmg_source_directory="${dmg_target_directory}/dmg"
-        dmg_file_path="${dmg_target_directory}/superzet-${arch_suffix}.dmg"
+        dmg_file_path="${dmg_target_directory}/superzent-${arch_suffix}.dmg"
         xcode_bin_dir_path="$(xcode-select -p)/usr/bin"
 
         rm -rf ${dmg_source_directory}
@@ -294,7 +294,7 @@ function sign_app_binaries() {
         ln -s /Applications ${dmg_source_directory}
 
         echo "Creating final DMG at ${dmg_file_path} using ${dmg_source_directory}"
-        hdiutil create -volname superzet -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
+        hdiutil create -volname superzent -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
 
         # If someone runs this bundle script locally, a symlink will be placed in `dmg_source_directory`.
         # Removing it avoids local Finder churn while iterating on the source tree.
@@ -333,9 +333,9 @@ function upload_debug_symbols() {
     if [ "$local_install" = true ]; then
         echo "local install; skipping sentry upload."
     elif [[ -n "${sentry_auth_token}" ]]; then
-        echo "Uploading superzet debug symbols to sentry..."
+        echo "Uploading superzent debug symbols to sentry..."
         dsymutil_log="${CARGO_TARGET_DIR}/dsymutil.log"
-        if ! dsymutil --flat "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/superzet" 2> "${dsymutil_log}"; then
+        if ! dsymutil --flat "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/superzent" 2> "${dsymutil_log}"; then
             echo "dsymutil failed"
             cat "${dsymutil_log}"
             exit 1
@@ -350,8 +350,8 @@ function upload_debug_symbols() {
         # Try uploading up to 3 times
         for attempt in 1 2 3; do
             echo "Sentry upload attempt $attempt..."
-            if sentry-cli debug-files upload --include-sources --wait -p "${sentry_project:-superzet}" -o "${sentry_organization:-superzet}" \
-                "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/superzet.dwarf" \
+            if sentry-cli debug-files upload --include-sources --wait -p "${sentry_project:-superzent}" -o "${sentry_organization:-superzent}" \
+                "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/superzent.dwarf" \
                 "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/remote_server.dwarf"; then
                 break
             else
@@ -369,11 +369,11 @@ function upload_debug_symbols() {
 
 upload_debug_symbols
 
-cp "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/superzet" "${app_path}/Contents/MacOS/superzet"
+cp "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/superzent" "${app_path}/Contents/MacOS/superzent"
 cp "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/cli" "${app_path}/Contents/MacOS/cli"
 sign_app_binaries
 
 if [[ "$target_dir" != "debug" ]]; then
     sign_binary "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/remote_server"
-    gzip -f --stdout --best "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/remote_server" > "${CARGO_TARGET_DIR}/superzet-remote-server-macos-$arch_suffix.gz"
+    gzip -f --stdout --best "${CARGO_TARGET_DIR}/${target_triple}/${target_dir}/remote_server" > "${CARGO_TARGET_DIR}/superzent-remote-server-macos-$arch_suffix.gz"
 fi

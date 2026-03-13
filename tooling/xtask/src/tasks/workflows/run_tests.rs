@@ -28,9 +28,9 @@ const MAC_DEFAULT_NEXTEST_EXCLUDE_FILTER: &str = concat!(
     "(package(editor) and test(edit_prediction_tests)) | ",
     "(package(project) and test(disable_ai_settings_tests)) | ",
     "(package(project) and test(context_server_store)) | ",
-    "(package(superzet) and test(test_action_namespaces)) | ",
+    "(package(superzent) and test(test_action_namespaces)) | ",
     "(package(workspace) and test(test_sidebar_disabled_when_disable_ai_is_enabled)) | ",
-    "(package(superzet) and test(test_disable_ai_crash))"
+    "(package(superzent) and test(test_disable_ai_crash))"
 );
 
 const LINUX_DEFAULT_NEXTEST_EXCLUDE_FILTER: &str = concat!(
@@ -40,7 +40,7 @@ const LINUX_DEFAULT_NEXTEST_EXCLUDE_FILTER: &str = concat!(
     "package(collab) | ",
     "package(copilot) | ",
     "(package(project) and test(disable_ai_settings_tests)) | ",
-    "(package(superzet) and test(test_action_namespaces)) | ",
+    "(package(superzent) and test(test_action_namespaces)) | ",
     "(package(workspace) and test(test_sidebar_disabled_when_disable_ai_is_enabled)) | ",
     "(package(worktree) and test(test_random_worktree_changes)) | ",
     "(package(language) and test(test_random_syntax_map_edits_rust_macros)) | ",

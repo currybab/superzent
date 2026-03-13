@@ -1,23 +1,23 @@
-name: superzet
-title: superzet
+name: superzent
+title: superzent
 base: core24
 version: "$RELEASE_VERSION"
 summary: The terminal shell for coding agents
 description: |
-  Superzet is a native workspace shell for coding agents with an integrated
+  Superzent is a native workspace shell for coding agents with an integrated
   editor, terminal, and diff workflow.
 grade: stable
 confinement: classic
 compression: lzo
-website: https://github.com/currybab/superzet
-source-code: https://github.com/currybab/superzet
-issues: https://github.com/currybab/superzet/issues
-contact: https://github.com/currybab/superzet/discussions
+website: https://github.com/currybab/superzent
+source-code: https://github.com/currybab/superzent
+issues: https://github.com/currybab/superzent/issues
+contact: https://github.com/currybab/superzent/discussions
 
 parts:
-  superzet:
+  superzent:
     plugin: dump
-    source: "https://github.com/currybab/superzet/releases/download/v$RELEASE_VERSION/superzet-linux-x86_64.tar.gz"
+    source: "https://github.com/currybab/superzent/releases/download/v$RELEASE_VERSION/superzent-linux-x86_64.tar.gz"
 
     organize:
       # These renames seem to not be necessary, but it's tidier.
@@ -26,10 +26,10 @@ parts:
 
     stage-packages:
       - libasound2t64
-      # snapcraft has a lint that this is unused, but without it superzet exits with
+      # snapcraft has a lint that this is unused, but without it superzent exits with
       # "Missing Vulkan entry points: LibraryLoadFailure" in wgpu.
       - libvulkan1
-      # snapcraft has a lint that this is unused, but without it superzet exits with
+      # snapcraft has a lint that this is unused, but without it superzent exits with
       # "NoWaylandLib" when run with Wayland.
       - libwayland-client0
       - libxcb1
@@ -52,8 +52,8 @@ parts:
       - -usr/share/man
 
 apps:
-  superzet:
-    command: usr/bin/superzet
-    common-id: ai.nangman.superzet
+  superzent:
+    command: usr/bin/superzent
+    common-id: ai.nangman.superzent
     environment:
       ZED_BUNDLE_TYPE: snap

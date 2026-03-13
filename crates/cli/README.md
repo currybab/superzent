@@ -11,5 +11,5 @@ cargo build -p zed
 And then building and running the `cli` crate with the following parameters:
 
 ```
- cargo run -p cli -- --superzet ./target/debug/superzet.exe
+ cargo run -p cli -- --superzent ./target/debug/superzent.exe
 ```

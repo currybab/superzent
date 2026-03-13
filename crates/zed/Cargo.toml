@@ -1,12 +1,12 @@
 [package]
 description = "The terminal for coding agents."
 edition.workspace = true
-name = "superzet"
+name = "superzent"
 version = "0.1.2"
 publish.workspace = true
 license = "GPL-3.0-or-later"
-authors = ["superzet contributors"]
-default-run = "superzet"
+authors = ["superzent contributors"]
+default-run = "superzent"
 
 [lints]
 workspace = true
@@ -84,7 +84,7 @@ visual-tests = [
 ]
 
 [[bin]]
-name = "superzet"
+name = "superzent"
 path = "src/main.rs"
 
 [[bin]]
@@ -217,8 +217,8 @@ sidebar = { workspace = true, optional = true }
 smol.workspace = true
 snippet_provider.workspace = true
 snippets_ui.workspace = true
-superzet_model.workspace = true
-superzet_ui.workspace = true
+superzent_model.workspace = true
+superzent_ui.workspace = true
 svg_preview.workspace = true
 sysinfo.workspace = true
 tab_switcher.workspace = true
@@ -301,19 +301,19 @@ repl = { workspace = true, features = ["test-support"] }
 
 [package.metadata.bundle-dev]
 icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
-identifier = "ai.nangman.superzet-dev"
-name = "superzet dev"
+identifier = "ai.nangman.superzent-dev"
+name = "superzent dev"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["superzet"]
+osx_url_schemes = ["superzent"]
 
 [package.metadata.bundle-stable]
 icon = ["resources/app-icon-nightly@2x.png", "resources/app-icon-nightly.png"]
-identifier = "ai.nangman.superzet"
-name = "superzet"
+identifier = "ai.nangman.superzent"
+name = "superzent"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["superzet"]
+osx_url_schemes = ["superzent"]
 
 [package.metadata.cargo-machete]
 ignored = ["profiling", "zstd", "tracing"]

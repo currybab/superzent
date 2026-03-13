@@ -7,4 +7,4 @@ if [ "$channel" != "stable" ]; then
   exit 1
 fi
 
-exec script/lib/bump-version.sh superzet v "" patch
+exec script/lib/bump-version.sh superzent v "" patch

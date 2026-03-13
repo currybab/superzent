@@ -5,4 +5,4 @@ workers_dev = true
 
 [[r2_buckets]]
 binding = 'OPEN_SOURCE_WEBSITE_ASSETS_BUCKET'
-bucket_name = 'superzet-open-source-website-assets'
+bucket_name = 'superzent-open-source-website-assets'

@@ -1,4 +1,4 @@
-//! Provides constructs for the superzet app version and release channel.
+//! Provides constructs for the superzent app version and release channel.
 
 #![deny(missing_docs)]
 
@@ -16,7 +16,7 @@ fn env_flag(primary: &str, legacy: &str, predicate: impl Fn(&str) -> bool) -> bo
 }
 
 fn build_release_channel_name() -> Option<&'static str> {
-    option_env!("SUPERZET_RELEASE_CHANNEL")
+    option_env!("SUPERZENT_RELEASE_CHANNEL")
         .or(option_env!("ZED_RELEASE_CHANNEL"))
         .or(option_env!("RELEASE_CHANNEL"))
 }
@@ -25,10 +25,10 @@ fn build_release_channel_name() -> Option<&'static str> {
 pub static RELEASE_CHANNEL_NAME: LazyLock<String> = LazyLock::new(|| {
     resolved_release_channel_name(
         build_release_channel_name(),
-        env_var("SUPERZET_RELEASE_CHANNEL", "ZED_RELEASE_CHANNEL"),
+        env_var("SUPERZENT_RELEASE_CHANNEL", "ZED_RELEASE_CHANNEL"),
         include_str!("../../zed/RELEASE_CHANNEL").trim(),
         cfg!(debug_assertions),
-        env_flag("SUPERZET_TERM", "ZED_TERM", |value| value == "true"),
+        env_flag("SUPERZENT_TERM", "ZED_TERM", |value| value == "true"),
     )
 });
 
@@ -43,12 +43,12 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
 #[cfg(target_os = "windows")]
 pub fn app_identifier() -> &'static str {
     match *RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "superzet-dev",
-        ReleaseChannel::Stable => "superzet-stable",
+        ReleaseChannel::Dev => "superzent-dev",
+        ReleaseChannel::Stable => "superzent-stable",
     }
 }
 
-/// The Git commit SHA that superzet was built at.
+/// The Git commit SHA that superzent was built at.
 #[derive(Clone, Eq, Debug, PartialEq)]
 pub struct AppCommitSha(String);
 
@@ -88,7 +88,7 @@ struct GlobalAppVersion(Version);
 
 impl Global for GlobalAppVersion {}
 
-/// The version of superzet.
+/// The version of superzent.
 pub struct AppVersion;
 
 impl AppVersion {
@@ -99,10 +99,10 @@ impl AppVersion {
         commit_sha: Option<AppCommitSha>,
     ) -> Version {
         let mut version: Version =
-            if let Some(from_env) = env_var("SUPERZET_APP_VERSION", "ZED_APP_VERSION") {
+            if let Some(from_env) = env_var("SUPERZENT_APP_VERSION", "ZED_APP_VERSION") {
                 from_env
                     .parse()
-                    .expect("invalid SUPERZET_APP_VERSION or ZED_APP_VERSION")
+                    .expect("invalid SUPERZENT_APP_VERSION or ZED_APP_VERSION")
             } else {
                 pkg_version.parse().expect("invalid version in Cargo.toml")
             };
@@ -183,8 +183,8 @@ impl ReleaseChannel {
     /// Returns the display name for this [`ReleaseChannel`].
     pub fn display_name(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "superzet dev",
-            ReleaseChannel::Stable => "superzet",
+            ReleaseChannel::Dev => "superzent dev",
+            ReleaseChannel::Stable => "superzent",
         }
     }
 
@@ -201,8 +201,8 @@ impl ReleaseChannel {
     /// This also has to match the bundle identifier for Zed on macOS.
     pub fn app_id(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "ai.nangman.superzet-dev",
-            ReleaseChannel::Stable => "ai.nangman.superzet",
+            ReleaseChannel::Dev => "ai.nangman.superzent-dev",
+            ReleaseChannel::Stable => "ai.nangman.superzent",
         }
     }
 

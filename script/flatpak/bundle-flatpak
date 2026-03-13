@@ -5,21 +5,21 @@ cd "$(dirname "$0")/../.."
 shopt -s extglob
 
 script/bundle-linux --flatpak
-archive_match="superzet-linux-$(uname -m)\.tar\.gz"
+archive_match="superzent-linux-$(uname -m)\.tar\.gz"
 archive=$(ls "target/release" | grep -E ${archive_match})
 channel=$(<crates/zed/RELEASE_CHANNEL)
 
 export CHANNEL="$channel"
 export ARCHIVE="$archive"
 if [[ "$channel" == "dev" ]]; then
-    export APP_ID="ai.nangman.superzet-dev"
-    export APP_NAME="superzet dev"
+    export APP_ID="ai.nangman.superzent-dev"
+    export APP_NAME="superzent dev"
     export BRANDING_LIGHT="#99c1f1"
     export BRANDING_DARK="#1a5fb4"
     export ICON_FILE="app-icon"
 elif [[ "$channel" == "stable" ]]; then
-    export APP_ID="ai.nangman.superzet"
-    export APP_NAME="superzet"
+    export APP_ID="ai.nangman.superzent"
+    export APP_NAME="superzent"
     export BRANDING_LIGHT="#99c1f1"
     export BRANDING_DARK="#1a5fb4"
     export ICON_FILE="app-icon-nightly"

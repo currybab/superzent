@@ -8,8 +8,8 @@ if [ "$channel" != "stable" ]; then
   exit 1
 fi
 
-releases_base_url="${SUPERZET_RELEASES_URL:-https://releases.nangman.ai}"
+releases_base_url="${SUPERZENT_RELEASES_URL:-https://releases.nangman.ai}"
 releases_base_url="${releases_base_url%/}"
 
-curl -fsSL "${releases_base_url}/releases/${channel}/latest/asset?asset=superzet&os=macos&arch=aarch64" \
+curl -fsSL "${releases_base_url}/releases/${channel}/latest/asset?asset=superzent&os=macos&arch=aarch64" \
   | jq -r .version

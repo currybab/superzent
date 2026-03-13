@@ -743,8 +743,8 @@
     "use_key_equivalents": true,
     "bindings": {
       "cmd-n": "multi_workspace::NewWorkspaceInWindow",
-      "left": "superzet::CollapseWorkspaceSection",
-      "right": "superzet::ExpandWorkspaceSection",
+      "left": "superzent::CollapseWorkspaceSection",
+      "right": "superzent::ExpandWorkspaceSection",
       "enter": "menu::Confirm",
     },
   },

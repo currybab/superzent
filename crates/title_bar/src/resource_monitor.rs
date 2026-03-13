@@ -602,7 +602,7 @@ impl Render for ResourceMonitorPopover {
                                             .color(Color::Muted),
                                     )
                                     .child(self.render_usage_row(
-                                        "Superzet App",
+                                        "Superzent App",
                                         snapshot.app,
                                         snapshot.total,
                                         false,

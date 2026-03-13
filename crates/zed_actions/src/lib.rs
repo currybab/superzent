@@ -19,7 +19,7 @@ pub struct OpenBrowser {
     pub url: String,
 }
 
-/// Opens a superzet:// URL within the application.
+/// Opens a superzent:// URL within the application.
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = zed)]
 #[serde(deny_unknown_fields)]
@@ -60,7 +60,7 @@ actions!(
         OpenServerSettings,
         /// Quits the application.
         Quit,
-        /// Shows information about superzet.
+        /// Shows information about superzent.
         About,
         /// Opens the documentation website.
         OpenDocs,
@@ -315,7 +315,7 @@ pub mod feedback {
     actions!(
         feedback,
         [
-            /// Opens the superzet support entry point.
+            /// Opens the superzent support entry point.
             EmailZed,
             /// Opens the bug report form.
             FileBugReport,

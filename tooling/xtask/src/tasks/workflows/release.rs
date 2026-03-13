@@ -8,7 +8,7 @@ use crate::tasks::workflows::{
     vars::{self, JobOutput, StepOutput, assets, bundle_envs},
 };
 
-const RELEASE_ARTIFACT: &str = "superzet-aarch64.dmg";
+const RELEASE_ARTIFACT: &str = "superzent-aarch64.dmg";
 const REMOTE_SERVER_LINUX_AARCH64_ARTIFACT: &str = assets::REMOTE_SERVER_LINUX_AARCH64;
 const REMOTE_SERVER_LINUX_X86_64_ARTIFACT: &str = assets::REMOTE_SERVER_LINUX_X86_64;
 const CHECKSUM_ARTIFACT: &str = "sha256sums.txt";
@@ -98,26 +98,26 @@ fn bundle_mac_stable(validate_release_tag: &NamedJob, valid_release_tag: &JobOut
             .runs_on(runners::MAC_DEFAULT)
             .timeout_minutes(360u32)
             .add_env(("CARGO_TARGET_DIR", "target"))
-            .add_env(("SUPERZET_RELEASE_CHANNEL", "stable"))
-            .add_env(("SUPERZET_MACOS_CERTIFICATE", vars::MACOS_CERTIFICATE))
+            .add_env(("SUPERZENT_RELEASE_CHANNEL", "stable"))
+            .add_env(("SUPERZENT_MACOS_CERTIFICATE", vars::MACOS_CERTIFICATE))
             .add_env((
-                "SUPERZET_MACOS_CERTIFICATE_PASSWORD",
+                "SUPERZENT_MACOS_CERTIFICATE_PASSWORD",
                 vars::MACOS_CERTIFICATE_PASSWORD,
             ))
             .add_env((
-                "SUPERZET_APPLE_NOTARIZATION_KEY",
+                "SUPERZENT_APPLE_NOTARIZATION_KEY",
                 vars::APPLE_NOTARIZATION_KEY,
             ))
             .add_env((
-                "SUPERZET_APPLE_NOTARIZATION_KEY_ID",
+                "SUPERZENT_APPLE_NOTARIZATION_KEY_ID",
                 vars::APPLE_NOTARIZATION_KEY_ID,
             ))
             .add_env((
-                "SUPERZET_APPLE_NOTARIZATION_ISSUER_ID",
+                "SUPERZENT_APPLE_NOTARIZATION_ISSUER_ID",
                 vars::APPLE_NOTARIZATION_ISSUER_ID,
             ))
             .add_env((
-                "SUPERZET_MACOS_SIGNING_IDENTITY",
+                "SUPERZENT_MACOS_SIGNING_IDENTITY",
                 vars::MACOS_SIGNING_IDENTITY,
             ))
             .add_step(steps::checkout_repo())
@@ -181,7 +181,7 @@ fn bundle_linux_remote_server_stable(
             .runs_on(arch.linux_bundler())
             .timeout_minutes(60u32)
             .envs(bundle_envs(Platform::Linux))
-            .add_env(("SUPERZET_RELEASE_CHANNEL", "stable"))
+            .add_env(("SUPERZENT_RELEASE_CHANNEL", "stable"))
             .add_env(("CC", "clang-18"))
             .add_env(("CXX", "clang++-18"))
             .add_step(steps::checkout_repo())

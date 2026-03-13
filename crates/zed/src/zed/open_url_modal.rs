@@ -27,7 +27,7 @@ impl OpenUrlModal {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("superzet://...", window, cx);
+            editor.set_placeholder_text("superzent://...", window, cx);
             editor
         });
 
@@ -53,8 +53,8 @@ impl OpenUrlModal {
             return;
         }
 
-        // Handle superzet:// URLs internally.
-        if url.starts_with("superzet://") || url.starts_with("superzet-cli://") {
+        // Handle superzent:// URLs internally.
+        if url.starts_with("superzent://") || url.starts_with("superzent-cli://") {
             OpenListener::global(cx).open(RawOpenRequest {
                 urls: vec![url],
                 ..Default::default()

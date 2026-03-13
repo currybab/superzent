@@ -1,11 +1,11 @@
 ---
 title: Syncing ACP and Agent UI from upstream
-description: How superzet selectively pulls ACP and native agent UI changes from upstream Zed.
+description: How superzent selectively pulls ACP and native agent UI changes from upstream Zed.
 ---
 
 # Syncing ACP and Agent UI from upstream
 
-`superzet` keeps a narrow upstream intake lane for ACP and native agent UI work from Zed. The goal is to reuse upstream improvements in that area without reopening the full upstream product surface in the default build.
+`superzent` keeps a narrow upstream intake lane for ACP and native agent UI work from Zed. The goal is to reuse upstream improvements in that area without reopening the full upstream product surface in the default build.
 
 ## Current Watchlist
 
@@ -64,8 +64,8 @@ script/upstream-agent-ui-candidates \
 At minimum, run:
 
 ```sh
-cargo check -p superzet
-cargo check -p superzet --features full
+cargo check -p superzent
+cargo check -p superzent --features full
 ```
 
 Then run targeted tests or checks for any touched crates, especially when the import changes:
@@ -78,15 +78,15 @@ Then run targeted tests or checks for any touched crates, especially when the im
 
 ## Compatibility Checks
 
-Review every import against these `superzet` constraints:
+Review every import against these `superzent` constraints:
 
 - The default app build is still `lite`.
-- `superzet` does not ship hosted AI, cloud, or collab assumptions in the default flow.
-- `AgentPanel` is still a dock panel upstream today, while `superzet`'s next product step is center-pane ACP agent tabs.
+- `superzent` does not ship hosted AI, cloud, or collab assumptions in the default flow.
+- `AgentPanel` is still a dock panel upstream today, while `superzent`'s next product step is center-pane ACP agent tabs.
 - Imported changes must not reintroduce upstream branding, docs links, or release assumptions.
 
 ## Backports vs. Upstream Intake
 
-The existing `script/cherry-pick` helper and `.github/workflows/cherry_pick.yml` are for release branch backports inside `superzet`.
+The existing `script/cherry-pick` helper and `.github/workflows/cherry_pick.yml` are for release branch backports inside `superzent`.
 
 Do not use that workflow as the primary upstream intake mechanism. Upstream Zed imports should stay on normal feature branches so you can review conflicts, trim unwanted assumptions, and validate the result before merging.

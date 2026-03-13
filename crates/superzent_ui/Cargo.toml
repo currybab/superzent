@@ -1,5 +1,5 @@
 [package]
-name = "superzet_ui"
+name = "superzent_ui"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
@@ -26,9 +26,9 @@ recent_projects.workspace = true
 remote.workspace = true
 settings.workspace = true
 smol.workspace = true
-superzet_git.workspace = true
-superzet_agent.workspace = true
-superzet_model.workspace = true
+superzent_git.workspace = true
+superzent_agent.workspace = true
+superzent_model.workspace = true
 task.workspace = true
 terminal.workspace = true
 terminal_view.workspace = true

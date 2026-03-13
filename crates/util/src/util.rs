@@ -321,11 +321,11 @@ pub fn get_zed_cli_path() -> Result<PathBuf> {
         // so here ./cli is for both installed and development builds.
         &["./cli"]
     } else if cfg!(target_os = "windows") {
-        // bin/superzet.exe is for installed builds, ./cli.exe is for development builds.
-        &["bin/superzet.exe", "./cli.exe"]
+        // bin/superzent.exe is for installed builds, ./cli.exe is for development builds.
+        &["bin/superzent.exe", "./cli.exe"]
     } else if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
         // bin is the standard, ./cli is for the target directory in development builds.
-        &["../bin/superzet", "./cli"]
+        &["../bin/superzent", "./cli"]
     } else {
         anyhow::bail!("unsupported platform for determining zed-cli path");
     };
