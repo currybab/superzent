@@ -336,8 +336,11 @@ pub async fn open_paths_with_positions(
 ) -> Result<(
     WindowHandle<MultiWorkspace>,
     Vec<Option<Result<Box<dyn ItemHandle>>>>,
+    Vec<PathWithPosition>,
 )> {
-    let paths = path_positions
+    let normalized_path_positions =
+        normalize_external_path_positions(app_state.fs.as_ref(), path_positions).await?;
+    let paths = normalized_path_positions
         .iter()
         .map(|path_with_position| path_with_position.path.clone())
         .collect::<Vec<_>>();
@@ -383,9 +386,41 @@ pub async fn open_paths_with_positions(
         .iter()
         .map(|item| item.as_ref().and_then(|r| r.as_ref().ok()).cloned())
         .collect::<Vec<_>>();
-    navigate_to_positions(&multi_workspace, items_for_navigation, path_positions, cx);
+    navigate_to_positions(
+        &multi_workspace,
+        items_for_navigation,
+        &normalized_path_positions,
+        cx,
+    );
 
-    Ok((multi_workspace, items))
+    Ok((multi_workspace, items, normalized_path_positions))
+}
+
+async fn normalize_external_path_positions(
+    fs: &dyn Fs,
+    path_positions: &[PathWithPosition],
+) -> Result<Vec<PathWithPosition>> {
+    let mut normalized = Vec::with_capacity(path_positions.len());
+    for path_position in path_positions {
+        let path = &path_position.path;
+        let should_open_parent = fs.is_file(path).await
+            || path_position.row.is_some()
+            || (path.extension().is_some() && !fs.is_dir(path).await);
+
+        if should_open_parent {
+            let parent = path.parent().context(format!(
+                "single-file opens require a parent folder: {path:?}"
+            ))?;
+            let parent = fs
+                .canonicalize(parent)
+                .await
+                .unwrap_or_else(|_| parent.to_path_buf());
+            normalized.push(PathWithPosition::from_path(parent));
+        } else {
+            normalized.push(path_position.clone());
+        }
+    }
+    Ok(normalized)
 }
 
 pub async fn handle_cli_connection(
@@ -492,6 +527,12 @@ async fn open_workspaces(
         else {
             cx.update(|cx| {
                 let open_options = OpenOptions {
+                    replace_window: if open_new_workspace == Some(true) {
+                        cx.active_window()
+                            .and_then(|window| window.downcast::<MultiWorkspace>())
+                    } else {
+                        None
+                    },
                     env,
                     ..Default::default()
                 };
@@ -505,18 +546,23 @@ async fn open_workspaces(
     let mut errored = false;
 
     for (location, workspace_paths) in grouped_locations {
-        // If reuse flag is passed, open a new workspace in an existing window.
-        let (open_new_workspace, replace_window) = if reuse {
-            (
-                Some(true),
-                cx.update(|cx| {
-                    workspace::workspace_windows_for_location(&location, cx)
-                        .into_iter()
-                        .next()
-                }),
-            )
+        let replace_window = cx.update(|cx| {
+            let active_window = cx
+                .active_window()
+                .and_then(|window| window.downcast::<MultiWorkspace>());
+            let first_matching_window = workspace::workspace_windows_for_location(&location, cx)
+                .into_iter()
+                .next();
+            if reuse || open_new_workspace == Some(true) {
+                active_window.or(first_matching_window)
+            } else {
+                None
+            }
+        });
+        let open_new_workspace = if reuse {
+            Some(true)
         } else {
-            (open_new_workspace, None)
+            open_new_workspace
         };
         let open_options = workspace::OpenOptions {
             open_new_workspace,
@@ -589,8 +635,21 @@ async fn open_local_workspace(
 ) -> bool {
     let paths_with_position =
         derive_paths_with_position(app_state.fs.as_ref(), workspace_paths).await;
+    let open_options =
+        if open_options.open_new_workspace == Some(true) && open_options.replace_window.is_none() {
+            let replace_window = cx.update(|cx| {
+                cx.active_window()
+                    .and_then(|window| window.downcast::<MultiWorkspace>())
+            });
+            workspace::OpenOptions {
+                replace_window,
+                ..open_options
+            }
+        } else {
+            open_options
+        };
 
-    let (workspace, items) = match open_paths_with_positions(
+    let (workspace, items, normalized_path_positions) = match open_paths_with_positions(
         &paths_with_position,
         &diff_paths,
         diff_all,
@@ -617,8 +676,9 @@ async fn open_local_workspace(
     // If --wait flag is used with no paths, or a directory, then wait until
     // the entire workspace is closed.
     if open_options.wait {
-        let mut wait_for_window_close = paths_with_position.is_empty() && diff_paths.is_empty();
-        for path_with_position in &paths_with_position {
+        let mut wait_for_window_close =
+            normalized_path_positions.is_empty() && diff_paths.is_empty();
+        for path_with_position in &normalized_path_positions {
             if app_state.fs.is_dir(&path_with_position.path).await {
                 wait_for_window_close = true;
                 break;
@@ -1006,12 +1066,12 @@ mod tests {
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
-                    assert!(workspace.active_item_as::<Editor>(cx).is_some());
+                    assert!(workspace.active_item_as::<Editor>(cx).is_none());
                 });
             })
             .unwrap();
 
-        // Now open a file inside that workspace, but tell Zed to open a new window
+        // Opening the same path as a "new workspace" should stay in the same OS window.
         open_workspace_file(
             path!("/root/dir1/file1.txt"),
             Some(true),
@@ -1020,15 +1080,12 @@ mod tests {
         )
         .await;
 
-        assert_eq!(cx.windows().len(), 2);
-
-        let multi_workspace_2 = cx.windows()[1].downcast::<MultiWorkspace>().unwrap();
-        multi_workspace_2
+        assert_eq!(cx.windows().len(), 1);
+        multi_workspace
             .update(cx, |multi_workspace, _, cx| {
+                assert_eq!(multi_workspace.workspaces().len(), 2);
                 multi_workspace.workspace().update(cx, |workspace, cx| {
-                    assert!(workspace.active_item_as::<Editor>(cx).is_some());
-                    let items = workspace.items(cx).collect::<Vec<_>>();
-                    assert_eq!(items.len(), 1, "Workspace should have two items");
+                    assert!(workspace.active_item_as::<Editor>(cx).is_none());
                 });
             })
             .unwrap();
@@ -1101,7 +1158,7 @@ mod tests {
 
         assert_eq!(cx.windows().len(), 0);
 
-        // Test case 1: Open a single file that does not exist yet
+        // Test case 1: Opening a file path should open its parent folder as a project.
         open_workspace_file(path!("/root/file5.txt"), None, app_state.clone(), cx).await;
 
         assert_eq!(cx.windows().len(), 1);
@@ -1109,37 +1166,34 @@ mod tests {
         multi_workspace_1
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
-                    assert!(workspace.active_item_as::<Editor>(cx).is_some())
+                    assert!(workspace.active_item_as::<Editor>(cx).is_none())
                 });
             })
             .unwrap();
 
-        // Test case 2: Open a single file that does not exist yet,
-        // but tell Zed to add it to the current workspace
+        // Test case 2: Reopening another file in that folder should stay in the same workspace.
         open_workspace_file(path!("/root/file6.txt"), Some(false), app_state.clone(), cx).await;
 
         assert_eq!(cx.windows().len(), 1);
         multi_workspace_1
             .update(cx, |multi_workspace, _, cx| {
+                assert_eq!(multi_workspace.workspaces().len(), 1);
                 multi_workspace.workspace().update(cx, |workspace, cx| {
-                    let items = workspace.items(cx).collect::<Vec<_>>();
-                    assert_eq!(items.len(), 2, "Workspace should have two items");
-                });
+                    assert!(workspace.active_item_as::<Editor>(cx).is_none());
+                })
             })
             .unwrap();
 
-        // Test case 3: Open a single file that does not exist yet,
-        // but tell Zed to NOT add it to the current workspace
+        // Test case 3: Requesting a new workspace should still reuse the same OS window.
         open_workspace_file(path!("/root/file7.txt"), Some(true), app_state.clone(), cx).await;
 
-        assert_eq!(cx.windows().len(), 2);
-        let multi_workspace_2 = cx.windows()[1].downcast::<MultiWorkspace>().unwrap();
-        multi_workspace_2
+        assert_eq!(cx.windows().len(), 1);
+        multi_workspace_1
             .update(cx, |multi_workspace, _, cx| {
+                assert_eq!(multi_workspace.workspaces().len(), 2);
                 multi_workspace.workspace().update(cx, |workspace, cx| {
-                    let items = workspace.items(cx).collect::<Vec<_>>();
-                    assert_eq!(items.len(), 1, "Workspace should have two items");
-                });
+                    assert!(workspace.active_item_as::<Editor>(cx).is_none());
+                })
             })
             .unwrap();
     }
@@ -1362,22 +1416,32 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_add_flag_prefers_focused_window(cx: &mut TestAppContext) {
+    async fn test_open_new_workspace_stays_in_single_window(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
 
         let root_dir = if cfg!(windows) { "C:\\root" } else { "/root" };
+        let other_root_dir = if cfg!(windows) {
+            "C:\\other-root"
+        } else {
+            "/other-root"
+        };
         let file1_path = if cfg!(windows) {
             "C:\\root\\file1.txt"
         } else {
             "/root/file1.txt"
         };
         let file2_path = if cfg!(windows) {
-            "C:\\root\\file2.txt"
+            "C:\\other-root\\file2.txt"
         } else {
-            "/root/file2.txt"
+            "/other-root/file2.txt"
         };
 
         app_state.fs.create_dir(Path::new(root_dir)).await.unwrap();
+        app_state
+            .fs
+            .create_dir(Path::new(other_root_dir))
+            .await
+            .unwrap();
         app_state
             .fs
             .create_file(Path::new(file1_path), Default::default())
@@ -1433,7 +1497,7 @@ mod tests {
         assert_eq!(cx.windows().len(), 1);
         let multi_workspace_1 = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
 
-        // Open second workspace in a new window
+        // Open second workspace as a "new workspace" and keep the same OS window.
         let workspace_paths_2 = vec![file2_path.to_string()];
         let _errored = cx
             .spawn({
@@ -1457,22 +1521,18 @@ mod tests {
             })
             .await;
 
-        assert_eq!(cx.windows().len(), 2);
-        let multi_workspace_2 = cx.windows()[1].downcast::<MultiWorkspace>().unwrap();
-
-        // Focus window2
-        multi_workspace_2
-            .update(cx, |_, window, _| {
-                window.activate_window();
+        assert_eq!(cx.windows().len(), 1);
+        multi_workspace_1
+            .update(cx, |multi_workspace, _, _| {
+                assert_eq!(multi_workspace.workspaces().len(), 2);
             })
             .unwrap();
 
-        // Now use --add flag (open_new_workspace = Some(false)) to add a new file
-        // It should open in the focused window (window2), not an arbitrary window
+        // Reopening another file in the second project should reuse that workspace.
         let new_file_path = if cfg!(windows) {
-            "C:\\root\\new_file.txt"
+            "C:\\other-root\\new_file.txt"
         } else {
-            "/root/new_file.txt"
+            "/other-root/new_file.txt"
         };
         app_state
             .fs
@@ -1503,23 +1563,9 @@ mod tests {
             })
             .await;
 
-        // Should still have 2 windows (file added to existing focused window)
-        assert_eq!(cx.windows().len(), 2);
-
-        // Verify the file was added to window2 (the focused one)
-        multi_workspace_2
-            .update(cx, |workspace, _, cx| {
-                let items = workspace.workspace().read(cx).items(cx).collect::<Vec<_>>();
-                // Should have 2 items now (file2.txt and new_file.txt)
-                assert_eq!(items.len(), 2, "Focused window should have 2 items");
-            })
-            .unwrap();
-
-        // Verify window1 still has only 1 item
         multi_workspace_1
-            .update(cx, |workspace, _, cx| {
-                let items = workspace.workspace().read(cx).items(cx).collect::<Vec<_>>();
-                assert_eq!(items.len(), 1, "Other window should still have 1 item");
+            .update(cx, |multi_workspace, _, _| {
+                assert_eq!(multi_workspace.workspaces().len(), 2);
             })
             .unwrap();
     }

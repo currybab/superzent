@@ -865,7 +865,7 @@ impl PickerDelegate for WorktreeListDelegate {
                             }),
                     )
                     .child(
-                        Button::new("open-in-new-window", "Open in New Window")
+                        Button::new("open-in-new-window", "Open Workspace")
                             .key_binding(
                                 KeyBinding::for_action_in(&menu::Confirm, &focus_handle, cx)
                                     .map(|kb| kb.size(rems_from_px(12.))),

@@ -46,6 +46,14 @@ pub struct GitChangeSummary {
     pub untracked_files: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceGitStatus {
+    #[default]
+    Available,
+    Unavailable,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentPreset {
     pub id: String,
@@ -261,6 +269,8 @@ pub struct WorkspaceEntry {
     pub agent_preset_id: String,
     pub managed: bool,
     #[serde(default)]
+    pub git_status: WorkspaceGitStatus,
+    #[serde(default)]
     pub git_summary: Option<GitChangeSummary>,
     #[serde(default)]
     pub attention_status: WorkspaceAttentionStatus,
@@ -282,6 +292,10 @@ impl WorkspaceEntry {
 
     pub fn is_primary(&self) -> bool {
         self.kind == WorkspaceKind::Primary
+    }
+
+    pub fn has_git(&self) -> bool {
+        self.git_status == WorkspaceGitStatus::Available
     }
 
     pub fn local_worktree_path(&self) -> Option<&Path> {
@@ -842,6 +856,7 @@ impl SuperzentStore {
         &mut self,
         workspace_id: &str,
         branch: Option<String>,
+        git_status: WorkspaceGitStatus,
         git_summary: Option<GitChangeSummary>,
         persist: bool,
         cx: &mut Context<Self>,
@@ -852,7 +867,7 @@ impl SuperzentStore {
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
         {
-            if !update_workspace_metadata(workspace, branch, git_summary) {
+            if !update_workspace_metadata(workspace, branch, git_status, git_summary) {
                 return;
             }
 
@@ -1417,6 +1432,7 @@ impl SuperzentStore {
 fn update_workspace_metadata(
     workspace: &mut WorkspaceEntry,
     branch: Option<String>,
+    git_status: WorkspaceGitStatus,
     git_summary: Option<GitChangeSummary>,
 ) -> bool {
     let mut changed = false;
@@ -1425,6 +1441,11 @@ fn update_workspace_metadata(
         && workspace.branch != branch
     {
         workspace.branch = branch;
+        changed = true;
+    }
+
+    if workspace.git_status != git_status {
+        workspace.git_status = git_status;
         changed = true;
     }
 
@@ -1517,6 +1538,7 @@ impl From<LegacySuperzentState> for SuperzentState {
                     },
                     agent_preset_id: workspace.agent_preset_id,
                     managed: workspace.managed,
+                    git_status: WorkspaceGitStatus::Available,
                     git_summary: workspace.git_summary,
                     attention_status: workspace.attention_status,
                     review_pending: workspace.review_pending,
@@ -1632,6 +1654,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
                 },
                 agent_preset_id: default_preset_id.clone(),
                 managed: false,
+                git_status: WorkspaceGitStatus::Available,
                 git_summary: None,
                 attention_status: WorkspaceAttentionStatus::Idle,
                 review_pending: false,
@@ -1653,6 +1676,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
             },
             agent_preset_id: task.agent_preset_id,
             managed: task.managed,
+            git_status: WorkspaceGitStatus::Available,
             git_summary: None,
             attention_status: match task.status {
                 TaskStatus::Completed | TaskStatus::Failed | TaskStatus::NeedsAttention => {
@@ -1905,6 +1929,7 @@ mod tests {
             },
             agent_preset_id: "codex".to_string(),
             managed: false,
+            git_status: WorkspaceGitStatus::Available,
             git_summary: None,
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
@@ -1923,7 +1948,12 @@ mod tests {
             "/tmp/repo/feature",
         );
 
-        assert!(!update_workspace_metadata(&mut workspace, None, None));
+        assert!(!update_workspace_metadata(
+            &mut workspace,
+            None,
+            WorkspaceGitStatus::Available,
+            None,
+        ));
         assert_eq!(workspace.branch, "main");
         assert_eq!(workspace.git_summary, None);
     }
@@ -1945,6 +1975,7 @@ mod tests {
         assert!(update_workspace_metadata(
             &mut workspace,
             Some("feature/fast".to_string()),
+            WorkspaceGitStatus::Available,
             Some(summary.clone()),
         ));
         assert_eq!(workspace.branch, "feature/fast");
@@ -2097,6 +2128,7 @@ mod tests {
             },
             agent_preset_id: "codex".to_string(),
             managed: false,
+            git_status: WorkspaceGitStatus::Available,
             git_summary: None,
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,

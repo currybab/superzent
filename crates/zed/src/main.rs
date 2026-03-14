@@ -14,7 +14,7 @@ use db::kvp::{GLOBAL_KEY_VALUE_STORE, KEY_VALUE_STORE};
 use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
-use futures::{StreamExt, channel::oneshot, future};
+use futures::{StreamExt, channel::oneshot};
 use git::GitHostingProviderRegistry;
 use git_ui::clone::clone_and_open;
 use gpui::{App, AppContext, Application, AsyncApp, Entity, Global, QuitMode, UpdateGlobal as _};
@@ -49,8 +49,9 @@ use theme::{ActiveTheme, GlobalTheme, ThemeRegistry};
 use util::{ResultExt, maybe};
 use uuid::Uuid;
 use workspace::{
-    AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore, notifications::NotificationId, restore_multiworkspace,
+    AppState, MultiWorkspace, SerializedMultiWorkspace, SerializedWorkspaceLocation,
+    SessionWorkspace, Toast, WorkspaceSettings, WorkspaceStore, notifications::NotificationId,
+    restore_multiworkspace,
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
@@ -1226,7 +1227,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                 cx.spawn(async move |cx| {
                     let paths_with_position =
                         derive_paths_with_position(app_state.fs.as_ref(), request.open_paths).await;
-                    let (workspace, _results) = open_paths_with_positions(
+                    let (workspace, _results, _) = open_paths_with_positions(
                         &paths_with_position,
                         &[],
                         false,
@@ -1294,7 +1295,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
         task = Some(cx.spawn(async move |cx| {
             let paths_with_position =
                 derive_paths_with_position(app_state.fs.as_ref(), request.open_paths).await;
-            let (_window, results) = open_paths_with_positions(
+            let (_window, results, _) = open_paths_with_positions(
                 &paths_with_position,
                 &request.diff_paths,
                 request.diff_all,
@@ -1459,11 +1460,12 @@ pub(crate) async fn restore_or_create_workspace(
             restorable_workspaces(cx, &app_state).await
         {
             let mut results: Vec<Result<(), Error>> = Vec::new();
-            let mut tasks = Vec::new();
+            let mut primary_window = None;
 
-            for multi_workspace in multi_workspaces {
+            if let Some(multi_workspace) = merge_serialized_multi_workspaces(multi_workspaces) {
                 match restore_multiworkspace(multi_workspace, app_state.clone(), cx).await {
                     Ok(result) => {
+                        primary_window = Some(result.window_handle);
                         for error in result.errors {
                             log::error!("Failed to restore workspace in group: {error:#}");
                             results.push(Err(error));
@@ -1489,22 +1491,28 @@ pub(crate) async fn restore_or_create_workspace(
                             .fill_connection_options_from_settings(options)
                     });
                 }
-                let task = cx.spawn(async move |cx| {
-                    recent_projects::open_remote_project(
-                        connection_options,
-                        paths.paths().iter().map(PathBuf::from).collect(),
-                        app_state,
-                        workspace::OpenOptions::default(),
-                        cx,
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))
-                });
-                tasks.push(task);
-            }
+                let restore_result = recent_projects::open_remote_project(
+                    connection_options,
+                    paths.paths().iter().map(PathBuf::from).collect(),
+                    app_state,
+                    workspace::OpenOptions {
+                        replace_window: primary_window.clone(),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e));
 
-            // Wait for all window groups and remote workspaces to open concurrently
-            results.extend(future::join_all(tasks).await);
+                if restore_result.is_ok() && primary_window.is_none() {
+                    primary_window = cx.update(|cx| {
+                        cx.active_window()
+                            .and_then(|window| window.downcast::<MultiWorkspace>())
+                    });
+                }
+
+                results.push(restore_result);
+            }
 
             // Show notifications for any errors that occurred
             let mut error_count = 0;
@@ -1818,6 +1826,23 @@ async fn restorable_workspaces(
         .partition(|sw| matches!(sw.location, SerializedWorkspaceLocation::Remote(_)));
     let multi_workspaces = workspace::read_serialized_multi_workspaces(local_workspaces);
     Some((multi_workspaces, remote_workspaces))
+}
+
+fn merge_serialized_multi_workspaces(
+    multi_workspaces: Vec<SerializedMultiWorkspace>,
+) -> Option<SerializedMultiWorkspace> {
+    let mut multi_workspaces = multi_workspaces.into_iter();
+    let mut merged = multi_workspaces.next()?;
+
+    for multi_workspace in multi_workspaces {
+        if merged.state.active_workspace_id.is_none() {
+            merged.state.active_workspace_id = multi_workspace.state.active_workspace_id;
+        }
+        merged.state.sidebar_open |= multi_workspace.state.sidebar_open;
+        merged.workspaces.extend(multi_workspace.workspaces);
+    }
+
+    Some(merged)
 }
 
 pub(crate) async fn restorable_workspace_locations(

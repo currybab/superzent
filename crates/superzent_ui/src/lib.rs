@@ -31,7 +31,12 @@ use settings::Settings;
 use smol::channel::Receiver as SmolReceiver;
 #[cfg(target_os = "macos")]
 use smol::channel::Sender as SmolSender;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 #[cfg(target_os = "macos")]
 use std::{
     ffi::{CStr, c_char},
@@ -41,7 +46,7 @@ use superzent_agent::{AGENT_TERMINAL_ID_ENV_VAR, AgentHookEvent, AgentHookEventT
 use superzent_model::{
     AgentPreset, GitChangeSummary, ProjectEntry, ProjectLocation, StoredSshConnection,
     StoredSshPortForward, SuperzentStore, TaskStatus, WorkspaceAttentionStatus, WorkspaceEntry,
-    WorkspaceKind, WorkspaceLocation, aggregate_workspace_attention_status,
+    WorkspaceGitStatus, WorkspaceKind, WorkspaceLocation, aggregate_workspace_attention_status,
 };
 use task::{Shell, ShellKind};
 use terminal::terminal_settings::{TerminalAgentNotificationMode, TerminalSettings};
@@ -53,8 +58,7 @@ use ui::{
 use uuid::Uuid;
 use workspace::{
     AppState as WorkspaceAppState, ModalView, MultiWorkspace, MultiWorkspaceEvent, OpenOptions,
-    OpenVisible, Pane, SerializedWorkspaceLocation, Sidebar as WorkspaceSidebar, SidebarEvent,
-    Toast, Workspace,
+    Pane, SerializedWorkspaceLocation, Sidebar as WorkspaceSidebar, SidebarEvent, Toast, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
     notifications::NotificationId,
     workspace_windows_for_location,
@@ -1153,6 +1157,7 @@ async fn create_remote_workspace(
                 .map(|workspace| workspace.agent_preset_id.clone())
                 .unwrap_or(preset_id),
             managed: true,
+            git_status: WorkspaceGitStatus::Available,
             git_summary: existing_workspace
                 .as_ref()
                 .and_then(|workspace| workspace.git_summary.clone()),
@@ -1364,7 +1369,7 @@ impl Render for AddProjectChooserModal {
                             .child(Label::new("Add Project").size(LabelSize::Large))
                             .child(
                                 Label::new(
-                                    "Choose whether to add a local repository or connect to a remote SSH project.",
+                                    "Choose whether to add a local folder or connect to a remote SSH project.",
                                 )
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
@@ -1699,19 +1704,19 @@ impl SuperzentSidebar {
         let Some(current_workspace) = self.current_workspace_entity(cx) else {
             return;
         };
-        let location = workspace_location_snapshot(&current_workspace, cx);
-        let remote_bundle = {
+        let workspace_bundle = {
             let store = self.store.read(cx);
-            build_remote_workspace_bundle(&current_workspace, &store, cx)
+            build_local_workspace_bundle(&current_workspace, &store, cx)
+                .or_else(|| build_remote_workspace_bundle(&current_workspace, &store, cx))
         };
         self.store.update(cx, |store, cx| {
-            if let Some((project_entry, workspace_entry)) = remote_bundle.clone() {
+            if let Some((project_entry, workspace_entry)) = workspace_bundle.clone() {
                 store.upsert_project_bundle(project_entry, workspace_entry.clone(), cx);
                 store.record_workspace_opened(&workspace_entry.id, cx);
                 return;
             }
 
-            let workspace_id = location
+            let workspace_id = workspace_location_snapshot(&current_workspace, cx)
                 .as_ref()
                 .and_then(|location| store.workspace_for_location(location))
                 .map(|workspace| workspace.id.clone());
@@ -1778,20 +1783,35 @@ impl SuperzentSidebar {
         else {
             return;
         };
-        let Some(repository) = active_repository_for_workspace(workspace, cx) else {
-            return;
-        };
-
-        let repository = repository.read(cx);
-        let branch = repository
-            .branch
-            .as_ref()
-            .map(|branch| branch.name().to_string())
-            .unwrap_or_else(|| "HEAD".to_string());
-        let git_summary = Some(git_change_summary_from_repository(&repository));
+        let (branch, git_status, git_summary) =
+            if let Some(repository) = active_repository_for_workspace(workspace, cx) {
+                let repository = repository.read(cx);
+                (
+                    repository
+                        .branch
+                        .as_ref()
+                        .map(|branch| branch.name().to_string())
+                        .unwrap_or_else(|| "HEAD".to_string()),
+                    WorkspaceGitStatus::Available,
+                    Some(git_change_summary_from_repository(&repository)),
+                )
+            } else {
+                (
+                    superzent_git::NO_GIT_BRANCH_LABEL.to_string(),
+                    WorkspaceGitStatus::Unavailable,
+                    None,
+                )
+            };
 
         self.store.update(cx, |store, cx| {
-            store.refresh_workspace_metadata(&workspace_id, Some(branch), git_summary, persist, cx);
+            store.refresh_workspace_metadata(
+                &workspace_id,
+                Some(branch),
+                git_status,
+                git_summary,
+                persist,
+                cx,
+            );
         });
     }
 
@@ -2454,6 +2474,7 @@ impl SuperzentSidebar {
                             store.refresh_workspace_metadata(
                                 &workspace_id,
                                 Some(refresh.branch),
+                                refresh.git_status,
                                 refresh.git_summary,
                                 true,
                                 cx,
@@ -2466,27 +2487,36 @@ impl SuperzentSidebar {
                 .detach_and_log_err(cx);
             }
             WorkspaceLocation::Ssh { .. } => {
-                let branch_and_summary = workspace_for_entry_in_window(window, cx, &workspace)
-                    .and_then(|live_workspace| {
-                        active_repository_for_workspace(&live_workspace, cx).map(|repository| {
+                let branch_and_summary =
+                    workspace_for_entry_in_window(window, cx, &workspace).map(|live_workspace| {
+                        if let Some(repository) =
+                            active_repository_for_workspace(&live_workspace, cx)
+                        {
                             let repository = repository.read(cx);
-                            let branch = repository
-                                .branch
-                                .as_ref()
-                                .map(|branch| branch.name().to_string())
-                                .unwrap_or_else(|| "HEAD".to_string());
                             (
-                                branch,
+                                repository
+                                    .branch
+                                    .as_ref()
+                                    .map(|branch| branch.name().to_string())
+                                    .unwrap_or_else(|| "HEAD".to_string()),
+                                WorkspaceGitStatus::Available,
                                 Some(git_change_summary_from_repository(&repository)),
                             )
-                        })
+                        } else {
+                            (
+                                superzent_git::NO_GIT_BRANCH_LABEL.to_string(),
+                                WorkspaceGitStatus::Unavailable,
+                                None,
+                            )
+                        }
                     });
 
-                if let Some((branch, git_summary)) = branch_and_summary {
+                if let Some((branch, git_status, git_summary)) = branch_and_summary {
                     self.store.update(cx, |store, cx| {
                         store.refresh_workspace_metadata(
                             &workspace.id,
                             Some(branch),
+                            git_status,
                             git_summary,
                             true,
                             cx,
@@ -2612,7 +2642,7 @@ impl Render for SuperzentEmptyPaneView {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.mode(cx);
         let (title, subtitle) = match mode {
-            EmptyPaneMode::Initial => ("No projects yet", "Add a repository to get started."),
+            EmptyPaneMode::Initial => ("No projects yet", "Add a project folder to get started."),
             EmptyPaneMode::Workspace => ("This pane is empty", "Open something in this pane."),
         };
 
@@ -2714,7 +2744,7 @@ impl Render for SuperzentSidebar {
                     .py_4()
                     .child(Label::new("No repositories yet"))
                     .child(
-                        Label::new("Add a local repository or connect to a remote SSH project.")
+                        Label::new("Add a local folder or connect to a remote SSH project.")
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
@@ -3086,7 +3116,14 @@ fn run_add_local_project(
                     workspace.show_toast(
                         Toast::new(
                             NotificationId::unique::<SuperzentSidebar>(),
-                            format!("Added {}", primary_workspace.name),
+                            if primary_workspace.has_git() {
+                                format!("Added {}", primary_workspace.name)
+                            } else {
+                                format!(
+                                    "Added {} without Git. Initialize Git to enable managed workspaces.",
+                                    primary_workspace.name
+                                )
+                            },
                         ),
                         cx,
                     );
@@ -3161,6 +3198,92 @@ fn run_new_workspace(
         return;
     };
 
+    let primary_workspace = store
+        .read(cx)
+        .primary_workspace_for_project(&project.id)
+        .cloned();
+
+    if let Some(primary_workspace) = primary_workspace
+        && !primary_workspace.has_git()
+        && let Some(project_root) = primary_workspace.local_worktree_path().map(PathBuf::from)
+    {
+        let project_name = project.name.clone();
+        let workspace_id = primary_workspace.id.clone();
+        let prompt = window.prompt(
+            PromptLevel::Info,
+            "Initialize Git?",
+            Some(
+                "This project is not a Git repository yet. Initialize Git to enable managed workspaces.",
+            ),
+            &["Initialize Git", "Cancel"],
+            cx,
+        );
+        let store = store.clone();
+        let workspace_handle = cx.entity().downgrade();
+        let project = project.clone();
+
+        cx.spawn_in(window, async move |_, cx| {
+            if prompt.await != Ok(0) {
+                return anyhow::Ok(());
+            }
+
+            let refresh = cx
+                .background_spawn(
+                    async move { superzent_git::initialize_git_repository(&project_root) },
+                )
+                .await;
+
+            if let Some(workspace_handle) = workspace_handle.upgrade() {
+                workspace_handle
+                    .update_in(cx, |workspace, window, cx| match refresh {
+                        Ok(refresh) => {
+                            store.update(cx, |store, cx| {
+                                store.refresh_workspace_metadata(
+                                    &workspace_id,
+                                    Some(refresh.branch),
+                                    refresh.git_status,
+                                    refresh.git_summary,
+                                    true,
+                                    cx,
+                                );
+                            });
+                            workspace.show_toast(
+                                Toast::new(
+                                    NotificationId::unique::<SuperzentSidebar>(),
+                                    format!("Initialized Git for {project_name}."),
+                                ),
+                                cx,
+                            );
+                            open_new_workspace_modal(workspace, project.clone(), window, cx);
+                        }
+                        Err(error) => {
+                            workspace.show_toast(
+                                Toast::new(
+                                    NotificationId::unique::<SuperzentSidebar>(),
+                                    format!("Failed to initialize Git: {error}"),
+                                ),
+                                cx,
+                            );
+                        }
+                    })
+                    .ok();
+            }
+
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
+        return;
+    }
+
+    open_new_workspace_modal(workspace, project, window, cx);
+}
+
+fn open_new_workspace_modal(
+    workspace: &mut Workspace,
+    project: ProjectEntry,
+    window: &mut gpui::Window,
+    cx: &mut Context<Workspace>,
+) {
     let workspace_handle = cx.entity().downgrade();
     workspace.toggle_modal(window, cx, move |window, cx| {
         NewWorkspaceModal::new(workspace_handle.clone(), project, window, cx)
@@ -3256,7 +3379,7 @@ fn run_reveal_changes_from_store(
 
 fn run_open_workspace_in_new_window(
     workspace: &mut Workspace,
-    _window: &mut gpui::Window,
+    window: &mut gpui::Window,
     cx: &mut Context<Workspace>,
 ) {
     let store = SuperzentStore::global(cx);
@@ -3276,9 +3399,7 @@ fn run_open_workspace_in_new_window(
         return;
     };
 
-    let app_state = workspace.app_state().clone();
-    let open_task = open_workspace_entry_in_new_window(workspace_entry, app_state, cx);
-    cx.spawn(async move |_, _| open_task.await)
+    open_workspace_entry(workspace_entry, workspace.app_state().clone(), window, cx)
         .detach_and_log_err(cx);
 }
 
@@ -3816,63 +3937,6 @@ fn open_workspace_entry(
     }
 }
 
-fn open_workspace_entry_in_new_window(
-    workspace_entry: WorkspaceEntry,
-    app_state: Arc<WorkspaceAppState>,
-    cx: &mut App,
-) -> Task<anyhow::Result<()>> {
-    match &workspace_entry.location {
-        WorkspaceLocation::Local { worktree_path } => {
-            let path = worktree_path.clone();
-            cx.spawn(async move |cx| {
-                cx.update(|cx| {
-                    workspace::open_paths(
-                        &[path],
-                        app_state,
-                        OpenOptions {
-                            open_new_workspace: Some(true),
-                            focus: Some(true),
-                            visible: Some(OpenVisible::All),
-                            ..Default::default()
-                        },
-                        cx,
-                    )
-                })
-                .await?;
-                anyhow::Ok(())
-            })
-        }
-        WorkspaceLocation::Ssh {
-            connection,
-            worktree_path,
-        } => {
-            let Some(remote_connection) = remote_connection_options_from_stored(connection) else {
-                return Task::ready(Err(anyhow::anyhow!(
-                    "unsupported remote workspace configuration"
-                )));
-            };
-
-            let path = PathBuf::from(worktree_path);
-            cx.spawn(async move |cx| {
-                open_remote_project(
-                    remote_connection,
-                    vec![path],
-                    app_state,
-                    OpenOptions {
-                        open_new_workspace: Some(true),
-                        focus: Some(true),
-                        visible: Some(OpenVisible::All),
-                        ..Default::default()
-                    },
-                    cx,
-                )
-                .await?;
-                anyhow::Ok(())
-            })
-        }
-    }
-}
-
 fn workspace_from_window(window: &gpui::Window, cx: &App) -> Option<Entity<Workspace>> {
     let multi_workspace = window.window_handle().downcast::<MultiWorkspace>()?;
     let multi_workspace = multi_workspace.read(cx).ok()?;
@@ -4086,6 +4150,156 @@ fn remote_path_basename(path: &str) -> String {
         .to_string()
 }
 
+fn local_path_basename(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Project")
+        .to_string()
+}
+
+fn build_local_workspace_bundle(
+    workspace: &Entity<Workspace>,
+    store: &SuperzentStore,
+    cx: &App,
+) -> Option<(ProjectEntry, WorkspaceEntry)> {
+    let workspace_location = match workspace_location_snapshot(workspace, cx)? {
+        WorkspaceLocation::Local { worktree_path } => WorkspaceLocation::Local { worktree_path },
+        WorkspaceLocation::Ssh { .. } => return None,
+    };
+
+    let WorkspaceLocation::Local { worktree_path } = &workspace_location else {
+        return None;
+    };
+
+    let project_handle = workspace.read(cx).project();
+    let project = project_handle.read(cx);
+    let active_repository = project
+        .active_repository(cx)
+        .or_else(|| project.repositories(cx).values().next().cloned());
+
+    let (project_root, branch, git_status, git_summary) =
+        if let Some(repository) = active_repository {
+            let repository = repository.read(cx);
+            (
+                repository.original_repo_abs_path.to_path_buf(),
+                repository
+                    .branch
+                    .as_ref()
+                    .map(|branch| branch.name().to_string())
+                    .unwrap_or_else(|| "HEAD".to_string()),
+                WorkspaceGitStatus::Available,
+                Some(git_change_summary_from_repository(&repository)),
+            )
+        } else {
+            (
+                worktree_path.clone(),
+                superzent_git::NO_GIT_BRANCH_LABEL.to_string(),
+                WorkspaceGitStatus::Unavailable,
+                None,
+            )
+        };
+
+    let project_location = ProjectLocation::Local {
+        repo_root: project_root.clone(),
+    };
+    let existing_project = store.project_for_location(&project_location).cloned();
+    let now = Utc::now();
+    let project_id = existing_project
+        .as_ref()
+        .map(|project| project.id.clone())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let project_entry = ProjectEntry {
+        id: project_id.clone(),
+        name: existing_project
+            .as_ref()
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| local_path_basename(&project_root)),
+        location: project_location,
+        collapsed: existing_project
+            .as_ref()
+            .is_some_and(|project| project.collapsed),
+        created_at: existing_project
+            .as_ref()
+            .map(|project| project.created_at)
+            .unwrap_or(now),
+        last_opened_at: now,
+    };
+
+    let existing_workspace = store.workspace_for_location(&workspace_location).cloned();
+    let kind = if let Some(existing_workspace) = &existing_workspace {
+        existing_workspace.kind.clone()
+    } else if existing_project.is_none()
+        || (worktree_path == &project_root
+            && store.primary_workspace_for_project(&project_id).is_none())
+    {
+        WorkspaceKind::Primary
+    } else {
+        WorkspaceKind::Worktree
+    };
+
+    let workspace_entry = WorkspaceEntry {
+        id: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        project_id,
+        kind: kind.clone(),
+        name: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.name.clone())
+            .unwrap_or_else(|| match kind {
+                WorkspaceKind::Primary => local_path_basename(worktree_path),
+                WorkspaceKind::Worktree => {
+                    if git_status == WorkspaceGitStatus::Available {
+                        branch.clone()
+                    } else {
+                        local_path_basename(worktree_path)
+                    }
+                }
+            }),
+        display_name: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.display_name.clone()),
+        branch,
+        location: workspace_location,
+        agent_preset_id: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.agent_preset_id.clone())
+            .unwrap_or_else(|| store.default_preset().id.clone()),
+        managed: existing_workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.managed),
+        git_status,
+        git_summary: if git_status == WorkspaceGitStatus::Available {
+            git_summary.or_else(|| {
+                existing_workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.git_summary.clone())
+            })
+        } else {
+            None
+        },
+        attention_status: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.attention_status.clone())
+            .unwrap_or(WorkspaceAttentionStatus::Idle),
+        review_pending: existing_workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.review_pending),
+        last_attention_reason: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.last_attention_reason.clone()),
+        created_at: existing_workspace
+            .as_ref()
+            .map(|workspace| workspace.created_at)
+            .unwrap_or(now),
+        last_opened_at: now,
+    };
+
+    Some((project_entry, workspace_entry))
+}
+
 fn build_remote_workspace_bundle(
     workspace: &Entity<Workspace>,
     store: &SuperzentStore,
@@ -4116,7 +4330,7 @@ fn build_remote_workspace_bundle(
         .active_repository(cx)
         .or_else(|| project.repositories(cx).values().next().cloned());
 
-    let (repo_root, branch, git_summary) = if let Some(repository) = active_repository {
+    let (repo_root, branch, git_status, git_summary) = if let Some(repository) = active_repository {
         let repository = repository.read(cx);
         let repo_root = repository
             .original_repo_abs_path
@@ -4130,10 +4344,16 @@ fn build_remote_workspace_bundle(
         (
             repo_root,
             branch,
+            WorkspaceGitStatus::Available,
             Some(git_change_summary_from_repository(&repository)),
         )
     } else {
-        (worktree_path.clone(), "HEAD".to_string(), None)
+        (
+            worktree_path.clone(),
+            superzent_git::NO_GIT_BRANCH_LABEL.to_string(),
+            WorkspaceGitStatus::Unavailable,
+            None,
+        )
     };
 
     let project_location = ProjectLocation::Ssh {
@@ -4199,11 +4419,16 @@ fn build_remote_workspace_bundle(
         managed: existing_workspace
             .as_ref()
             .is_some_and(|workspace| workspace.managed),
-        git_summary: git_summary.or_else(|| {
-            existing_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.git_summary.clone())
-        }),
+        git_status,
+        git_summary: if git_status == WorkspaceGitStatus::Available {
+            git_summary.or_else(|| {
+                existing_workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.git_summary.clone())
+            })
+        } else {
+            None
+        },
         attention_status: existing_workspace
             .as_ref()
             .map(|workspace| workspace.attention_status.clone())
@@ -4527,11 +4752,12 @@ fn workspace_metadata_chips(workspace: &WorkspaceEntry) -> Vec<gpui::AnyElement>
     let show_branch_chip = workspace.is_primary() || workspace_has_display_alias(workspace);
 
     if show_branch_chip {
+        let branch_label = workspace_branch_label(workspace);
         chips.push(
-            Chip::new(workspace.branch.clone())
+            Chip::new(branch_label.clone())
                 .label_color(Color::Muted)
                 .tooltip({
-                    let branch = workspace.branch.clone();
+                    let branch = branch_label;
                     move |window, cx| ui::Tooltip::text(branch.clone())(window, cx)
                 })
                 .into_any_element(),
@@ -4566,6 +4792,14 @@ fn workspace_metadata_chips(workspace: &WorkspaceEntry) -> Vec<gpui::AnyElement>
     }
 
     chips
+}
+
+fn workspace_branch_label(workspace: &WorkspaceEntry) -> String {
+    if workspace.has_git() {
+        workspace.branch.clone()
+    } else {
+        superzent_git::NO_GIT_BRANCH_LABEL.to_string()
+    }
 }
 
 fn project_workspace_label(count: usize) -> String {

@@ -828,37 +828,13 @@ fn register_actions(
                 }
             }
         })
-        .register_action(|workspace, action: &workspace::Open, window, cx| {
+        .register_action(|_workspace, action: &workspace::Open, window, cx| {
             telemetry::event!("Project Opened");
-            workspace::prompt_for_open_path_and_open(
-                workspace,
-                workspace.app_state().clone(),
-                PathPromptOptions {
-                    files: true,
-                    directories: true,
-                    multiple: true,
-                    prompt: None,
-                },
-                action.create_new_window,
-                window,
-                cx,
-            );
+            let _ = action;
+            window.dispatch_action(superzent_ui::AddProject.boxed_clone(), cx);
         })
-        .register_action(|workspace, _: &workspace::OpenFiles, window, cx| {
-            let directories = cx.can_select_mixed_files_and_dirs();
-            workspace::prompt_for_open_path_and_open(
-                workspace,
-                workspace.app_state().clone(),
-                PathPromptOptions {
-                    files: true,
-                    directories,
-                    multiple: true,
-                    prompt: None,
-                },
-                true,
-                window,
-                cx,
-            );
+        .register_action(|_workspace, _: &workspace::OpenFiles, window, cx| {
+            window.dispatch_action(superzent_ui::AddProject.boxed_clone(), cx);
         })
         .register_action(|workspace, action: &zed_actions::OpenRemote, window, cx| {
             if !action.from_existing_connection {
@@ -1060,32 +1036,10 @@ fn register_actions(
         .register_action({
             let app_state = Arc::downgrade(&app_state);
             move |_, _: &NewWindow, _, cx| {
-                if let Some(app_state) = app_state.upgrade() {
-                    open_new(
-                        Default::default(),
-                        app_state,
-                        cx,
-                        |workspace, window, cx| {
-                            cx.activate(true);
-                            // Create buffer synchronously to avoid flicker
-                            let project = workspace.project().clone();
-                            let buffer = project.update(cx, |project, cx| {
-                                project.create_local_buffer("", None, true, cx)
-                            });
-                            let editor = cx.new(|cx| {
-                                Editor::for_buffer(buffer, Some(project), window, cx)
-                            });
-                            workspace.add_item_to_active_pane(
-                                Box::new(editor),
-                                None,
-                                true,
-                                window,
-                                cx,
-                            );
-                        },
-                    )
-                    .detach();
-                }
+                let _ = app_state.upgrade();
+                with_active_or_new_workspace(cx, |_, window, cx| {
+                    window.dispatch_action(superzent_ui::AddProject.boxed_clone(), cx);
+                });
             }
         })
         .register_action({
@@ -1102,43 +1056,17 @@ fn register_actions(
                         },
                         app_state,
                         cx,
-                        |workspace, window, cx| {
-                            cx.activate(true);
-                            // Create buffer synchronously to avoid flicker
-                            let project = workspace.project().clone();
-                            let buffer = project.update(cx, |project, cx| {
-                                project.create_local_buffer("", None, true, cx)
-                            });
-                            let editor = cx.new(|cx| {
-                                Editor::for_buffer(buffer, Some(project), window, cx)
-                            });
-                            workspace.add_item_to_active_pane(
-                                Box::new(editor),
-                                None,
-                                true,
-                                window,
-                                cx,
-                            );
-                        },
+                        |_, _, _| {},
                     )
                     .detach_and_log_err(cx);
                 }
             }
         })
         .register_action({
-            let app_state = Arc::downgrade(&app_state);
             move |_, _: &NewFile, _, cx| {
-                if let Some(app_state) = app_state.upgrade() {
-                    open_new(
-                        Default::default(),
-                        app_state,
-                        cx,
-                        |workspace, window, cx| {
-                            Editor::new_file(workspace, &Default::default(), window, cx)
-                        },
-                    )
-                    .detach_and_log_err(cx);
-                }
+                with_active_or_new_workspace(cx, |workspace, window, cx| {
+                    Editor::new_file(workspace, &Default::default(), window, cx);
+                });
             }
         })
         ;
@@ -1843,10 +1771,7 @@ fn reload_keymaps(cx: &mut App, mut user_key_bindings: Vec<KeyBinding>) {
     cx.set_menus(menus);
     // On Windows, this is set in the `update_jump_list` method of the `HistoryManager`.
     #[cfg(not(target_os = "windows"))]
-    cx.set_dock_menu(vec![gpui::MenuItem::action(
-        "New Window",
-        workspace::NewWindow,
-    )]);
+    cx.set_dock_menu(Vec::new());
     // todo: nicer api here?
     keymap_editor::KeymapEventChannel::trigger_keymap_changed(cx);
 }

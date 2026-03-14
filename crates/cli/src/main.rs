@@ -57,8 +57,8 @@ Examples:
           Runs in foreground (shows all logs)
     `superzent path-to-your-project`
           Open your project in superzent
-    `superzent -n path-to-file `
-          Open file/folder in a new window",
+    `superzent -n path-to-your-project`
+          Open the project as another workspace in the current window",
     after_help = "To read from stdin, append '-', e.g. 'ps axf | superzent -'"
 )]
 struct Args {
@@ -67,13 +67,13 @@ struct Args {
     /// When opening a directory, waits until the created window is closed.
     #[arg(short, long)]
     wait: bool,
-    /// Add files to the currently open workspace
+    /// Add a project folder to the current window
     #[arg(short, long, overrides_with_all = ["new", "reuse"])]
     add: bool,
-    /// Create a new workspace
+    /// Create a new workspace in the current window
     #[arg(short, long, overrides_with_all = ["add", "reuse"])]
     new: bool,
-    /// Reuse an existing window, replacing its workspace
+    /// Reuse the current window when opening a project
     #[arg(short, long, overrides_with_all = ["add", "new"])]
     reuse: bool,
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
@@ -91,7 +91,7 @@ struct Args {
     user_data_dir: Option<String>,
     /// The paths to open in superzent (space-separated).
     ///
-    /// Use `path:line:column` syntax to open a file at the given line and column.
+    /// File paths are treated as requests to open their parent project folder.
     paths_with_position: Vec<String>,
     /// Print superzent's version and the app path.
     #[arg(short, long)]

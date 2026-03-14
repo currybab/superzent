@@ -662,7 +662,6 @@
       "cmd-k s": "workspace::SaveWithoutFormat",
       "alt-shift-enter": "toast::RunAction",
       "cmd-shift-s": "workspace::SaveAs",
-      "cmd-shift-n": "workspace::NewWindow",
       "cmd-1": ["workspace::ActivatePane", 0],
       "cmd-2": ["workspace::ActivatePane", 1],
       "cmd-3": ["workspace::ActivatePane", 2],
@@ -726,7 +725,6 @@
     "context": "Workspace && !Terminal",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-n": "workspace::NewFile",
       "cmd-shift-r": "task::Spawn",
       // All task parameters are captured and unchanged between reruns by default.
       // Use the `"reevaluate_context"` parameter to control this.

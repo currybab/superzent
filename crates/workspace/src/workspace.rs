@@ -732,10 +732,10 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
                     prompt_and_open_paths(
                         app_state,
                         PathPromptOptions {
-                            files: true,
+                            files: false,
                             directories: true,
-                            multiple: true,
-                            prompt: None,
+                            multiple: false,
+                            prompt: Some("Add Project".into()),
                         },
                         cx,
                     );
@@ -745,15 +745,14 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
         .on_action({
             let app_state = Arc::downgrade(&app_state);
             move |_: &OpenFiles, cx: &mut App| {
-                let directories = cx.can_select_mixed_files_and_dirs();
                 if let Some(app_state) = app_state.upgrade() {
                     prompt_and_open_paths(
                         app_state,
                         PathPromptOptions {
-                            files: true,
-                            directories,
-                            multiple: true,
-                            prompt: None,
+                            files: false,
+                            directories: true,
+                            multiple: false,
+                            prompt: Some("Add Project".into()),
                         },
                         cx,
                     );

@@ -7,9 +7,11 @@ use std::{
 };
 use superzent_model::{
     GitChangeSummary, ProjectEntry, ProjectLocation, WorkspaceAttentionStatus, WorkspaceEntry,
-    WorkspaceKind, WorkspaceLocation,
+    WorkspaceGitStatus, WorkspaceKind, WorkspaceLocation,
 };
 use uuid::Uuid;
+
+pub const NO_GIT_BRANCH_LABEL: &str = "No Git";
 
 #[derive(Debug)]
 pub struct ProjectRegistration {
@@ -26,7 +28,16 @@ pub struct WorkspaceCreateOutcome {
 #[derive(Debug)]
 pub struct WorkspaceRefresh {
     pub branch: String,
+    pub git_status: WorkspaceGitStatus,
     pub git_summary: Option<GitChangeSummary>,
+}
+
+#[derive(Debug)]
+struct LocalProjectMetadata {
+    project_root: PathBuf,
+    branch: String,
+    git_status: WorkspaceGitStatus,
+    git_summary: Option<GitChangeSummary>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -43,8 +54,9 @@ struct SuperzentConfig {
 }
 
 pub fn register_project(repo_hint: &Path, preset_id: &str) -> Result<ProjectRegistration> {
-    let repo_root = discover_repo_root(repo_hint)?;
-    let name = repo_root
+    let metadata = inspect_local_project(repo_hint)?;
+    let name = metadata
+        .project_root
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Project")
@@ -56,13 +68,14 @@ pub fn register_project(repo_hint: &Path, preset_id: &str) -> Result<ProjectRegi
         kind: WorkspaceKind::Primary,
         name: name.clone(),
         display_name: None,
-        branch: current_branch(&repo_root).unwrap_or_else(|| "HEAD".to_string()),
+        branch: metadata.branch,
         location: WorkspaceLocation::Local {
-            worktree_path: repo_root.clone(),
+            worktree_path: metadata.project_root.clone(),
         },
         agent_preset_id: preset_id.to_string(),
         managed: false,
-        git_summary: git_change_summary(&repo_root).ok(),
+        git_status: metadata.git_status,
+        git_summary: metadata.git_summary,
         attention_status: WorkspaceAttentionStatus::Idle,
         review_pending: false,
         last_attention_reason: None,
@@ -73,7 +86,9 @@ pub fn register_project(repo_hint: &Path, preset_id: &str) -> Result<ProjectRegi
     let project = ProjectEntry {
         id: primary_workspace.project_id.clone(),
         name,
-        location: ProjectLocation::Local { repo_root },
+        location: ProjectLocation::Local {
+            repo_root: metadata.project_root,
+        },
         collapsed: false,
         created_at: now,
         last_opened_at: now,
@@ -93,9 +108,9 @@ pub fn create_workspace(
     let Some(project_repo_root) = project.local_repo_root() else {
         bail!("cannot create a local workspace for a remote project");
     };
+    let repo_root = discover_repo_root(project_repo_root)
+        .context("initialize Git before creating a managed workspace")?;
     ensure_clean_worktree(project_repo_root)?;
-
-    let repo_root = discover_repo_root(project_repo_root)?;
     let repo_name = repo_root
         .file_name()
         .and_then(|name| name.to_str())
@@ -136,6 +151,7 @@ pub fn create_workspace(
 
     let refresh = refresh_workspace_path(&worktree_path).unwrap_or(WorkspaceRefresh {
         branch: branch_name.clone(),
+        git_status: WorkspaceGitStatus::Available,
         git_summary: None,
     });
 
@@ -150,6 +166,7 @@ pub fn create_workspace(
             location: WorkspaceLocation::Local { worktree_path },
             agent_preset_id: preset_id.to_string(),
             managed: true,
+            git_status: refresh.git_status,
             git_summary: refresh.git_summary,
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
@@ -190,10 +207,24 @@ pub fn delete_workspace(workspace: &WorkspaceEntry, repo_root: &Path, force: boo
 }
 
 pub fn refresh_workspace_path(worktree_path: &Path) -> Result<WorkspaceRefresh> {
+    if discover_repo_root(worktree_path).is_ok() {
+        return Ok(WorkspaceRefresh {
+            branch: current_branch(worktree_path).unwrap_or_else(|| "HEAD".to_string()),
+            git_status: WorkspaceGitStatus::Available,
+            git_summary: git_change_summary(worktree_path).ok(),
+        });
+    }
+
     Ok(WorkspaceRefresh {
-        branch: current_branch(worktree_path).unwrap_or_else(|| "HEAD".to_string()),
-        git_summary: git_change_summary(worktree_path).ok(),
+        branch: NO_GIT_BRANCH_LABEL.to_string(),
+        git_status: WorkspaceGitStatus::Unavailable,
+        git_summary: None,
     })
+}
+
+pub fn initialize_git_repository(project_root: &Path) -> Result<WorkspaceRefresh> {
+    run_git(project_root, &["init"])?;
+    refresh_workspace_path(project_root)
 }
 
 pub fn discover_repo_root(repo_hint: &Path) -> Result<PathBuf> {
@@ -213,6 +244,27 @@ pub fn current_branch(repo_hint: &Path) -> Option<String> {
         .ok()
         .map(|branch| branch.trim().to_string())
         .filter(|branch| !branch.is_empty())
+}
+
+fn inspect_local_project(project_hint: &Path) -> Result<LocalProjectMetadata> {
+    let canonical_path = fs::canonicalize(project_hint)
+        .with_context(|| format!("failed to resolve project path {}", project_hint.display()))?;
+
+    if let Ok(repo_root) = discover_repo_root(&canonical_path) {
+        return Ok(LocalProjectMetadata {
+            project_root: repo_root,
+            branch: current_branch(&canonical_path).unwrap_or_else(|| "HEAD".to_string()),
+            git_status: WorkspaceGitStatus::Available,
+            git_summary: git_change_summary(&canonical_path).ok(),
+        });
+    }
+
+    Ok(LocalProjectMetadata {
+        project_root: canonical_path,
+        branch: NO_GIT_BRANCH_LABEL.to_string(),
+        git_status: WorkspaceGitStatus::Unavailable,
+        git_summary: None,
+    })
 }
 
 fn git_common_dir(repo_hint: &Path) -> Result<PathBuf> {
@@ -687,6 +739,47 @@ mod tests {
                 .to_string()
                 .contains("cannot leave the repository root")
         );
+    }
+
+    #[test]
+    fn register_project_supports_plain_local_folders() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_path = temp_dir.path().join("plain-project");
+        fs::create_dir_all(&project_path).unwrap();
+        fs::write(project_path.join("README.txt"), "hello\n").unwrap();
+        let project_path = project_path.canonicalize().unwrap();
+
+        let registration = register_project(&project_path, "codex").unwrap();
+
+        assert_eq!(
+            registration.project.local_repo_root(),
+            Some(project_path.as_path())
+        );
+        assert_eq!(
+            registration.primary_workspace.local_worktree_path(),
+            Some(project_path.as_path())
+        );
+        assert_eq!(registration.primary_workspace.branch, NO_GIT_BRANCH_LABEL);
+        assert_eq!(
+            registration.primary_workspace.git_status,
+            WorkspaceGitStatus::Unavailable
+        );
+        assert!(registration.primary_workspace.git_summary.is_none());
+    }
+
+    #[test]
+    fn initialize_git_repository_upgrades_plain_local_folders() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_path = temp_dir.path().join("plain-project");
+        fs::create_dir_all(&project_path).unwrap();
+        let project_path = project_path.canonicalize().unwrap();
+
+        let refresh = initialize_git_repository(&project_path).unwrap();
+
+        assert_ne!(refresh.branch, NO_GIT_BRANCH_LABEL);
+        assert_eq!(refresh.git_status, WorkspaceGitStatus::Available);
+        assert!(refresh.git_summary.is_some());
+        assert!(project_path.join(".git").exists());
     }
 
     #[test]

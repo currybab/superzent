@@ -1170,7 +1170,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .tooltip({
                                     move |_, cx| {
                                         Tooltip::for_action_in(
-                                            "Open Project in New Window",
+                                            "Open Project as Workspace",
                                             &menu::SecondaryConfirm,
                                             &focus_handle,
                                             cx,
@@ -1310,7 +1310,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                         )
                     } else {
                         this.child(
-                            Button::new("open_new_window", "New Window")
+                            Button::new("open_new_window", "Open Workspace")
                                 .key_binding(KeyBinding::for_action_in(
                                     &menu::SecondaryConfirm,
                                     &focus_handle,

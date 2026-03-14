@@ -113,19 +113,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Add Project", superzent_ui::AddProject),
                 MenuItem::action("New Workspace", superzent_ui::NewWorkspace),
-                MenuItem::action("New Window", workspace::NewWindow),
                 MenuItem::separator(),
-                MenuItem::action("New File", workspace::NewFile),
-                #[cfg(not(target_os = "macos"))]
-                MenuItem::action("Open File...", workspace::OpenFiles),
-                MenuItem::action(
-                    if cfg!(not(target_os = "macos")) {
-                        "Open Folder..."
-                    } else {
-                        "Open…"
-                    },
-                    workspace::Open::default(),
-                ),
                 MenuItem::action(
                     "Open Recent...",
                     zed_actions::OpenRecent {
@@ -256,10 +244,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
             name: "Run".into(),
             items: vec![
                 MenuItem::action("Reveal Changes", superzent_ui::RevealChanges),
-                MenuItem::action(
-                    "Open Workspace in New Window",
-                    superzent_ui::OpenWorkspaceInNewWindow,
-                ),
+                MenuItem::action("Open Workspace", superzent_ui::OpenWorkspaceInNewWindow),
                 MenuItem::action("Delete Workspace", superzent_ui::DeleteWorkspace),
                 MenuItem::separator(),
                 MenuItem::action(

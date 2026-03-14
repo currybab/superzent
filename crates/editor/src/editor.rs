@@ -351,33 +351,19 @@ pub fn init(cx: &mut App) {
     .detach();
 
     cx.on_action(move |_: &workspace::NewFile, cx| {
-        let app_state = workspace::AppState::global(cx);
-        if let Some(app_state) = app_state.upgrade() {
-            workspace::open_new(
-                Default::default(),
-                app_state,
-                cx,
-                |workspace, window, cx| {
-                    Editor::new_file(workspace, &Default::default(), window, cx)
-                },
-            )
-            .detach_and_log_err(cx);
-        }
+        workspace::with_active_or_new_workspace(cx, |workspace, window, cx| {
+            Editor::new_file(workspace, &Default::default(), window, cx);
+        });
     })
     .on_action(move |_: &workspace::NewWindow, cx| {
-        let app_state = workspace::AppState::global(cx);
-        if let Some(app_state) = app_state.upgrade() {
-            workspace::open_new(
-                Default::default(),
-                app_state,
+        workspace::with_active_or_new_workspace(cx, |_, window, cx| {
+            window.dispatch_action(
+                Box::new(workspace::Open {
+                    create_new_window: false,
+                }),
                 cx,
-                |workspace, window, cx| {
-                    cx.activate(true);
-                    Editor::new_file(workspace, &Default::default(), window, cx)
-                },
-            )
-            .detach_and_log_err(cx);
-        }
+            );
+        });
     });
     _ = ui_input::ERASED_EDITOR_FACTORY.set(|window, cx| {
         Arc::new(ErasedEditorImpl(

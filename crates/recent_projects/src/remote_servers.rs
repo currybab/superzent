@@ -2836,7 +2836,7 @@ impl RemoteServerProjects {
                     h_flex()
                         .gap_1()
                         .child(
-                            Button::new("open_new_window", "New Window")
+                            Button::new("open_new_window", "Open Workspace")
                                 .key_binding(KeyBinding::for_action(&menu::SecondaryConfirm, cx))
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(menu::SecondaryConfirm.boxed_clone(), cx)
