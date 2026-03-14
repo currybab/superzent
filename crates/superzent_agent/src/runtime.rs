@@ -588,7 +588,9 @@ exit "$SUPERZENT_CODEX_STATUS"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use superzent_model::{WorkspaceAttentionStatus, WorkspaceKind, WorkspaceLocation};
+    use superzent_model::{
+        WorkspaceAttentionStatus, WorkspaceGitStatus, WorkspaceKind, WorkspaceLocation,
+    };
 
     #[test]
     fn maps_supported_event_types() {
@@ -661,6 +663,7 @@ mod tests {
             },
             agent_preset_id: "codex".to_string(),
             managed: true,
+            git_status: WorkspaceGitStatus::Available,
             git_summary: None,
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
