@@ -351,7 +351,7 @@ pub fn init(cx: &mut App) {
     .detach();
 
     cx.on_action(move |_: &workspace::NewFile, cx| {
-        workspace::with_active_or_new_workspace(cx, |workspace, window, cx| {
+        workspace::with_active_workspace(cx, |workspace, window, cx| {
             Editor::new_file(workspace, &Default::default(), window, cx);
         });
     })
@@ -2998,6 +2998,16 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
+        if !Self::workspace_has_open_project(workspace, cx) {
+            window.dispatch_action(
+                Box::new(workspace::Open {
+                    create_new_window: false,
+                }),
+                cx,
+            );
+            return;
+        }
+
         Self::new_in_workspace(workspace, window, cx).detach_and_prompt_err(
             "Failed to create buffer",
             window,
@@ -3064,6 +3074,16 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
+        if !Self::workspace_has_open_project(workspace, cx) {
+            window.dispatch_action(
+                Box::new(workspace::Open {
+                    create_new_window: false,
+                }),
+                cx,
+            );
+            return;
+        }
+
         let project = workspace.project().clone();
         let create = project.update(cx, |project, cx| project.create_buffer(None, true, cx));
 
@@ -13054,6 +13074,15 @@ impl Editor {
                 s.select(new_selections);
             })
         });
+    }
+
+    fn workspace_has_open_project(workspace: &Workspace, cx: &App) -> bool {
+        workspace
+            .project()
+            .read(cx)
+            .visible_worktrees(cx)
+            .next()
+            .is_some()
     }
 
     pub fn move_line_down(

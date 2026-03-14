@@ -1341,6 +1341,12 @@ impl Pane {
         self.items.iter()
     }
 
+    fn has_open_project(&self, cx: &App) -> bool {
+        self.project
+            .upgrade()
+            .is_some_and(|project| project.read(cx).visible_worktrees(cx).next().is_some())
+    }
+
     pub fn items_of_type<T: Render>(&self) -> impl '_ + Iterator<Item = Entity<T>> {
         self.items
             .iter()
@@ -3577,7 +3583,16 @@ impl Pane {
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if event.click_count() == 2 {
-                    window.dispatch_action(this.double_click_dispatch_action.boxed_clone(), cx);
+                    if this.has_open_project(cx) {
+                        window.dispatch_action(this.double_click_dispatch_action.boxed_clone(), cx);
+                    } else {
+                        window.dispatch_action(
+                            Box::new(crate::Open {
+                                create_new_window: false,
+                            }),
+                            cx,
+                        );
+                    }
                 }
             }))
     }
@@ -4416,10 +4431,19 @@ impl Render for Pane {
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         if event.click_count() == 2 {
-                                            window.dispatch_action(
-                                                this.double_click_dispatch_action.boxed_clone(),
-                                                cx,
-                                            );
+                                            if has_worktrees && this.has_open_project(cx) {
+                                                window.dispatch_action(
+                                                    this.double_click_dispatch_action.boxed_clone(),
+                                                    cx,
+                                                );
+                                            } else {
+                                                window.dispatch_action(
+                                                    Box::new(crate::Open {
+                                                        create_new_window: false,
+                                                    }),
+                                                    cx,
+                                                );
+                                            }
                                         }
                                     },
                                 ));

@@ -9969,6 +9969,25 @@ pub fn with_active_or_new_workspace(
     }
 }
 
+pub fn with_active_workspace(
+    cx: &mut App,
+    f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + 'static,
+) {
+    if let Some(multi_workspace) = cx
+        .active_window()
+        .and_then(|w| w.downcast::<MultiWorkspace>())
+    {
+        cx.defer(move |cx| {
+            multi_workspace
+                .update(cx, |multi_workspace, window, cx| {
+                    let workspace = multi_workspace.workspace().clone();
+                    workspace.update(cx, |workspace, cx| f(workspace, window, cx));
+                })
+                .log_err();
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, rc::Rc};

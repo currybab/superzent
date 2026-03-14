@@ -89,6 +89,7 @@ use workspace::{
 };
 use workspace::{
     CloseIntent, CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace,
+    with_active_workspace,
 };
 use workspace::{Pane, notifications::DetachAndPromptErr};
 use zed_actions::{
@@ -1064,7 +1065,7 @@ fn register_actions(
         })
         .register_action({
             move |_, _: &NewFile, _, cx| {
-                with_active_or_new_workspace(cx, |workspace, window, cx| {
+                with_active_workspace(cx, |workspace, window, cx| {
                     Editor::new_file(workspace, &Default::default(), window, cx);
                 });
             }
@@ -3722,75 +3723,22 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_setting_language_when_saving_as_single_file_worktree(cx: &mut TestAppContext) {
+    async fn test_new_file_without_project_does_not_create_buffer(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
-        app_state.fs.create_dir(Path::new("/root")).await.unwrap();
 
         let project = Project::test(app_state.fs.clone(), [], cx).await;
-        project.update(cx, |project, _| {
-            project.languages().add(language::rust_lang());
-            project.languages().add(language::markdown_lang());
-        });
         let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
         let workspace = window
             .read_with(cx, |mw, _| mw.workspace().clone())
             .unwrap();
 
-        // Create a new untitled buffer
         cx.dispatch_action(window.into(), NewFile);
-        let editor = cx.read(|cx| {
-            workspace
-                .read(cx)
-                .active_item(cx)
-                .unwrap()
-                .downcast::<Editor>()
-                .unwrap()
-        });
-        window
-            .update(cx, |_, window, cx| {
-                editor.update(cx, |editor, cx| {
-                    assert!(Arc::ptr_eq(
-                        &editor
-                            .buffer()
-                            .read(cx)
-                            .language_at(MultiBufferOffset(0), cx)
-                            .unwrap(),
-                        &languages::PLAIN_TEXT
-                    ));
-                    editor.handle_input("hi", window, cx);
-                    assert!(editor.is_dirty(cx));
-                });
-            })
-            .unwrap();
+        cx.run_until_parked();
 
-        // Save the buffer. This prompts for a filename.
-        let save_task = window
-            .update(cx, |_, window, cx| {
-                workspace.update(cx, |workspace, cx| {
-                    workspace.save_active_item(SaveIntent::Save, window, cx)
-                })
-            })
-            .unwrap();
-        cx.background_executor.run_until_parked();
-        cx.simulate_new_path_selection(|_| Some(PathBuf::from("/root/the-new-name.rs")));
-        save_task.await.unwrap();
-        // The buffer is not dirty anymore and the language is assigned based on the path.
-        window
-            .update(cx, |_, _, cx| {
-                editor.update(cx, |editor, cx| {
-                    assert!(!editor.is_dirty(cx));
-                    assert_eq!(
-                        editor
-                            .buffer()
-                            .read(cx)
-                            .language_at(MultiBufferOffset(0), cx)
-                            .unwrap()
-                            .name(),
-                        "Rust"
-                    )
-                });
-            })
-            .unwrap();
+        cx.read(|cx| {
+            assert!(workspace.read(cx).active_item(cx).is_none());
+            assert_eq!(workspace.read(cx).items(cx).count(), 0);
+        });
     }
 
     #[gpui::test]
