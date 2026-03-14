@@ -885,7 +885,7 @@ mod tests {
     #[gpui::test]
     async fn test_go_to_line(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
-        let project = Project::test(app_state.fs.clone(), [], cx).await;
+        let project = Project::test(app_state.fs.clone(), [std::path::Path::new("/dir")], cx).await;
         let (multi_workspace, cx) =
             cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
         let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());

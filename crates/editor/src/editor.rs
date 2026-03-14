@@ -2999,12 +2999,6 @@ impl Editor {
         cx: &mut Context<Workspace>,
     ) {
         if !Self::workspace_has_open_project(workspace, cx) {
-            window.dispatch_action(
-                Box::new(workspace::Open {
-                    create_new_window: false,
-                }),
-                cx,
-            );
             return;
         }
 
@@ -3075,12 +3069,6 @@ impl Editor {
         cx: &mut Context<Workspace>,
     ) {
         if !Self::workspace_has_open_project(workspace, cx) {
-            window.dispatch_action(
-                Box::new(workspace::Open {
-                    create_new_window: false,
-                }),
-                cx,
-            );
             return;
         }
 

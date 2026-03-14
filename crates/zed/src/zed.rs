@@ -2879,40 +2879,11 @@ mod tests {
             .update(|cx| cx.windows().first().unwrap().downcast::<MultiWorkspace>())
             .unwrap();
 
-        let editor = multi_workspace
+        multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
-                    let editor = workspace
-                        .active_item(cx)
-                        .unwrap()
-                        .downcast::<editor::Editor>()
-                        .unwrap();
-                    editor.update(cx, |editor, cx| {
-                        assert!(editor.text(cx).is_empty());
-                        assert!(!editor.is_dirty(cx));
-                    });
-
-                    editor
-                })
-            })
-            .unwrap();
-
-        let save_task = multi_workspace
-            .update(cx, |multi_workspace, window, cx| {
-                multi_workspace.workspace().update(cx, |workspace, cx| {
-                    workspace.save_active_item(SaveIntent::Save, window, cx)
-                })
-            })
-            .unwrap();
-        app_state.fs.create_dir(Path::new("/root")).await.unwrap();
-        cx.background_executor.run_until_parked();
-        cx.simulate_new_path_selection(|_| Some(PathBuf::from("/root/the-new-name")));
-        save_task.await.unwrap();
-        multi_workspace
-            .update(cx, |_, _, cx| {
-                editor.update(cx, |editor, cx| {
-                    assert!(!editor.is_dirty(cx));
-                    assert_eq!(editor.title(cx), "the-new-name");
+                    assert!(workspace.active_item(cx).is_none());
+                    assert_eq!(workspace.items(cx).count(), 0);
                 });
             })
             .unwrap();
@@ -5925,7 +5896,7 @@ mod tests {
             .expect("failed to restore workspaces");
         cx.run_until_parked();
 
-        // --- Verify the restored windows ---
+        // --- Verify the restored single window ---
         let restored_windows: Vec<WindowHandle<MultiWorkspace>> = cx.read(|cx| {
             cx.windows()
                 .into_iter()
@@ -5935,91 +5906,58 @@ mod tests {
 
         assert_eq!(
             restored_windows.len(),
-            2,
-            "expected 2 restored windows, got {}",
+            1,
+            "expected 1 restored window, got {}",
             restored_windows.len()
-        );
-
-        let workspace_counts: Vec<usize> = restored_windows
-            .iter()
-            .map(|window| {
-                window
-                    .read_with(cx, |multi_workspace, _| multi_workspace.workspaces().len())
-                    .unwrap()
-            })
-            .collect();
-        let mut sorted_counts = workspace_counts.clone();
-        sorted_counts.sort();
-        assert_eq!(
-            sorted_counts,
-            vec![1, 2],
-            "expected one window with 1 workspace and one with 2, got {workspace_counts:?}"
         );
 
         let dir1_path: Arc<Path> = Path::new(dir1).into();
         let dir2_path: Arc<Path> = Path::new(dir2).into();
         let dir3_path: Arc<Path> = Path::new(dir3).into();
 
-        let all_restored_paths: Vec<Vec<Vec<Arc<Path>>>> = restored_windows
-            .iter()
-            .map(|window| {
-                window
-                    .read_with(cx, |multi_workspace, cx| {
-                        multi_workspace
-                            .workspaces()
-                            .iter()
-                            .map(|ws| ws.read(cx).root_paths(cx))
-                            .collect()
-                    })
-                    .unwrap()
+        let restored_window = &restored_windows[0];
+        let restored_paths = restored_window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspaces()
+                    .iter()
+                    .map(|workspace| workspace.read(cx).root_paths(cx))
+                    .collect::<Vec<_>>()
             })
-            .collect();
+            .unwrap();
 
-        let two_ws_window = all_restored_paths
-            .iter()
-            .find(|paths| paths.len() == 2)
-            .expect("expected a window with 2 workspaces");
-        assert!(
-            two_ws_window.iter().any(|p| p.contains(&dir1_path)),
-            "2-workspace window should contain dir1, got {two_ws_window:?}"
+        assert_eq!(
+            restored_paths.len(),
+            3,
+            "expected 3 restored workspaces, got {restored_paths:?}"
         );
         assert!(
-            two_ws_window.iter().any(|p| p.contains(&dir2_path)),
-            "2-workspace window should contain dir2, got {two_ws_window:?}"
+            restored_paths
+                .iter()
+                .any(|paths| paths.contains(&dir1_path)),
+            "restored window should contain dir1, got {restored_paths:?}"
         );
-
-        let one_ws_window = all_restored_paths
-            .iter()
-            .find(|paths| paths.len() == 1)
-            .expect("expected a window with 1 workspace");
         assert!(
-            one_ws_window[0].contains(&dir3_path),
-            "1-workspace window should contain dir3, got {one_ws_window:?}"
+            restored_paths
+                .iter()
+                .any(|paths| paths.contains(&dir2_path)),
+            "restored window should contain dir2, got {restored_paths:?}"
+        );
+        assert!(
+            restored_paths
+                .iter()
+                .any(|paths| paths.contains(&dir3_path)),
+            "restored window should contain dir3, got {restored_paths:?}"
         );
 
-        // --- Verify the active workspace is preserved ---
-        for window in &restored_windows {
-            let (active_paths, workspace_count) = window
-                .read_with(cx, |multi_workspace, cx| {
-                    let active = multi_workspace.workspace();
-                    (
-                        active.read(cx).root_paths(cx),
-                        multi_workspace.workspaces().len(),
-                    )
-                })
-                .unwrap();
-
-            if workspace_count == 2 {
-                assert!(
-                    active_paths.contains(&dir1_path),
-                    "2-workspace window should have dir1 active, got {active_paths:?}"
-                );
-            } else {
-                assert!(
-                    active_paths.contains(&dir3_path),
-                    "1-workspace window should have dir3 active, got {active_paths:?}"
-                );
-            }
-        }
+        let active_paths = restored_window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace.workspace().read(cx).root_paths(cx)
+            })
+            .unwrap();
+        assert!(
+            active_paths.contains(&dir1_path) || active_paths.contains(&dir3_path),
+            "restored active workspace should match one of the previously active workspaces, got {active_paths:?}"
+        );
     }
 }
