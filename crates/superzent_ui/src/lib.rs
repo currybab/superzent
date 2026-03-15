@@ -3,6 +3,8 @@ mod acp_tabs;
 #[cfg(feature = "acp_tabs")]
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 
+#[cfg(feature = "acp_tabs")]
+use agent_ui::open_external_acp_tab;
 use anyhow::Result;
 use chrono::Utc;
 #[cfg(target_os = "macos")]
@@ -29,11 +31,11 @@ use objc::{
     sel, sel_impl,
 };
 #[cfg(feature = "acp_tabs")]
-use project::agent_server_store::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
+use project::AgentRegistryStore;
 #[cfg(feature = "acp_tabs")]
 use project::agent_server_store::{AllAgentServersSettings, CustomAgentServerSettings};
 #[cfg(feature = "acp_tabs")]
-use project::AgentRegistryStore;
+use project::agent_server_store::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use project::git_store::{GitStoreEvent, Repository, RepositoryEvent};
 use project::project_settings::ProjectSettings;
 use project_panel::ProjectPanel;
@@ -58,8 +60,8 @@ use superzent_agent::{AGENT_TERMINAL_ID_ENV_VAR, AgentHookEvent, AgentHookEventT
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
     StoredSshConnection, StoredSshPortForward, SuperzentStore, TaskStatus,
-    WorkspaceAttentionStatus, WorkspaceEntry, WorkspaceGitStatus, WorkspaceKind,
-    WorkspaceLocation, aggregate_workspace_attention_status,
+    WorkspaceAttentionStatus, WorkspaceEntry, WorkspaceGitStatus, WorkspaceKind, WorkspaceLocation,
+    aggregate_workspace_attention_status,
 };
 use task::{Shell, ShellKind};
 use terminal::terminal_settings::{TerminalAgentNotificationMode, TerminalSettings};
@@ -79,8 +81,6 @@ use workspace::{
 #[cfg(feature = "acp_tabs")]
 use zed_actions::AcpRegistry;
 use zed_actions::{OpenRemote, OpenSettingsAt};
-#[cfg(feature = "acp_tabs")]
-use agent_ui::open_external_acp_tab;
 
 actions!(
     superzent,
@@ -964,30 +964,29 @@ async fn wait_for_acp_agent_registration(
     cx: &mut AsyncWindowContext,
 ) -> AcpAgentRegistrationWaitResult {
     for _ in 0..150 {
-        let state = workspace_handle
-            .read_with(cx, |workspace, cx| {
-                let agent_server_store = workspace.project().read(cx).agent_server_store().clone();
-                if agent_server_store
-                    .read(cx)
-                    .external_agents()
-                    .any(|registered_name| registered_name.0.as_ref() == agent_name)
-                {
-                    return AcpAgentRegistrationWaitResult::Registered;
-                }
+        let state = workspace_handle.read_with(cx, |workspace, cx| {
+            let agent_server_store = workspace.project().read(cx).agent_server_store().clone();
+            if agent_server_store
+                .read(cx)
+                .external_agents()
+                .any(|registered_name| registered_name.0.as_ref() == agent_name)
+            {
+                return AcpAgentRegistrationWaitResult::Registered;
+            }
 
-                let Some(registry_store) = AgentRegistryStore::try_global(cx) else {
-                    return AcpAgentRegistrationWaitResult::TimedOut;
-                };
-                let registry_store = registry_store.read(cx);
-                if let Some(error) = registry_store.fetch_error()
-                    && !registry_store.is_fetching()
-                    && registry_store.agent(agent_name).is_none()
-                {
-                    return AcpAgentRegistrationWaitResult::RegistryFetchFailed(error.to_string());
-                }
+            let Some(registry_store) = AgentRegistryStore::try_global(cx) else {
+                return AcpAgentRegistrationWaitResult::TimedOut;
+            };
+            let registry_store = registry_store.read(cx);
+            if let Some(error) = registry_store.fetch_error()
+                && !registry_store.is_fetching()
+                && registry_store.agent(agent_name).is_none()
+            {
+                return AcpAgentRegistrationWaitResult::RegistryFetchFailed(error.to_string());
+            }
 
-                AcpAgentRegistrationWaitResult::TimedOut
-            });
+            AcpAgentRegistrationWaitResult::TimedOut
+        });
         match state {
             AcpAgentRegistrationWaitResult::Registered => {
                 return AcpAgentRegistrationWaitResult::Registered;

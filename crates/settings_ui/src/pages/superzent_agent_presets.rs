@@ -561,21 +561,24 @@ fn render_launch_mode_field(
                     })),
                 )
                 .child(
-                    Button::new(format!("superzent-preset-mode-acp-{}", preset.id), "ACP Chat")
-                        .style(if current_launch_mode == PresetLaunchMode::Acp {
-                            ButtonStyle::Filled
-                        } else {
-                            ButtonStyle::Subtle
-                        })
-                        .on_click(cx.listener({
-                            let launch_mode_state = launch_mode_state.clone();
-                            move |this, _, _, cx| {
-                                launch_mode_state.update(cx, |state, cx| {
-                                    state.set_mode(PresetLaunchMode::Acp, cx);
-                                });
-                                this.clear_error(cx);
-                            }
-                        })),
+                    Button::new(
+                        format!("superzent-preset-mode-acp-{}", preset.id),
+                        "ACP Chat",
+                    )
+                    .style(if current_launch_mode == PresetLaunchMode::Acp {
+                        ButtonStyle::Filled
+                    } else {
+                        ButtonStyle::Subtle
+                    })
+                    .on_click(cx.listener({
+                        let launch_mode_state = launch_mode_state.clone();
+                        move |this, _, _, cx| {
+                            launch_mode_state.update(cx, |state, cx| {
+                                state.set_mode(PresetLaunchMode::Acp, cx);
+                            });
+                            this.clear_error(cx);
+                        }
+                    })),
                 ),
         )
         .into_any_element()

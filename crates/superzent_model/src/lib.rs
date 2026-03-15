@@ -1798,8 +1798,8 @@ impl AgentPresetDraft {
     fn into_preset(self, id: String) -> Result<AgentPreset> {
         let label = self.label.trim().to_string();
         let command = self.command.trim().to_string();
-        let acp_agent_name =
-            normalize_optional_text(self.acp_agent_name).or_else(|| suggested_acp_agent_name(&command));
+        let acp_agent_name = normalize_optional_text(self.acp_agent_name)
+            .or_else(|| suggested_acp_agent_name(&command));
 
         if label.is_empty() {
             bail!("preset label is required");
@@ -2128,7 +2128,10 @@ mod tests {
             attention_patterns: Vec::new(),
         };
 
-        assert_eq!(preset.resolved_acp_agent_name().as_deref(), Some("codex-acp"));
+        assert_eq!(
+            preset.resolved_acp_agent_name().as_deref(),
+            Some("codex-acp")
+        );
     }
 
     #[test]

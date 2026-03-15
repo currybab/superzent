@@ -727,6 +727,9 @@ mod tests {
 
         let error = prepare_workspace_launch(&workspace, &preset)
             .expect_err("ACP presets should not use the terminal launch path");
-        assert_eq!(error.to_string(), "ACP presets cannot be launched in a terminal");
+        assert_eq!(
+            error.to_string(),
+            "ACP presets cannot be launched in a terminal"
+        );
     }
 }

@@ -154,9 +154,11 @@ fn should_restore_built_in_registry_entry(
 ) -> bool {
     match entry {
         settings::CustomAgentServerSettings::Registry { .. } => false,
-        settings::CustomAgentServerSettings::Custom { path, args, .. } => args.is_empty()
-            && built_in_terminal_command(agent_name)
-                .is_some_and(|command| path.file_name().is_some_and(|name| name == command)),
+        settings::CustomAgentServerSettings::Custom { path, args, .. } => {
+            args.is_empty()
+                && built_in_terminal_command(agent_name)
+                    .is_some_and(|command| path.file_name().is_some_and(|name| name == command))
+        }
         settings::CustomAgentServerSettings::Extension { .. } => false,
     }
 }
