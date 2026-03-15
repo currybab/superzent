@@ -4,7 +4,7 @@ mod acp_tabs;
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 
 #[cfg(feature = "acp_tabs")]
-use agent_ui::open_external_acp_tab;
+use agent_ui::{active_external_acp_agent_name_in_pane, open_external_acp_tab};
 use anyhow::Result;
 use chrono::Utc;
 #[cfg(target_os = "macos")]
@@ -505,9 +505,11 @@ fn render_terminal_preset_bar(
         (workspace_entry, store.presets().to_vec())
     };
 
+    let active_acp_history_button = render_active_acp_history_button(pane, &workspace_entry.id, cx);
     let (visible_presets, hidden_presets) = split_presets_for_width(
         &presets,
         available_preset_bar_width(&workspace_handle, window, cx),
+        active_acp_history_button.is_some(),
     );
     let hidden_dropdown = (!hidden_presets.is_empty()).then(|| {
         render_hidden_preset_dropdown(
@@ -547,6 +549,7 @@ fn render_terminal_preset_bar(
                     .items_center()
                     .gap_1()
                     .children(hidden_dropdown)
+                    .children(active_acp_history_button)
                     .child(render_preset_actions_dropdown(
                         &workspace_entry.id,
                         window,
@@ -640,12 +643,15 @@ fn available_preset_bar_width(
 fn split_presets_for_width(
     presets: &[AgentPreset],
     available_width: Pixels,
+    reserve_history_button: bool,
 ) -> (Vec<AgentPreset>, Vec<AgentPreset>) {
-    let mut visible_presets = select_presets_for_width(presets, available_width, false);
+    let mut visible_presets =
+        select_presets_for_width(presets, available_width, false, reserve_history_button);
     let mut hidden_presets = presets[visible_presets.len()..].to_vec();
 
     if !hidden_presets.is_empty() {
-        visible_presets = select_presets_for_width(presets, available_width, true);
+        visible_presets =
+            select_presets_for_width(presets, available_width, true, reserve_history_button);
         hidden_presets = presets[visible_presets.len()..].to_vec();
     }
 
@@ -656,8 +662,10 @@ fn select_presets_for_width(
     presets: &[AgentPreset],
     available_width: Pixels,
     reserve_overflow: bool,
+    reserve_history_button: bool,
 ) -> Vec<AgentPreset> {
-    let reserved_width = if reserve_overflow { 132.0 } else { 88.0 };
+    let reserved_width = if reserve_overflow { 132.0 } else { 88.0 }
+        + if reserve_history_button { 84.0 } else { 0.0 };
     let available_button_width = (f32::from(available_width) - reserved_width).max(0.0);
     let mut used_width = 0.0;
     let mut visible_presets = Vec::new();
@@ -687,6 +695,24 @@ fn open_agent_presets_settings(window: &mut Window, cx: &mut App) {
         .boxed_clone(),
         cx,
     );
+}
+
+#[cfg(feature = "acp_tabs")]
+fn render_active_acp_history_button(
+    pane: &Pane,
+    workspace_id: &str,
+    cx: &mut Context<Pane>,
+) -> Option<AnyElement> {
+    let agent_name = active_external_acp_agent_name_in_pane(pane, cx)?;
+    Some(
+        Button::new(format!("superzent-acp-history-{workspace_id}"), "History")
+            .label_size(LabelSize::Small)
+            .style(ButtonStyle::Subtle)
+            .on_click(move |_, window, cx| {
+                open_acp_history(Some(agent_name.clone()), window, cx);
+            })
+            .into_any_element(),
+    )
 }
 
 fn render_preset_actions_dropdown(
@@ -723,6 +749,11 @@ fn render_preset_actions_dropdown(
 #[cfg(feature = "acp_tabs")]
 fn open_acp_registry(window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(AcpRegistry), cx);
+}
+
+#[cfg(feature = "acp_tabs")]
+fn open_acp_history(agent_name: Option<String>, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(OpenAcpHistory { agent_name }.boxed_clone(), cx);
 }
 
 fn launch_workspace_preset(

@@ -763,6 +763,7 @@ impl AgentPanel {
                 ThreadHistoryEvent::Open(thread) => {
                     this.load_agent_thread(thread.clone(), window, cx);
                 }
+                ThreadHistoryEvent::OpenInNewTab(_) | ThreadHistoryEvent::Back => {}
             },
         )
         .detach();

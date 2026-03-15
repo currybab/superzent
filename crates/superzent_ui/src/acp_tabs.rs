@@ -109,7 +109,11 @@ pub(crate) fn run_open_acp_history(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    agent_ui::open_external_acp_history(workspace, action.agent_name.clone(), window, cx);
+    let agent_name = action
+        .agent_name
+        .clone()
+        .or_else(|| agent_ui::active_external_acp_agent_name(workspace, cx));
+    agent_ui::show_external_acp_history(workspace, agent_name, window, cx);
 }
 
 pub(crate) fn run_focus_acp_tab(

@@ -6,7 +6,7 @@ use chrono::{Datelike as _, Local, NaiveDate, TimeDelta, Utc};
 use editor::{Editor, EditorEvent};
 use fuzzy::StringMatchCandidate;
 use gpui::{
-    App, Entity, EventEmitter, FocusHandle, Focusable, ScrollStrategy, Task,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, ScrollStrategy, Task,
     UniformListScrollHandle, WeakEntity, Window, uniform_list,
 };
 use std::{fmt::Display, ops::Range, rc::Rc};
@@ -30,6 +30,7 @@ fn thread_title(entry: &AgentSessionInfo) -> &SharedString {
 pub struct ThreadHistory {
     session_list: Option<Rc<dyn AgentSessionList>>,
     sessions: Vec<AgentSessionInfo>,
+    options: ThreadHistoryOptions,
     scroll_handle: UniformListScrollHandle,
     selected_index: usize,
     hovered_index: Option<usize>,
@@ -42,6 +43,12 @@ pub struct ThreadHistory {
     _refresh_task: Task<()>,
     _watch_task: Option<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ThreadHistoryOptions {
+    pub show_back_button: bool,
+    pub show_open_in_new_tab: bool,
 }
 
 enum ListItemType {
@@ -68,6 +75,8 @@ impl ListItemType {
 
 pub enum ThreadHistoryEvent {
     Open(AgentSessionInfo),
+    OpenInNewTab(AgentSessionInfo),
+    Back,
 }
 
 impl EventEmitter<ThreadHistoryEvent> for ThreadHistory {}
@@ -75,6 +84,15 @@ impl EventEmitter<ThreadHistoryEvent> for ThreadHistory {}
 impl ThreadHistory {
     pub fn new(
         session_list: Option<Rc<dyn AgentSessionList>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_options(session_list, ThreadHistoryOptions::default(), window, cx)
+    }
+
+    pub fn new_with_options(
+        session_list: Option<Rc<dyn AgentSessionList>>,
+        options: ThreadHistoryOptions,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -100,6 +118,7 @@ impl ThreadHistory {
         let mut this = Self {
             session_list: None,
             sessions: Vec::new(),
+            options,
             scroll_handle,
             selected_index: 0,
             hovered_index: None,
@@ -336,6 +355,10 @@ impl ThreadHistory {
 
     pub fn has_session_list(&self) -> bool {
         self.session_list.is_some()
+    }
+
+    pub fn session_list(&self) -> Option<Rc<dyn AgentSessionList>> {
+        self.session_list.clone()
     }
 
     pub fn refresh(&mut self, _cx: &mut Context<Self>) {
@@ -640,6 +663,7 @@ impl ThreadHistory {
         let selected = ix == self.selected_index;
         let hovered = Some(ix) == self.hovered_index;
         let entry_time = entry.updated_at;
+        let options = self.options;
         let display_text = match (format, entry_time) {
             (EntryTimeFormat::DateAndTime, Some(entry_time)) => {
                 let now = Utc::now();
@@ -660,6 +684,7 @@ impl ThreadHistory {
                 EntryTimeFormat::DateAndTime.format_timestamp(time.timestamp(), self.local_timezone)
             })
             .unwrap_or_else(|| "Unknown".to_string());
+        let open_in_new_tab_entry = entry.clone();
 
         h_flex()
             .w_full()
@@ -680,9 +705,34 @@ impl ThreadHistory {
                                     .truncate(),
                             )
                             .child(
-                                Label::new(display_text)
-                                    .color(Color::Muted)
-                                    .size(LabelSize::XSmall),
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        Label::new(display_text)
+                                            .color(Color::Muted)
+                                            .size(LabelSize::XSmall),
+                                    )
+                                    .when(options.show_open_in_new_tab, |this| {
+                                        this.child(
+                                            IconButton::new(
+                                                format!("thread-history-open-in-new-tab-{ix}"),
+                                                IconName::Plus,
+                                            )
+                                            .shape(IconButtonShape::Square)
+                                            .icon_size(IconSize::XSmall)
+                                            .icon_color(Color::Muted)
+                                            .tooltip(Tooltip::text("Open in new tab"))
+                                            .on_click(
+                                                cx.listener(move |_, _, _, cx| {
+                                                    cx.emit(ThreadHistoryEvent::OpenInNewTab(
+                                                        open_in_new_tab_entry.clone(),
+                                                    ));
+                                                    cx.stop_propagation();
+                                                }),
+                                            ),
+                                        )
+                                    }),
                             ),
                     )
                     .tooltip(move |_, cx| {
@@ -758,7 +808,19 @@ impl Render for ThreadHistory {
                             .color(Color::Muted)
                             .size(IconSize::Small),
                     )
-                    .child(self.search_editor.clone()),
+                    .child(div().flex_1().child(self.search_editor.clone()))
+                    .when(self.options.show_back_button, |this| {
+                        this.child(
+                            IconButton::new("thread-history-back", IconName::ArrowLeft)
+                                .shape(IconButtonShape::Square)
+                                .icon_size(IconSize::Small)
+                                .icon_color(Color::Muted)
+                                .tooltip(Tooltip::text("Back"))
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(ThreadHistoryEvent::Back);
+                                })),
+                        )
+                    }),
             )
             .child({
                 let view = v_flex()

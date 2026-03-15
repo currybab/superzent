@@ -64,7 +64,8 @@ pub use crate::agent_panel::{
 };
 use crate::agent_registry_ui::AgentRegistryPage;
 pub use crate::external_tabs::{
-    focus_external_acp_tab, open_external_acp_history, open_external_acp_tab,
+    active_external_acp_agent_name, active_external_acp_agent_name_in_pane, focus_external_acp_tab,
+    open_external_acp_history, open_external_acp_tab, show_external_acp_history,
 };
 pub use crate::inline_assistant::InlineAssistant;
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
