@@ -130,6 +130,7 @@ pub enum IconName {
     FileTree,
     Filter,
     Flame,
+    Flask,
     Folder,
     FolderOpen,
     FolderSearch,

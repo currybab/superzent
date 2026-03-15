@@ -66,6 +66,8 @@ use superzent_model::{
 use task::{Shell, ShellKind};
 use terminal::terminal_settings::{TerminalAgentNotificationMode, TerminalSettings};
 use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
+#[cfg(feature = "acp_tabs")]
+use ui::ContextMenuEntry;
 use ui::{
     ButtonLike, Chip, ContextMenu, DropdownMenu, DropdownStyle, Icon, Indicator, ListItem, Tab,
     Tooltip, prelude::*,
@@ -715,6 +717,15 @@ fn render_active_acp_history_button(
     )
 }
 
+#[cfg(not(feature = "acp_tabs"))]
+fn render_active_acp_history_button(
+    _pane: &Pane,
+    _workspace_id: &str,
+    _cx: &mut Context<Pane>,
+) -> Option<AnyElement> {
+    None
+}
+
 fn render_preset_actions_dropdown(
     workspace_id: &str,
     window: &mut Window,
@@ -727,9 +738,14 @@ fn render_preset_actions_dropdown(
 
         #[cfg(feature = "acp_tabs")]
         {
-            menu = menu.entry("ACP Registry", None, |window, cx| {
-                open_acp_registry(window, cx);
-            });
+            menu = menu.item(
+                ContextMenuEntry::new("ACP Registry")
+                    .icon(IconName::Flask)
+                    .icon_position(IconPosition::End)
+                    .handler(|window, cx| {
+                        open_acp_registry(window, cx);
+                    }),
+            );
         }
 
         menu

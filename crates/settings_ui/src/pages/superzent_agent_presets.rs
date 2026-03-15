@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use superzent_model::{
     AgentPreset, AgentPresetDraft, PresetLaunchMode, SuperzentStore, suggested_acp_agent_name,
 };
-use ui::{Button, ButtonStyle, Color, Divider, IconButton, IconName, Label, Tooltip, prelude::*};
+use ui::{
+    Button, ButtonStyle, Color, Divider, IconName, IconPosition, IconSize, Label, Tooltip,
+    prelude::*,
+};
 
 use crate::SettingsWindow;
 
@@ -565,6 +568,10 @@ fn render_launch_mode_field(
                         format!("superzent-preset-mode-acp-{}", preset.id),
                         "ACP Chat",
                     )
+                    .icon(IconName::Flask)
+                    .icon_position(IconPosition::End)
+                    .icon_size(IconSize::Small)
+                    .tooltip(Tooltip::text("ACP Chat (Experimental)"))
                     .style(if current_launch_mode == PresetLaunchMode::Acp {
                         ButtonStyle::Filled
                     } else {
