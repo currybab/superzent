@@ -13,6 +13,7 @@ pub struct AgentNotification {
     caption: SharedString,
     icon: IconName,
     project_name: Option<SharedString>,
+    action_label: SharedString,
 }
 
 impl AgentNotification {
@@ -27,7 +28,13 @@ impl AgentNotification {
             caption: caption.into(),
             icon,
             project_name: project_name.map(|name| name.into()),
+            action_label: "View Panel".into(),
         }
+    }
+
+    pub fn with_action_label(mut self, action_label: impl Into<SharedString>) -> Self {
+        self.action_label = action_label.into();
+        self
     }
 
     pub fn window_options(screen: Rc<dyn PlatformDisplay>, cx: &App) -> WindowOptions {
@@ -180,7 +187,7 @@ impl Render for AgentNotification {
                     .gap_1()
                     .items_center()
                     .child(
-                        Button::new("open", "View Panel")
+                        Button::new("open", self.action_label.clone())
                             .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                             .full_width()
                             .on_click({

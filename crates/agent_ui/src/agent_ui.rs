@@ -69,6 +69,7 @@ pub use crate::external_tabs::{
     show_external_acp_history,
 };
 pub use crate::inline_assistant::InlineAssistant;
+pub use crate::ui::{AgentNotification, AgentNotificationEvent};
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
 pub(crate) use connection_view::ConnectionView;
 pub(crate) use mode_selector::ModeSelector;
