@@ -47,6 +47,11 @@ struct LaunchModeState {
     saved_mode: PresetLaunchMode,
 }
 
+struct PresetEditorState {
+    editor: Entity<Editor>,
+    saved_text: String,
+}
+
 impl LaunchModeState {
     fn new(mode: PresetLaunchMode) -> Self {
         Self {
@@ -76,6 +81,50 @@ impl LaunchModeState {
             self.mode = saved_mode;
         }
         cx.notify();
+    }
+}
+
+impl PresetEditorState {
+    fn new(
+        initial_text: String,
+        multi_line: bool,
+        placeholder: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let editor = cx.new(|cx| {
+            let mut editor = if multi_line {
+                Editor::auto_height_unbounded(2, window, cx)
+            } else {
+                Editor::single_line(window, cx)
+            };
+            editor.set_placeholder_text(placeholder, window, cx);
+            editor.set_text(initial_text.clone(), window, cx);
+            editor
+        });
+
+        Self {
+            editor,
+            saved_text: initial_text,
+        }
+    }
+
+    fn sync(&mut self, expected_text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let is_focused = self.editor.read(cx).is_focused(window);
+        let current_text = self.editor.read(cx).text(cx);
+
+        if current_text == expected_text {
+            self.saved_text = expected_text.to_string();
+            return;
+        }
+
+        if current_text == self.saved_text && !is_focused {
+            let expected_text = expected_text.to_string();
+            self.saved_text = expected_text.clone();
+            self.editor.update(cx, |editor, cx| {
+                editor.set_text(expected_text, window, cx);
+            });
+        }
     }
 }
 
@@ -600,36 +649,16 @@ fn preset_editor(
     cx: &mut Context<AgentPresetsPage>,
 ) -> Entity<Editor> {
     let expected_text = expected_text.to_string();
-    let editor = window.use_keyed_state(id, cx, {
+    let editor_state = window.use_keyed_state(id, cx, {
         let expected_text = expected_text.clone();
-        move |window, cx| {
-            let mut editor = if multi_line {
-                Editor::auto_height_unbounded(2, window, cx)
-            } else {
-                Editor::single_line(window, cx)
-            };
-            editor.set_placeholder_text(placeholder, window, cx);
-            editor.set_text(expected_text, window, cx);
-            editor
-        }
+        move |window, cx| PresetEditorState::new(expected_text, multi_line, placeholder, window, cx)
     });
 
-    sync_editor_text(&editor, &expected_text, window, cx);
-    editor
-}
+    editor_state.update(cx, |state, cx| {
+        state.sync(&expected_text, window, cx);
+    });
 
-fn sync_editor_text(
-    editor: &Entity<Editor>,
-    expected_text: &str,
-    window: &mut Window,
-    cx: &mut Context<AgentPresetsPage>,
-) {
-    let current_text = editor.read(cx).text(cx);
-    if current_text != expected_text && !editor.read(cx).is_focused(window) {
-        editor.update(cx, |editor, cx| {
-            editor.set_text(expected_text.to_string(), window, cx);
-        });
-    }
+    editor_state.read(cx).editor.clone()
 }
 
 fn sync_launch_mode_state(
