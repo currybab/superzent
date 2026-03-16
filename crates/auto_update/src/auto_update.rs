@@ -30,7 +30,7 @@ use util::command::{new_command, new_std_command};
 use workspace::{
     Workspace,
     notifications::{
-        ErrorMessagePrompt, NotificationId, show_app_notification,
+        ErrorMessagePrompt, NotificationId, dismiss_app_notification, show_app_notification,
         simple_message_notification::MessageNotification,
     },
 };
@@ -44,6 +44,7 @@ const UPDATE_QUERY_FAILED_MESSAGE: &str = "Failed to check for updates. Please t
 const UPDATE_PACKAGE_NOT_FOUND_MESSAGE: &str = "A compatible update package was not found for this installation. Please download the latest release manually.";
 const MACOS_PENDING_UPDATE_SUFFIX: &str = ".pending-update";
 const MACOS_PREVIOUS_APP_SUFFIX: &str = ".previous";
+const UPDATES_NOTIFICATION_TITLE: &str = "Updates";
 
 fn update_explanation_from_compile_env() -> Option<&'static str> {
     option_env!("SUPERZENT_UPDATE_EXPLANATION").or(option_env!("ZED_UPDATE_EXPLANATION"))
@@ -236,6 +237,7 @@ impl Global for GlobalAutoUpdate {}
 struct UpToDateNotification;
 struct UpdateQueryFailedNotification;
 struct UpdatePackageNotFoundNotification;
+struct ManualUpdateStatusNotification;
 
 #[derive(Debug)]
 enum ReleaseLookupError {
@@ -247,6 +249,12 @@ enum ReleaseLookupError {
 enum ManualUpdateNotificationKind {
     QueryFailed,
     CompatibleUpdatePackageNotFound,
+}
+
+#[derive(Clone)]
+enum ManualUpdateStatusNotificationContent {
+    Progress { message: String },
+    ReadyToRestart { message: String },
 }
 
 impl std::fmt::Display for ReleaseLookupError {
@@ -274,7 +282,7 @@ fn show_up_to_date_notification(cx: &mut App) {
     show_app_notification(NotificationId::unique::<UpToDateNotification>(), cx, |cx| {
         cx.new(|cx| {
             MessageNotification::new(UP_TO_DATE_MESSAGE, cx)
-                .with_title("Updates")
+                .with_title(UPDATES_NOTIFICATION_TITLE)
                 .show_suppress_button(false)
         })
     });
@@ -287,7 +295,7 @@ fn show_update_query_failed_notification(cx: &mut App) {
         |cx| {
             cx.new(|cx| {
                 MessageNotification::new(UPDATE_QUERY_FAILED_MESSAGE, cx)
-                    .with_title("Updates")
+                    .with_title(UPDATES_NOTIFICATION_TITLE)
                     .show_suppress_button(false)
             })
         },
@@ -333,6 +341,84 @@ fn manual_update_notification_kind(error: &anyhow::Error) -> Option<ManualUpdate
     }
 }
 
+fn version_display(version: &VersionCheckType) -> String {
+    match version {
+        VersionCheckType::Sha(sha) => format!("{}…", sha.short()),
+        VersionCheckType::Semantic(version) => version.to_string(),
+    }
+}
+
+fn manual_update_status_notification_content(
+    status: &AutoUpdateStatus,
+    update_check_type: UpdateCheckType,
+) -> Option<ManualUpdateStatusNotificationContent> {
+    if !update_check_type.is_manual() {
+        return None;
+    }
+
+    match status {
+        AutoUpdateStatus::Checking => Some(ManualUpdateStatusNotificationContent::Progress {
+            message: "Checking for updates…".to_string(),
+        }),
+        AutoUpdateStatus::Downloading { version } => {
+            Some(ManualUpdateStatusNotificationContent::Progress {
+                message: format!("Downloading Superzent {}…", version_display(version)),
+            })
+        }
+        AutoUpdateStatus::Installing { version } => {
+            Some(ManualUpdateStatusNotificationContent::Progress {
+                message: format!("Installing Superzent {}…", version_display(version)),
+            })
+        }
+        AutoUpdateStatus::Updated { version } => {
+            Some(ManualUpdateStatusNotificationContent::ReadyToRestart {
+                message: format!(
+                    "Superzent {} is ready. Restart to finish updating.",
+                    version_display(version)
+                ),
+            })
+        }
+        AutoUpdateStatus::Idle | AutoUpdateStatus::Errored { .. } => None,
+    }
+}
+
+fn sync_manual_update_status_notification(
+    status: &AutoUpdateStatus,
+    update_check_type: UpdateCheckType,
+    cx: &mut App,
+) {
+    let notification_id = NotificationId::unique::<ManualUpdateStatusNotification>();
+    let Some(content) = manual_update_status_notification_content(status, update_check_type) else {
+        dismiss_app_notification(&notification_id, cx);
+        return;
+    };
+
+    show_app_notification(notification_id, cx, move |cx| {
+        let content = content.clone();
+        cx.new(move |cx| {
+            let notification = match &content {
+                ManualUpdateStatusNotificationContent::Progress { message }
+                | ManualUpdateStatusNotificationContent::ReadyToRestart { message } => {
+                    MessageNotification::new(message.clone(), cx)
+                        .with_title(UPDATES_NOTIFICATION_TITLE)
+                        .show_suppress_button(false)
+                }
+            };
+
+            match content {
+                ManualUpdateStatusNotificationContent::Progress { .. } => {
+                    notification.show_close_button(false)
+                }
+                ManualUpdateStatusNotificationContent::ReadyToRestart { .. } => notification
+                    .primary_message("Restart")
+                    .primary_on_click(|_, cx| {
+                        workspace::reload(cx);
+                    }),
+            }
+        })
+    });
+}
+
 pub fn init(client: Arc<Client>, cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(|_, action, window, cx| check(action, window, cx));
@@ -373,7 +459,15 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
 
         updater
     });
-    cx.set_global(GlobalAutoUpdate(Some(auto_updater)));
+    cx.set_global(GlobalAutoUpdate(Some(auto_updater.clone())));
+    cx.observe(&auto_updater, |auto_updater, cx| {
+        let (status, update_check_type) = {
+            let auto_updater = auto_updater.read(cx);
+            (auto_updater.status.clone(), auto_updater.update_check_type)
+        };
+        sync_manual_update_status_notification(&status, update_check_type, cx);
+    })
+    .detach();
 }
 
 pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
