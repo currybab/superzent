@@ -8,7 +8,7 @@
   <img src="assets/images/superzent_screenshot.png" alt="superzent screenshot" width="800" />
 </p>
 
-One window, multiple local workspaces with git worktree, fast file navigation, diff views, and terminal-heavy agent workflows.
+One window, multiple local workspaces with git worktree, fast file navigation, diff views, terminal-heavy agent workflows, and center-pane ACP chat tabs.
 
 ## Status
 
@@ -19,6 +19,7 @@ Current focus:
 - local repositories and git worktrees
 - native editor, split panes, and diff views
 - terminal-first use of external coding agents
+- center-pane ACP tabs built from selected pieces of the existing ACP / `agent_ui` stack
 - public macOS Apple Silicon releases
 
 Deliberately out of scope for the default build:
@@ -26,19 +27,19 @@ Deliberately out of scope for the default build:
 - cloud collaboration
 - calls / WebRTC
 - hosted AI surfaces from upstream Zed
-- Zed's own agent panel and text-thread product surface
+- Zed's docked agent panel and native text-thread product surface
 
 ## Roadmap
 
 Now:
 
 - stabilize the local-first workspace shell
+- polish center-pane ACP tabs, history, and preset handoff
 - keep release, update, and docs surfaces aligned with `superzent`
 
 Next:
 
-- center-pane tabs for external ACP agents using selected pieces of the existing ACP / `agent_ui` stack, without reviving Zed's own agent panel
-- remote project
+- remote project fix
 - session restore
 - next-edit integration
 - native alarm
@@ -52,7 +53,7 @@ Not planned:
 
 - cloud collaboration and calls / WebRTC
 - hosted AI surfaces in the default build
-- Zed's own agent panel and text-thread product surface
+- Zed's own docked agent panel and native text-thread product surface
 - public Windows or Linux desktop releases
 
 ## Build From Source
@@ -68,6 +69,8 @@ For day-to-day development, stay on the default lightweight shell:
 ```bash
 cargo check -p superzent
 ```
+
+The default build includes `acp_tabs`, so external ACP agents open in center-pane tabs without enabling the heavier upstream AI surface.
 
 Before cutting a release, run the local maintainer preflight:
 
@@ -91,7 +94,9 @@ For a signed macOS bundle:
 
 - Extensions still use the upstream Zed marketplace.
 - Much of the editor and platform code still comes from upstream Zed and is intentionally kept close for easier maintenance.
-- The ACP roadmap is about external ACP agent tabs only. It does not mean bringing back Zed's own agent product surface.
+- The default app build is `lite + acp_tabs`.
+- `superzent` reuses selected ACP / `agent_ui` pieces to open external ACP chats in center-pane tabs.
+- That does not mean bringing back Zed's own docked agent panel, native text-thread surface, or hosted AI product flow in the default build.
 
 ## Project Docs
 
