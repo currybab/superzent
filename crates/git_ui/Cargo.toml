@@ -59,6 +59,7 @@ settings.workspace = true
 smallvec.workspace = true
 smol.workspace = true
 strum.workspace = true
+superzent_model.workspace = true
 telemetry.workspace = true
 theme.workspace = true
 time.workspace = true

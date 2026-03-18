@@ -5,14 +5,14 @@ use anyhow::Context as _;
 use client::proto;
 
 use gpui::{
-    Action, AnyView, App, Axis, Context, Corner, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
-    Render, SharedString, StyleRefinement, Styled, Subscription, WeakEntity, Window, deferred, div,
-    px,
+    Action, AnyView, App, Axis, ClickEvent, Context, Corner, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseUpEvent,
+    ParentElement, Render, SharedString, StyleRefinement, Styled, Subscription, WeakEntity, Window,
+    deferred, div, px,
 };
 use settings::SettingsStore;
 use std::sync::Arc;
-use ui::{ContextMenu, Divider, DividerColor, IconButton, Tooltip, h_flex};
+use ui::{ContextMenu, Divider, DividerColor, IconButton, IconName, Tab, Tooltip, h_flex};
 use ui::{prelude::*, right_click_menu};
 use util::ResultExt as _;
 
@@ -411,6 +411,13 @@ impl Dock {
             .map(|entry| &entry.panel)
     }
 
+    pub fn panels(&self) -> Vec<Arc<dyn PanelHandle>> {
+        self.panel_entries
+            .iter()
+            .map(|entry| entry.panel.clone())
+            .collect()
+    }
+
     pub fn first_enabled_panel_idx(&mut self, cx: &mut Context<Self>) -> anyhow::Result<usize> {
         self.panel_entries
             .iter()
@@ -803,6 +810,7 @@ impl Render for Dock {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let size = entry.panel.size(window, cx);
+            let panel = entry.panel.clone();
 
             let position = self.position;
             let create_resize_handle = || {
@@ -886,12 +894,53 @@ impl Render for Dock {
                             Axis::Horizontal => this.min_w(size).h_full(),
                             Axis::Vertical => this.min_h(size).w_full(),
                         })
-                        .child(
-                            entry
-                                .panel
+                        .child(match self.position() {
+                            DockPosition::Left => v_flex()
+                                .size_full()
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .gap_2()
+                                        .h(Tab::container_height(cx) + px(1.))
+                                        .px_1p5()
+                                        .border_b_1()
+                                        .border_color(cx.theme().colors().border)
+                                        .child(
+                                            Label::new(panel.persistent_name())
+                                                .size(LabelSize::Small)
+                                                .color(Color::Default),
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            IconButton::new(
+                                                ("left-dock-close", panel.panel_id().as_u64()),
+                                                IconName::Close,
+                                            )
+                                            .shape(ui::IconButtonShape::Square)
+                                            .style(ui::ButtonStyle::Subtle)
+                                            .icon_size(IconSize::Small)
+                                            .tooltip(|window, cx| {
+                                                Tooltip::text("Close left dock")(window, cx)
+                                            })
+                                            .on_click(
+                                                cx.listener(|dock, _: &ClickEvent, window, cx| {
+                                                    dock.set_open(false, window, cx);
+                                                }),
+                                            ),
+                                        ),
+                                )
+                                .child(
+                                    panel
+                                        .to_any()
+                                        .cached(StyleRefinement::default().v_flex().size_full()),
+                                )
+                                .into_any_element(),
+                            DockPosition::Bottom | DockPosition::Right => panel
                                 .to_any()
-                                .cached(StyleRefinement::default().v_flex().size_full()),
-                        ),
+                                .cached(StyleRefinement::default().v_flex().size_full())
+                                .into_any_element(),
+                        }),
                 )
                 .when(self.resizable(cx), |this| {
                     this.child(create_resize_handle())

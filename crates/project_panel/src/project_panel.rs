@@ -59,6 +59,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use superzent_model::SuperzentStore;
 use theme::ThemeSettings;
 use ui::{
     Color, ContextMenu, ContextMenuEntry, DecoratedIcon, Divider, Icon, IconDecoration,
@@ -476,9 +477,15 @@ impl FoldedAncestors {
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
+            if SuperzentStore::try_global(cx).is_some() {
+                return;
+            }
             workspace.toggle_panel_focus::<ProjectPanel>(window, cx);
         });
         workspace.register_action(|workspace, _: &Toggle, window, cx| {
+            if SuperzentStore::try_global(cx).is_some() {
+                return;
+            }
             if !workspace.toggle_panel_focus::<ProjectPanel>(window, cx) {
                 workspace.close_panel::<ProjectPanel>(window, cx);
             }

@@ -71,7 +71,10 @@ use std::{
     sync::Arc,
     sync::atomic::{self, AtomicBool},
 };
-use superzent_ui::{SuperzentRightSidebar, SuperzentSidebar};
+use superzent_ui::{
+    SuperzentRightSidebar, SuperzentSidebar, show_superzent_changes_sidebar,
+    show_superzent_files_sidebar, toggle_superzent_changes_sidebar, toggle_superzent_files_sidebar,
+};
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, GlobalTheme, SystemAppearance, ThemeRegistry, ThemeSettings};
 use ui::{PopoverMenuHandle, prelude::*};
@@ -1019,7 +1022,44 @@ fn register_actions(
              _: &zed_actions::project_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
+                if superzent_model::SuperzentStore::try_global(cx).is_some() {
+                    show_superzent_files_sidebar(workspace, true, window, cx);
+                    return;
+                }
                 workspace.toggle_panel_focus::<ProjectPanel>(window, cx);
+            },
+        )
+        .register_action(
+            |workspace: &mut Workspace,
+             _: &zed_actions::project_panel::Toggle,
+             window: &mut Window,
+             cx: &mut Context<Workspace>| {
+                if superzent_model::SuperzentStore::try_global(cx).is_some() {
+                    toggle_superzent_files_sidebar(workspace, window, cx);
+                    return;
+                }
+            },
+        )
+        .register_action(
+            |workspace: &mut Workspace,
+             _: &git_ui::git_panel::ToggleFocus,
+             window: &mut Window,
+             cx: &mut Context<Workspace>| {
+                if superzent_model::SuperzentStore::try_global(cx).is_some() {
+                    show_superzent_changes_sidebar(workspace, true, window, cx);
+                    return;
+                }
+            },
+        )
+        .register_action(
+            |workspace: &mut Workspace,
+             _: &git_ui::git_panel::Toggle,
+             window: &mut Window,
+             cx: &mut Context<Workspace>| {
+                if superzent_model::SuperzentStore::try_global(cx).is_some() {
+                    toggle_superzent_changes_sidebar(workspace, window, cx);
+                    return;
+                }
             },
         )
         .register_action(
@@ -4922,6 +4962,11 @@ mod tests {
         init_test_with_state(cx, cx.update(AppState::test))
     }
 
+    fn init_superzent_test(cx: &mut TestAppContext) -> Arc<AppState> {
+        cx.update(superzent_model::SuperzentStore::init);
+        init_test(cx)
+    }
+
     fn init_test_with_state(
         cx: &mut TestAppContext,
         mut app_state: Arc<AppState>,
@@ -5008,6 +5053,224 @@ mod tests {
             });
             app_state
         })
+    }
+
+    fn right_dock_panel_name(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> String {
+        window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .right_dock()
+                    .read(cx)
+                    .active_panel()
+                    .map(|panel| panel.persistent_name().to_string())
+                    .unwrap_or_default()
+            })
+            .unwrap()
+    }
+
+    fn right_sidebar_tab(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> String {
+        window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .panel::<SuperzentRightSidebar>(cx)
+                    .map(|panel| panel.read(cx).debug_active_tab(cx))
+                    .unwrap_or_default()
+            })
+            .unwrap()
+    }
+
+    fn left_dock_panel_name(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> String {
+        window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .left_dock()
+                    .read(cx)
+                    .active_panel()
+                    .map(|panel| panel.persistent_name().to_string())
+                    .unwrap_or_default()
+            })
+            .unwrap()
+    }
+
+    fn left_dock_open(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> bool {
+        window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .left_dock()
+                    .read(cx)
+                    .is_open()
+            })
+            .unwrap()
+    }
+
+    #[gpui::test]
+    async fn test_superzent_right_sidebar_stays_active_on_startup(cx: &mut TestAppContext) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+        assert_eq!(right_sidebar_tab(window, cx), "changes");
+    }
+
+    #[gpui::test]
+    async fn test_superzent_files_sidebar_switches_to_files_tab(cx: &mut TestAppContext) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    show_superzent_files_sidebar(workspace, true, window, cx);
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+        assert_eq!(right_sidebar_tab(window, cx), "files");
+        assert!(!left_dock_open(window, cx));
+    }
+
+    #[gpui::test]
+    async fn test_superzent_git_panel_toggle_opens_changes_tab(cx: &mut TestAppContext) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), git_ui::git_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+        assert_eq!(right_sidebar_tab(window, cx), "changes");
+        assert!(!left_dock_open(window, cx));
+    }
+
+    #[gpui::test]
+    async fn test_superzent_outline_panel_stays_in_left_dock_by_default(cx: &mut TestAppContext) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), outline_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        assert!(left_dock_open(window, cx));
+        assert_eq!(left_dock_panel_name(window, cx), "Outline Panel");
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+    }
+
+    #[gpui::test]
+    async fn test_superzent_right_sidebar_adds_external_right_panel_tab(cx: &mut TestAppContext) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.outline_panel.get_or_insert_default().dock =
+                        Some(settings::DockSide::Right);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), outline_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+        assert_eq!(right_sidebar_tab(window, cx), "Outline Panel");
+        assert!(!left_dock_open(window, cx));
     }
 
     #[track_caller]

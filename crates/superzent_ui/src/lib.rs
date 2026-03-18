@@ -38,7 +38,7 @@ use project::AgentRegistryStore;
 use project::agent_server_store::{AllAgentServersSettings, CustomAgentServerSettings};
 #[cfg(feature = "acp_tabs")]
 use project::agent_server_store::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
-use project::git_store::{GitStoreEvent, Repository, RepositoryEvent};
+use project::git_store::{GitStoreEvent, Repository, RepositoryEvent, pending_op};
 use project::project_settings::ProjectSettings;
 use project_panel::ProjectPanel;
 use recent_projects::open_remote_project;
@@ -103,6 +103,90 @@ actions!(
 enum RightSidebarTab {
     Changes,
     Files,
+    Panel(EntityId),
+}
+
+fn show_superzent_right_sidebar(
+    workspace: &mut Workspace,
+    tab: Option<RightSidebarTab>,
+    focus: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    workspace.open_panel::<SuperzentRightSidebar>(window, cx);
+    if focus {
+        workspace.focus_panel::<SuperzentRightSidebar>(window, cx);
+    }
+
+    if let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) {
+        panel.update(cx, |panel, cx| {
+            if let Some(tab) = tab {
+                panel.set_active_tab(tab, cx);
+            } else {
+                cx.notify();
+            }
+        });
+    }
+}
+
+pub fn show_superzent_files_sidebar(
+    workspace: &mut Workspace,
+    focus: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    show_superzent_right_sidebar(workspace, Some(RightSidebarTab::Files), focus, window, cx);
+}
+
+pub fn show_superzent_changes_sidebar(
+    workspace: &mut Workspace,
+    focus: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    show_superzent_right_sidebar(workspace, Some(RightSidebarTab::Changes), focus, window, cx);
+}
+
+pub fn toggle_superzent_files_sidebar(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    toggle_superzent_right_sidebar(workspace, RightSidebarTab::Files, window, cx);
+}
+
+pub fn toggle_superzent_changes_sidebar(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    toggle_superzent_right_sidebar(workspace, RightSidebarTab::Changes, window, cx);
+}
+
+fn toggle_superzent_right_sidebar(
+    workspace: &mut Workspace,
+    tab: RightSidebarTab,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let should_close = workspace.right_dock().read(cx).is_open()
+        && workspace
+            .right_dock()
+            .read(cx)
+            .active_panel()
+            .is_some_and(|panel| panel.panel_key() == SuperzentRightSidebar::panel_key())
+        && workspace
+            .panel::<SuperzentRightSidebar>(cx)
+            .is_some_and(|panel| panel.read(cx).is_tab_active(tab));
+
+    if should_close {
+        workspace
+            .right_dock()
+            .update(cx, |dock, cx| dock.set_open(false, window, cx));
+        return;
+    }
+
+    show_superzent_right_sidebar(workspace, Some(tab), true, window, cx);
 }
 
 #[derive(Clone)]
@@ -3238,12 +3322,14 @@ impl WorkspaceSidebar for SuperzentSidebar {
 }
 
 pub struct SuperzentRightSidebar {
+    right_dock: Entity<workspace::dock::Dock>,
     project_panel: Entity<ProjectPanel>,
     git_panel: Entity<GitPanel>,
     focus_handle: FocusHandle,
     width: Option<Pixels>,
     _active: bool,
     tab: RightSidebarTab,
+    external_panel_tabs: Vec<EntityId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -3254,27 +3340,49 @@ impl SuperzentRightSidebar {
         git_panel: Entity<GitPanel>,
         mut cx: AsyncWindowContext,
     ) -> Result<Entity<Self>> {
+        let workspace_weak = workspace.clone();
         workspace.update_in(&mut cx, |workspace, window, cx| {
-            cx.new(|cx| Self::new(workspace, project_panel, git_panel, window, cx))
+            let right_dock = workspace.right_dock().clone();
+            cx.new(|cx| {
+                Self::new(
+                    workspace_weak.clone(),
+                    right_dock.clone(),
+                    project_panel,
+                    git_panel,
+                    window,
+                    cx,
+                )
+            })
         })
     }
 
     fn new(
-        _workspace: &Workspace,
+        workspace: WeakEntity<Workspace>,
+        right_dock: Entity<workspace::dock::Dock>,
         project_panel: Entity<ProjectPanel>,
         git_panel: Entity<GitPanel>,
-        _window: &mut gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let store = SuperzentStore::global(cx);
+        let mut subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        subscriptions.push(cx.observe_in(&right_dock, window, {
+            let workspace = workspace.clone();
+            move |this, dock, window, cx| {
+                this.restore_active_sidebar(workspace.clone(), dock, window, cx);
+            }
+        }));
+
         Self {
+            right_dock,
             project_panel,
             git_panel,
             focus_handle: cx.focus_handle(),
             width: None,
             _active: false,
             tab: RightSidebarTab::Changes,
-            _subscriptions: vec![cx.observe(&store, |_, _, cx| cx.notify())],
+            external_panel_tabs: Vec::new(),
+            _subscriptions: subscriptions,
         }
     }
 
@@ -3283,24 +3391,158 @@ impl SuperzentRightSidebar {
         cx.notify();
     }
 
+    fn is_tab_active(&self, tab: RightSidebarTab) -> bool {
+        self.tab == tab
+    }
+
+    pub fn debug_active_tab(&self, cx: &App) -> String {
+        match self.tab {
+            RightSidebarTab::Changes => "changes".to_string(),
+            RightSidebarTab::Files => "files".to_string(),
+            RightSidebarTab::Panel(panel_id) => self
+                .right_dock
+                .read(cx)
+                .panel_for_id(panel_id)
+                .map(|panel| panel.persistent_name().to_string())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn visible_external_tabs(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<(EntityId, SharedString, Option<IconName>)> {
+        let dock = self.right_dock.read(cx);
+        self.external_panel_tabs
+            .iter()
+            .filter_map(|panel_id| {
+                dock.panel_for_id(*panel_id).map(|panel| {
+                    let label = panel
+                        .icon_label(window, cx)
+                        .unwrap_or_else(|| panel.persistent_name().to_string())
+                        .into();
+                    (*panel_id, label, panel.icon(window, cx))
+                })
+            })
+            .collect()
+    }
+
+    fn sync_active_tab(&mut self, active_panel_exists: bool, cx: &mut Context<Self>) {
+        if matches!(self.tab, RightSidebarTab::Panel(_)) && !active_panel_exists {
+            self.tab = RightSidebarTab::Changes;
+            cx.notify();
+        }
+    }
+
+    fn sync_external_tabs(&mut self, cx: &mut Context<Self>) {
+        let valid_panel_ids = self
+            .right_dock
+            .read(cx)
+            .panels()
+            .into_iter()
+            .filter(|panel| {
+                !matches!(
+                    panel.panel_key(),
+                    key if key == Self::panel_key()
+                        || key == ProjectPanel::panel_key()
+                        || key == GitPanel::panel_key()
+                )
+            })
+            .map(|panel| panel.panel_id())
+            .collect::<Vec<_>>();
+
+        let previous_len = self.external_panel_tabs.len();
+        self.external_panel_tabs
+            .retain(|panel_id| valid_panel_ids.contains(panel_id));
+        if previous_len != self.external_panel_tabs.len() {
+            cx.notify();
+        }
+    }
+
+    fn ensure_external_tab(&mut self, panel_id: EntityId, cx: &mut Context<Self>) {
+        if !self.external_panel_tabs.contains(&panel_id) {
+            self.external_panel_tabs.push(panel_id);
+            cx.notify();
+        }
+    }
+
+    fn dismiss_external_tab(&mut self, panel_id: EntityId, cx: &mut Context<Self>) {
+        let previous_len = self.external_panel_tabs.len();
+        self.external_panel_tabs.retain(|id| *id != panel_id);
+        if self.tab == RightSidebarTab::Panel(panel_id) {
+            self.tab = RightSidebarTab::Changes;
+        }
+        if previous_len != self.external_panel_tabs.len() {
+            cx.notify();
+        }
+    }
+
+    fn restore_active_sidebar(
+        &mut self,
+        workspace: WeakEntity<Workspace>,
+        dock: Entity<workspace::dock::Dock>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let is_open = dock.read(cx).is_open();
+        if !is_open {
+            return;
+        }
+
+        let active_tab_exists = match self.tab {
+            RightSidebarTab::Panel(panel_id) => dock.read(cx).panel_for_id(panel_id).is_some(),
+            RightSidebarTab::Changes | RightSidebarTab::Files => true,
+        };
+        self.sync_external_tabs(cx);
+        self.sync_active_tab(active_tab_exists, cx);
+
+        let active_panel = {
+            let dock = dock.read(cx);
+            dock.active_panel().cloned()
+        };
+        let Some(active_panel) = active_panel else {
+            return;
+        };
+        if active_panel.panel_key() == Self::panel_key() {
+            return;
+        }
+
+        let tab = if active_panel.panel_key() == ProjectPanel::panel_key() {
+            Some(RightSidebarTab::Files)
+        } else if active_panel.panel_key() == GitPanel::panel_key() {
+            Some(RightSidebarTab::Changes)
+        } else {
+            self.ensure_external_tab(active_panel.panel_id(), cx);
+            Some(RightSidebarTab::Panel(active_panel.panel_id()))
+        };
+
+        window.defer(cx, move |window, cx| {
+            let _ = workspace.update(cx, |workspace, cx| {
+                show_superzent_right_sidebar(workspace, tab, false, window, cx);
+            });
+        });
+    }
+
     fn render_tab_button(
         &self,
         id: impl Into<gpui::ElementId>,
-        label: &'static str,
-        icon: IconName,
+        label: SharedString,
+        icon: Option<IconName>,
         tab: RightSidebarTab,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let active = self.tab == tab;
         let compact = self.width.unwrap_or_else(|| px(320.)) < px(250.);
+        let tooltip_label = label.clone();
 
-        if compact {
+        if compact && let Some(icon) = icon {
             return IconButton::new(id, icon)
                 .shape(ui::IconButtonShape::Square)
                 .style(ui::ButtonStyle::Subtle)
                 .toggle_state(active)
                 .selected_style(ui::ButtonStyle::Filled)
-                .tooltip(move |window, cx| ui::Tooltip::text(label)(window, cx))
+                .tooltip(move |window, cx| ui::Tooltip::text(tooltip_label.clone())(window, cx))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_active_tab(tab, cx);
                 }))
@@ -3308,7 +3550,7 @@ impl SuperzentRightSidebar {
         }
 
         Button::new(id, label)
-            .icon(icon)
+            .when_some(icon, |button, icon| button.icon(icon))
             .label_size(LabelSize::Small)
             .style(ui::ButtonStyle::Subtle)
             .toggle_state(active)
@@ -3316,6 +3558,47 @@ impl SuperzentRightSidebar {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.set_active_tab(tab, cx);
             }))
+            .into_any_element()
+    }
+
+    fn render_external_tab(
+        &self,
+        panel_id: EntityId,
+        label: SharedString,
+        icon: Option<IconName>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let compact = self.width.unwrap_or_else(|| px(320.)) < px(250.);
+
+        h_flex()
+            .gap_0p5()
+            .items_center()
+            .child(self.render_tab_button(
+                ("superzent-right-tab-panel", panel_id.as_u64()),
+                label.clone(),
+                icon,
+                RightSidebarTab::Panel(panel_id),
+                cx,
+            ))
+            .child(
+                IconButton::new(
+                    ("superzent-right-tab-panel-close", panel_id.as_u64()),
+                    IconName::Close,
+                )
+                .shape(ui::IconButtonShape::Square)
+                .style(ui::ButtonStyle::Subtle)
+                .size(if compact {
+                    ui::ButtonSize::Compact
+                } else {
+                    ui::ButtonSize::Default
+                })
+                .tooltip(move |window, cx| {
+                    ui::Tooltip::text(format!("Dismiss {label}"))(window, cx)
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.dismiss_external_tab(panel_id, cx);
+                })),
+            )
             .into_any_element()
     }
 }
@@ -3329,7 +3612,19 @@ impl Focusable for SuperzentRightSidebar {
 }
 
 impl Render for SuperzentRightSidebar {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let external_tabs = self.visible_external_tabs(window, cx);
+        let content = match self.tab {
+            RightSidebarTab::Changes => self.git_panel.clone().into_any_element(),
+            RightSidebarTab::Files => self.project_panel.clone().into_any_element(),
+            RightSidebarTab::Panel(panel_id) => self
+                .right_dock
+                .read(cx)
+                .panel_for_id(panel_id)
+                .map(|panel| panel.to_any().into_any_element())
+                .unwrap_or_else(|| self.git_panel.clone().into_any_element()),
+        };
+
         v_flex()
             .size_full()
             .child(
@@ -3345,25 +3640,25 @@ impl Render for SuperzentRightSidebar {
                             .items_center()
                             .child(self.render_tab_button(
                                 "superzent-right-tab-changes",
-                                "Changes",
-                                IconName::GitBranchAlt,
+                                "Changes".into(),
+                                Some(IconName::GitBranchAlt),
                                 RightSidebarTab::Changes,
                                 cx,
                             ))
                             .child(self.render_tab_button(
                                 "superzent-right-tab-files",
-                                "Files",
-                                IconName::FileTree,
+                                "Files".into(),
+                                Some(IconName::FileTree),
                                 RightSidebarTab::Files,
                                 cx,
                             ))
+                            .children(external_tabs.into_iter().map(|(panel_id, label, icon)| {
+                                self.render_external_tab(panel_id, label, icon, cx)
+                            }))
                             .child(div().flex_1()),
                     ),
             )
-            .child(div().size_full().child(match self.tab {
-                RightSidebarTab::Changes => self.git_panel.clone().into_any_element(),
-                RightSidebarTab::Files => self.project_panel.clone().into_any_element(),
-            }))
+            .child(div().size_full().child(content))
     }
 }
 
@@ -3734,13 +4029,13 @@ fn run_reveal_changes(
 
         active_workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.open_panel::<SuperzentRightSidebar>(window, cx);
-                workspace.focus_panel::<SuperzentRightSidebar>(window, cx);
-                if let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) {
-                    panel.update(cx, |panel, cx| {
-                        panel.set_active_tab(RightSidebarTab::Changes, cx)
-                    });
-                }
+                show_superzent_right_sidebar(
+                    workspace,
+                    Some(RightSidebarTab::Changes),
+                    true,
+                    window,
+                    cx,
+                );
             })
             .ok();
 
@@ -4619,15 +4914,42 @@ fn stored_ssh_connection_from_options(
 }
 
 fn git_change_summary_from_repository(repository: &Repository) -> GitChangeSummary {
-    let summary = repository.status_summary();
-    GitChangeSummary {
-        changed_files: summary.count,
-        staged_files: summary.index.added
-            + summary.index.modified
-            + summary.index.deleted
-            + summary.conflict,
-        untracked_files: summary.untracked,
+    let mut changed_files = 0;
+    let mut staged_files = 0;
+    let mut untracked_files = 0;
+
+    for status_entry in repository.cached_status() {
+        let pending_ops = repository.pending_ops_for_path(&status_entry.repo_path);
+        if pending_ops.as_ref().is_some_and(|ops| {
+            ops.ops
+                .iter()
+                .any(|op| op.git_status == pending_op::GitStatus::Reverted && op.finished())
+        }) {
+            continue;
+        }
+
+        changed_files += 1;
+        if status_entry.status.is_untracked() {
+            untracked_files += 1;
+        }
+
+        let pending_stage_state = pending_ops
+            .as_ref()
+            .map(|ops| ops.staging() || ops.staged());
+        if has_staged_changes(status_entry.status, pending_stage_state) {
+            staged_files += 1;
+        }
     }
+
+    GitChangeSummary {
+        changed_files,
+        staged_files,
+        untracked_files,
+    }
+}
+
+fn has_staged_changes(status: git::status::FileStatus, pending_stage_state: Option<bool>) -> bool {
+    pending_stage_state.unwrap_or_else(|| status.staging().has_staged())
 }
 
 fn remote_path_basename(path: &str) -> String {
@@ -5325,6 +5647,7 @@ fn workspace_has_display_alias(workspace: &WorkspaceEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git::status::StatusCode;
 
     #[test]
     fn render_preset_command_line_preserves_verbatim_shell_commands() {
@@ -5347,5 +5670,23 @@ mod tests {
             render_preset_command_line("codex", &arguments, ShellKind::Posix),
             r#"codex -c 'model_reasoning_summary="detailed"'"#
         );
+    }
+
+    #[test]
+    fn staged_summary_counts_renamed_entries() {
+        assert!(has_staged_changes(StatusCode::Renamed.index(), None));
+        assert!(has_staged_changes(StatusCode::Copied.index(), None));
+    }
+
+    #[test]
+    fn staged_summary_prefers_pending_stage_state() {
+        assert!(has_staged_changes(
+            git::status::FileStatus::Untracked,
+            Some(true)
+        ));
+        assert!(!has_staged_changes(
+            StatusCode::Modified.index(),
+            Some(false)
+        ));
     }
 }

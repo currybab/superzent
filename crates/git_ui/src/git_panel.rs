@@ -72,6 +72,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::{sync::Arc, time::Duration, usize};
 use strum::{IntoEnumIterator, VariantNames};
+use superzent_model::SuperzentStore;
 use theme::ThemeSettings;
 use time::OffsetDateTime;
 #[cfg(feature = "ai")]
@@ -245,9 +246,15 @@ const TREE_INDENT: f32 = 16.0;
 
 pub fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
+        if SuperzentStore::try_global(cx).is_some() {
+            return;
+        }
         workspace.toggle_panel_focus::<GitPanel>(window, cx);
     });
     workspace.register_action(|workspace, _: &Toggle, window, cx| {
+        if SuperzentStore::try_global(cx).is_some() {
+            return;
+        }
         if !workspace.toggle_panel_focus::<GitPanel>(window, cx) {
             workspace.close_panel::<GitPanel>(window, cx);
         }
