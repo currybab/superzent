@@ -6,17 +6,20 @@ use editor::{
     Editor, EditorEvent, ExcerptId, MultiBuffer, RowHighlightOptions,
     display_map::{BlockContext, BlockPlacement, BlockProperties, BlockStyle, CustomBlockId},
 };
+#[cfg(feature = "ai")]
+use gpui::DismissEvent;
 use gpui::{
-    App, Context, DismissEvent, Entity, InteractiveElement as _, ParentElement as _, Subscription,
-    Task, WeakEntity,
+    App, Context, Entity, InteractiveElement as _, ParentElement as _, Subscription, Task,
+    WeakEntity,
 };
 use language::{Anchor, Buffer, BufferId};
-use project::{
-    ConflictRegion, ConflictSet, ConflictSetUpdate, ProjectItem as _,
-    git_store::{GitStoreEvent, RepositoryEvent},
-};
+#[cfg(feature = "ai")]
+use project::git_store::{GitStoreEvent, RepositoryEvent};
+use project::{ConflictRegion, ConflictSet, ConflictSetUpdate, ProjectItem as _};
 use std::{ops::Range, sync::Arc};
-use ui::{ActiveTheme, Divider, Element as _, Styled, Window, prelude::*};
+#[cfg(feature = "ai")]
+use ui::Divider;
+use ui::{ActiveTheme, Element as _, Styled, Window, prelude::*};
 use util::{ResultExt as _, debug_panic, maybe};
 use workspace::Workspace;
 #[cfg(feature = "ai")]
@@ -383,7 +386,7 @@ fn render_conflict_buttons(
     #[cfg(feature = "ai")]
     let is_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
     #[cfg(not(feature = "ai"))]
-    let is_ai_enabled = false;
+    let _is_ai_enabled = false;
 
     let row = h_flex()
         .id(cx.block_id)
@@ -435,7 +438,6 @@ fn render_conflict_buttons(
             Button::new("both", "Use Both")
                 .label_size(LabelSize::Small)
                 .on_click({
-                    let editor = editor.clone();
                     let conflict = conflict.clone();
                     let ours = conflict.ours.clone();
                     let theirs = conflict.theirs.clone();
