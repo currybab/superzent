@@ -1365,6 +1365,8 @@ impl ConversationView {
                 if should_send_queued {
                     self.send_queued_message_at_index(0, false, window, cx);
                 }
+
+                cx.notify();
             }
             AcpThreadEvent::Refusal => {
                 let error = ThreadError::Refusal;
@@ -2943,7 +2945,7 @@ pub(crate) mod tests {
         let list_b: Rc<dyn AgentSessionList> =
             Rc::new(StubSessionList::new(vec![session_b.clone()]));
         history.update(cx, |history, cx| {
-            history.set_session_list(list_b, cx);
+            history.set_session_list(Some(list_b), cx);
         });
         cx.run_until_parked();
 

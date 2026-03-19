@@ -62,6 +62,7 @@ pub fn init_test(cx: &mut TestAppContext) {
         theme::init(theme::LoadThemes::JustBase, cx);
         editor::init(cx);
         release_channel::init("0.0.0".parse().unwrap(), cx);
+        prompt_store::init(cx);
         agent_panel::init(cx);
     });
 }

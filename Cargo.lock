@@ -15737,7 +15737,6 @@ dependencies = [
  "edit_prediction",
  "edit_prediction_ui",
  "editor",
- "feature_flags",
  "fs",
  "futures 0.3.31",
  "fuzzy",
@@ -15877,11 +15876,9 @@ name = "sidebar"
 version = "0.1.0"
 dependencies = [
  "acp_thread",
- "action_log",
  "agent",
  "agent-client-protocol",
  "agent_ui",
- "anyhow",
  "assistant_text_thread",
  "chrono",
  "editor",

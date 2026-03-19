@@ -5077,6 +5077,7 @@ mod tests {
             notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
             workspace::init(app_state.clone(), cx);
             release_channel::init(Version::new(0, 0, 0), cx);
+            prompt_store::init(cx);
             command_palette::init(cx);
             editor::init(cx);
             #[cfg(feature = "collab")]
@@ -5093,21 +5094,26 @@ mod tests {
                 cx,
             );
             image_viewer::init(cx);
-            #[cfg(feature = "ai")]
-            language_model::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-            language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
             web_search::init(cx);
             git_graph::init(cx);
-            #[cfg(feature = "ai")]
-            web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            #[cfg(feature = "acp_tabs")]
+            {
+                language_model::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+                language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+                acp_tools::init(cx);
+                web_search_providers::init(
+                    app_state.client.clone(),
+                    app_state.user_store.clone(),
+                    cx,
+                );
+                project::AgentRegistryStore::init_global(
+                    cx,
+                    app_state.fs.clone(),
+                    app_state.client.http_client(),
+                );
+            }
             #[cfg(feature = "ai")]
             let prompt_builder = PromptBuilder::load(app_state.fs.clone(), false, cx);
-            #[cfg(feature = "ai")]
-            project::AgentRegistryStore::init_global(
-                cx,
-                app_state.fs.clone(),
-                app_state.client.http_client(),
-            );
             #[cfg(feature = "ai")]
             agent_ui::init(
                 app_state.fs.clone(),

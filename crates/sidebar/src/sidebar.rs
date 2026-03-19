@@ -2482,7 +2482,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Open thread B (idle, default response) — thread A goes to background.
+        // Open thread B while thread A is still generating — both threads remain live.
         let connection_b = StubAgentConnection::new();
         connection_b.set_next_prompt_updates(vec![acp::SessionUpdate::AgentMessageChunk(
             acp::ContentChunk::new("Done".into()),
@@ -2492,14 +2492,17 @@ mod tests {
 
         let session_id_b = active_session_id(&panel, cx);
         save_thread_to_store(&session_id_b, &path_list, cx).await;
-
         cx.run_until_parked();
 
         let mut entries = visible_entries_as_strings(&sidebar, cx);
         entries[1..].sort();
         assert_eq!(
             entries,
-            vec!["v [my-project]", "  Hello *", "  Hello * (running)",]
+            vec![
+                "v [my-project]",
+                "  Hello * (running)",
+                "  Hello * (running)",
+            ]
         );
     }
 
