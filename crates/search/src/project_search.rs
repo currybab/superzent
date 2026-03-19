@@ -4,8 +4,8 @@ use crate::{
     ToggleCaseSensitive, ToggleIncludeIgnored, ToggleRegex, ToggleReplace, ToggleWholeWord,
     buffer_search::Deploy,
     search_bar::{
-        ActionButtonState, alignment_element, input_base_styles, render_action_button,
-        render_text_input,
+        ActionButtonState, HistoryNavigationDirection, alignment_element, input_base_styles,
+        render_action_button, render_text_input, should_navigate_history,
     },
 };
 use anyhow::Context as _;
@@ -934,7 +934,7 @@ impl ProjectSearchView {
         }));
 
         let query_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
+            let mut editor = Editor::auto_height(1, 4, window, cx);
             editor.set_placeholder_text("Search all files…", window, cx);
             editor.set_use_autoclose(false);
             editor.set_text(query_text, window, cx);
@@ -958,7 +958,7 @@ impl ProjectSearchView {
             }),
         );
         let replacement_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
+            let mut editor = Editor::auto_height(1, 4, window, cx);
             editor.set_placeholder_text("Replace in project…", window, cx);
             if let Some(text) = replacement_text {
                 editor.set_text(text, window, cx);
@@ -1552,8 +1552,9 @@ impl ProjectSearchView {
 
             SearchInputKind::Exclude => &self.excluded_files_editor,
         };
-        editor.update(cx, |included_editor, cx| {
-            included_editor.set_text(text, window, cx)
+        editor.update(cx, |editor, cx| {
+            editor.set_text(text, window, cx);
+            editor.request_autoscroll(Autoscroll::fit(), cx);
         });
     }
 
@@ -1998,6 +1999,11 @@ impl ProjectSearchBar {
                     ),
                 ] {
                     if editor.focus_handle(cx).is_focused(window) {
+                        if !should_navigate_history(&editor, HistoryNavigationDirection::Next, cx) {
+                            cx.propagate();
+                            return;
+                        }
+
                         let new_query = search_view.entity.update(cx, |model, cx| {
                             let project = model.project.clone();
 
@@ -2007,13 +2013,14 @@ impl ProjectSearchBar {
                                     .next(model.cursor_mut(kind))
                                     .map(str::to_string)
                             }) {
-                                new_query
+                                Some(new_query)
                             } else {
-                                model.cursor_mut(kind).reset();
-                                String::new()
+                                model.cursor_mut(kind).take_draft()
                             }
                         });
-                        search_view.set_search_editor(kind, &new_query, window, cx);
+                        if let Some(new_query) = new_query {
+                            search_view.set_search_editor(kind, &new_query, window, cx);
+                        }
                     }
                 }
             });
@@ -2040,6 +2047,15 @@ impl ProjectSearchBar {
                     ),
                 ] {
                     if editor.focus_handle(cx).is_focused(window) {
+                        if !should_navigate_history(
+                            &editor,
+                            HistoryNavigationDirection::Previous,
+                            cx,
+                        ) {
+                            cx.propagate();
+                            return;
+                        }
+
                         if editor.read(cx).text(cx).is_empty()
                             && let Some(new_query) = search_view
                                 .entity
@@ -2054,12 +2070,13 @@ impl ProjectSearchBar {
                             return;
                         }
 
+                        let current_query = editor.read(cx).text(cx);
                         if let Some(new_query) = search_view.entity.update(cx, |model, cx| {
                             let project = model.project.clone();
                             project.update(cx, |project, _| {
                                 project
                                     .search_history_mut(kind)
-                                    .previous(model.cursor_mut(kind))
+                                    .previous(model.cursor_mut(kind), &current_query)
                                     .map(str::to_string)
                             })
                         }) {
@@ -2158,7 +2175,11 @@ impl Render for ProjectSearchBar {
             .on_action(
                 cx.listener(|this, action, window, cx| this.next_history_query(action, window, cx)),
             )
-            .child(render_text_input(&search.query_editor, color_override, cx))
+            .child(div().flex_1().py_1().child(render_text_input(
+                &search.query_editor,
+                color_override,
+                cx,
+            )))
             .child(
                 h_flex()
                     .gap_1()
@@ -2316,8 +2337,13 @@ impl Render for ProjectSearchBar {
             .child(mode_column);
 
         let replace_line = search.replace_enabled.then(|| {
-            let replace_column = input_base_styles(InputPanel::Replacement)
-                .child(render_text_input(&search.replacement_editor, None, cx));
+            let replace_column = input_base_styles(InputPanel::Replacement).child(
+                div().flex_1().py_1().child(render_text_input(
+                    &search.replacement_editor,
+                    None,
+                    cx,
+                )),
+            );
 
             let focus_handle = search.replacement_editor.read(cx).focus_handle(cx);
             let replace_actions = h_flex()
@@ -3916,7 +3942,7 @@ pub mod tests {
             })
             .unwrap();
 
-        // Next history query after the latest should set the query to the empty string.
+        // Next history query after the latest should preserve the current query.
         window
             .update(cx, |_, window, cx| {
                 search_bar.update(cx, |search_bar, cx| {
@@ -3928,7 +3954,10 @@ pub mod tests {
         window
             .update(cx, |_, _, cx| {
                 search_view.update(cx, |search_view, cx| {
-                    assert_eq!(search_view.query_editor.read(cx).text(cx), "");
+                    assert_eq!(
+                        search_view.query_editor.read(cx).text(cx),
+                        "JUST_TEXT_INPUT"
+                    );
                     assert_eq!(search_view.search_options, SearchOptions::CASE_SENSITIVE);
                 });
             })
@@ -3944,13 +3973,16 @@ pub mod tests {
         window
             .update(cx, |_, _, cx| {
                 search_view.update(cx, |search_view, cx| {
-                    assert_eq!(search_view.query_editor.read(cx).text(cx), "");
+                    assert_eq!(
+                        search_view.query_editor.read(cx).text(cx),
+                        "JUST_TEXT_INPUT"
+                    );
                     assert_eq!(search_view.search_options, SearchOptions::CASE_SENSITIVE);
                 });
             })
             .unwrap();
 
-        // First previous query for empty current query should set the query to the latest submitted one.
+        // Previous query should navigate backwards through history.
         window
             .update(cx, |_, window, cx| {
                 search_bar.update(cx, |search_bar, cx| {
@@ -3962,7 +3994,7 @@ pub mod tests {
         window
             .update(cx, |_, _, cx| {
                 search_view.update(cx, |search_view, cx| {
-                    assert_eq!(search_view.query_editor.read(cx).text(cx), "THREE");
+                    assert_eq!(search_view.query_editor.read(cx).text(cx), "TWO");
                     assert_eq!(search_view.search_options, SearchOptions::CASE_SENSITIVE);
                 });
             })
@@ -3980,7 +4012,7 @@ pub mod tests {
         window
             .update(cx, |_, _, cx| {
                 search_view.update(cx, |search_view, cx| {
-                    assert_eq!(search_view.query_editor.read(cx).text(cx), "TWO");
+                    assert_eq!(search_view.query_editor.read(cx).text(cx), "ONE");
                     assert_eq!(search_view.search_options, SearchOptions::CASE_SENSITIVE);
                 });
             })
@@ -4134,8 +4166,72 @@ pub mod tests {
         window
             .update(cx, |_, _, cx| {
                 search_view.update(cx, |search_view, cx| {
-                    assert_eq!(search_view.query_editor.read(cx).text(cx), "");
+                    assert_eq!(search_view.query_editor.read(cx).text(cx), "TWO_NEW");
                     assert_eq!(search_view.search_options, SearchOptions::CASE_SENSITIVE);
+                });
+            })
+            .unwrap();
+
+        // Typing text without running a search, then navigating history, should allow
+        // restoring the draft when pressing next past the end.
+        window
+            .update(cx, |_, window, cx| {
+                search_view.update(cx, |search_view, cx| {
+                    search_view.query_editor.update(cx, |query_editor, cx| {
+                        query_editor.set_text("unsaved draft", window, cx)
+                    });
+                })
+            })
+            .unwrap();
+        cx.background_executor.run_until_parked();
+
+        // Navigate up into history — the draft should be stashed.
+        window
+            .update(cx, |_, window, cx| {
+                search_bar.update(cx, |search_bar, cx| {
+                    search_bar.focus_search(window, cx);
+                    search_bar.previous_history_query(&PreviousHistoryQuery, window, cx);
+                });
+            })
+            .unwrap();
+        window
+            .update(cx, |_, _, cx| {
+                search_view.update(cx, |search_view, cx| {
+                    assert_eq!(search_view.query_editor.read(cx).text(cx), "THREE");
+                });
+            })
+            .unwrap();
+
+        // Navigate forward through history.
+        window
+            .update(cx, |_, window, cx| {
+                search_bar.update(cx, |search_bar, cx| {
+                    search_bar.focus_search(window, cx);
+                    search_bar.next_history_query(&NextHistoryQuery, window, cx);
+                });
+            })
+            .unwrap();
+        window
+            .update(cx, |_, _, cx| {
+                search_view.update(cx, |search_view, cx| {
+                    assert_eq!(search_view.query_editor.read(cx).text(cx), "TWO_NEW");
+                });
+            })
+            .unwrap();
+
+        // Navigate past the end — the draft should be restored.
+        window
+            .update(cx, |_, window, cx| {
+                search_bar.update(cx, |search_bar, cx| {
+                    search_bar.focus_search(window, cx);
+                    search_bar.next_history_query(&NextHistoryQuery, window, cx);
+                });
+            })
+            .unwrap();
+        window
+            .update(cx, |_, _, cx| {
+                search_view.update(cx, |search_view, cx| {
+                    assert_eq!(search_view.query_editor.read(cx).text(cx), "unsaved draft");
                 });
             })
             .unwrap();
@@ -4324,13 +4420,13 @@ pub mod tests {
         cx.background_executor.run_until_parked();
 
         select_next_history_item(&search_bar_2, cx);
-        assert_eq!(active_query(&search_view_2, cx), "");
-
-        select_prev_history_item(&search_bar_2, cx);
         assert_eq!(active_query(&search_view_2, cx), "THREE");
 
         select_prev_history_item(&search_bar_2, cx);
         assert_eq!(active_query(&search_view_2, cx), "TWO");
+
+        select_prev_history_item(&search_bar_2, cx);
+        assert_eq!(active_query(&search_view_2, cx), "ONE");
 
         select_prev_history_item(&search_bar_2, cx);
         assert_eq!(active_query(&search_view_2, cx), "ONE");
@@ -4349,7 +4445,7 @@ pub mod tests {
         assert_eq!(active_query(&search_view_2, cx), "THREE");
 
         select_next_history_item(&search_bar_2, cx);
-        assert_eq!(active_query(&search_view_2, cx), "");
+        assert_eq!(active_query(&search_view_2, cx), "THREE");
 
         select_next_history_item(&search_bar_1, cx);
         assert_eq!(active_query(&search_view_1, cx), "TWO");
@@ -4358,7 +4454,7 @@ pub mod tests {
         assert_eq!(active_query(&search_view_1, cx), "THREE");
 
         select_next_history_item(&search_bar_1, cx);
-        assert_eq!(active_query(&search_view_1, cx), "");
+        assert_eq!(active_query(&search_view_1, cx), "THREE");
     }
 
     #[perf]
