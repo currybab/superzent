@@ -2907,9 +2907,8 @@ impl AgentPanel {
                 Workspace::new_local(all_paths, app_state, window_handle, None, None, false, cx)
             })?
             .await?;
-        let new_workspace = new_window_handle.read_with(cx, |multi_workspace, _| {
-            multi_workspace.workspace().clone()
-        })?;
+        let new_workspace = new_window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())?;
 
         let panels_task = new_window_handle.update(cx, |_, _, cx| {
             new_workspace.update(cx, |workspace, _cx| workspace.take_panels_task())

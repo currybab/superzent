@@ -18,9 +18,9 @@ use project::{
 use std::{ops::Range, sync::Arc};
 use ui::{ActiveTheme, Divider, Element as _, Styled, Window, prelude::*};
 use util::{ResultExt as _, debug_panic, maybe};
+use workspace::Workspace;
 #[cfg(feature = "ai")]
 use workspace::notifications::simple_message_notification::MessageNotification;
-use workspace::Workspace;
 #[cfg(feature = "ai")]
 use zed_actions::agent::{
     ConflictContent, ResolveConflictedFilesWithAgent, ResolveConflictsWithAgent,
@@ -451,8 +451,7 @@ fn render_conflict_buttons(
                         .detach()
                     }
                 }),
-        )
-        ;
+        );
 
     #[cfg(feature = "ai")]
     let row = row.when(is_ai_enabled, |this| {

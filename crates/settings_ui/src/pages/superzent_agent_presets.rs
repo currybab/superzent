@@ -6,8 +6,7 @@ use superzent_model::{
     AgentPreset, AgentPresetDraft, PresetLaunchMode, SuperzentStore, suggested_acp_agent_name,
 };
 use ui::{
-    Button, ButtonStyle, Color, Divider, Icon, IconName, IconSize, Label, Tooltip,
-    prelude::*,
+    Button, ButtonStyle, Color, Divider, Icon, IconName, IconSize, Label, Tooltip, prelude::*,
 };
 
 use crate::SettingsWindow;

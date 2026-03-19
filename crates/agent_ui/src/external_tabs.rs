@@ -22,7 +22,8 @@ use workspace::item::TabContentParams;
 use workspace::{Item, Pane, Toast, Workspace, notifications::NotificationId};
 
 use crate::{
-    Agent, AgentInitialContent, ConnectionView, agent_connection_store::AgentConnectionStore,
+    Agent, AgentInitialContent, ConnectionView,
+    agent_connection_store::AgentConnectionStore,
     thread_history::{ThreadHistory, ThreadHistoryEvent, ThreadHistoryOptions},
 };
 
@@ -745,9 +746,15 @@ impl ExternalAcpTabItem {
         let connection_key = Agent::Custom {
             id: AgentId::new(agent_name),
         };
-        let resume_session_id = resume_thread.as_ref().map(|thread| thread.session_id.clone());
-        let work_dirs = resume_thread.as_ref().and_then(|thread| thread.work_dirs.clone());
-        let title = resume_thread.as_ref().and_then(|thread| thread.title.clone());
+        let resume_session_id = resume_thread
+            .as_ref()
+            .map(|thread| thread.session_id.clone());
+        let work_dirs = resume_thread
+            .as_ref()
+            .and_then(|thread| thread.work_dirs.clone());
+        let title = resume_thread
+            .as_ref()
+            .and_then(|thread| thread.title.clone());
         let initial_content = prompt.map(|text| AgentInitialContent::ContentBlock {
             blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(text))],
             auto_submit: false,
@@ -955,10 +962,8 @@ impl ExternalAcpHistoryItem {
         let display_name = agent_display_name(&project, &agent_name, cx);
         let icon_path = agent_icon_path(&project, &agent_name, cx);
         let focus_handle = cx.focus_handle();
-        let delegate = AgentServerDelegate::new(
-            project.read(cx).agent_server_store().clone(),
-            None,
-        );
+        let delegate =
+            AgentServerDelegate::new(project.read(cx).agent_server_store().clone(), None);
         let server = Agent::Custom {
             id: AgentId::new(agent_name.clone()),
         }

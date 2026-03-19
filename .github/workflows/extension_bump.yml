@@ -84,10 +84,11 @@ jobs:
       with:
         clean: false
     - name: steps::cache_rust_dependencies_namespace
-      uses: namespacelabs/nscloud-cache-action@v1
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       with:
-        cache: rust
         path: ~/.rustup
+        key: ${{ runner.os }}-${{ runner.arch }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-rustup-
     - name: extension_bump::install_bump_2_version
       run: pip install bump2version --break-system-packages
     - id: bump-version

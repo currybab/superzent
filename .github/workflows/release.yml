@@ -81,8 +81,6 @@ jobs:
         clean: false
     - name: steps::setup_linux
       run: ./script/linux
-    - name: steps::install_mold
-      run: ./script/install-mold
     - name: steps::download_wasi_sdk
       run: ./script/download-wasi-sdk
     - name: release::bundle_linux_remote_server_stable
@@ -137,8 +135,6 @@ jobs:
         clean: false
     - name: steps::setup_linux
       run: ./script/linux
-    - name: steps::install_mold
-      run: ./script/install-mold
     - name: steps::download_wasi_sdk
       run: ./script/download-wasi-sdk
     - name: release::bundle_linux_remote_server_stable

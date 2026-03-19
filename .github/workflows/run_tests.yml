@@ -25,17 +25,17 @@ jobs:
         fetch-depth: ${{ github.ref == 'refs/heads/main' && 2 || 350 }}
     - id: filter
       name: filter
-      run: |2
-            set -euo pipefail
-            if [ -z "$GITHUB_BASE_REF" ]; then
-              echo "Not in a PR context (i.e., push to main/stable)"
-              COMPARE_REV="$(git rev-parse HEAD~1)"
-            else
-              echo "In a PR context comparing to pull_request.base.ref"
-              git fetch origin "$GITHUB_BASE_REF" --depth=350
-              COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
-            fi
-            CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
+      run: |
+        set -euo pipefail
+        if [ -z "$GITHUB_BASE_REF" ]; then
+          echo "Not in a PR context (i.e., push to main/stable)"
+          COMPARE_REV="$(git rev-parse HEAD~1)"
+        else
+          echo "In a PR context comparing to pull_request.base.ref"
+          git fetch origin "$GITHUB_BASE_REF" --depth=350
+          COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
+        fi
+        CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
 
             check_pattern() {
               local output_name="$1"
@@ -102,12 +102,21 @@ jobs:
 
         check_pattern "run_action_checks" '^\.github/(workflows/|actions/|actionlint.yml)|tooling/xtask|script/' -qP
         check_pattern "run_licenses" '^(Cargo.lock|script/.*licenses)' -qP
-        check_pattern "run_tests" '^(docs/|script/update_top_ranking_issues/|\.github/(ISSUE_TEMPLATE|workflows/(?!run_tests)))' -qvP
+        check_pattern "run_tests" '^(docs/|script/update_top_ranking_issues/|\.github/(ISSUE_TEMPLATE|workflows/(?!run_tests))|extensions/)' -qvP
+        # Detect changed extension directories (excluding extensions/workflows)
+        CHANGED_EXTENSIONS=$(echo "$CHANGED_FILES" | grep -oP '^extensions/[^/]+(?=/)' | sort -u | grep -v '^extensions/workflows$' || true)
+        if [ -n "$CHANGED_EXTENSIONS" ]; then
+            EXTENSIONS_JSON=$(echo "$CHANGED_EXTENSIONS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        else
+            EXTENSIONS_JSON="[]"
+        fi
+        echo "changed_extensions=$EXTENSIONS_JSON" >> "$GITHUB_OUTPUT"
     outputs:
       changed_packages: ${{ steps.filter.outputs.changed_packages }}
       run_action_checks: ${{ steps.filter.outputs.run_action_checks }}
       run_licenses: ${{ steps.filter.outputs.run_licenses }}
       run_tests: ${{ steps.filter.outputs.run_tests }}
+      changed_extensions: ${{ steps.filter.outputs.changed_extensions }}
   check_style:
     if: github.repository_owner == 'currybab'
     runs-on: ubuntu-24.04
@@ -146,8 +155,8 @@ jobs:
         file: ts_query_ls-x86_64-unknown-linux-gnu.tar.gz
     - name: run_tests::run_ts_query_ls
       run: |-
-        tar -xf ts_query_ls-x86_64-unknown-linux-gnu.tar.gz
-        ./ts_query_ls format --check . || {
+        tar -xf "$GITHUB_WORKSPACE/ts_query_ls-x86_64-unknown-linux-gnu.tar.gz" -C "$GITHUB_WORKSPACE"
+        "$GITHUB_WORKSPACE/ts_query_ls" format --check . || {
             echo "Found unformatted queries, please format them with ts_query_ls."
             echo "For easy use, install the Tree-sitter query extension:"
             echo "zed://extension/tree-sitter-query"
@@ -179,8 +188,6 @@ jobs:
         restore-keys: ${{ runner.os }}-${{ runner.arch }}-rustup-
     - name: steps::setup_linux
       run: ./script/linux
-    - name: steps::install_mold
-      run: ./script/install-mold
     - name: steps::download_wasi_sdk
       run: ./script/download-wasi-sdk
     - name: steps::setup_sccache
@@ -336,6 +343,20 @@ jobs:
           exit 1
         fi
     timeout-minutes: 120
+  extension_tests:
+    needs:
+    - orchestrate
+    if: needs.orchestrate.outputs.changed_extensions != '[]'
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        extension: ${{ fromJson(needs.orchestrate.outputs.changed_extensions) }}
+      fail-fast: false
+      max-parallel: 1
+    uses: ./.github/workflows/extension_tests.yml
+    with:
+      working-directory: ${{ matrix.extension }}
   tests_pass:
     needs:
     - orchestrate
@@ -345,6 +366,7 @@ jobs:
     - check_dependencies
     - check_licenses
     - check_scripts
+    - extension_tests
     if: github.repository_owner == 'currybab' && always()
     runs-on: ubuntu-24.04
     steps:
@@ -365,6 +387,7 @@ jobs:
         check_result "check_dependencies" "$RESULT_CHECK_DEPENDENCIES"
         check_result "check_licenses" "$RESULT_CHECK_LICENSES"
         check_result "check_scripts" "$RESULT_CHECK_SCRIPTS"
+        check_result "extension_tests" "$RESULT_EXTENSION_TESTS"
 
         exit $EXIT_CODE
       env:
@@ -375,6 +398,7 @@ jobs:
         RESULT_CHECK_DEPENDENCIES: ${{ needs.check_dependencies.result }}
         RESULT_CHECK_LICENSES: ${{ needs.check_licenses.result }}
         RESULT_CHECK_SCRIPTS: ${{ needs.check_scripts.result }}
+        RESULT_EXTENSION_TESTS: ${{ needs.extension_tests.result }}
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
   cancel-in-progress: true

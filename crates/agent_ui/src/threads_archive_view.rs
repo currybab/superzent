@@ -196,11 +196,9 @@ impl ThreadsArchiveView {
         self.reset_filter_editor_text(window, cx);
 
         let server = agent.server(self.fs.clone(), self.thread_store.clone());
-        let connection = self
-            .agent_connection_store
-            .update(cx, |store, cx| {
-                store.request_connection(agent, server, window, cx)
-            });
+        let connection = self.agent_connection_store.update(cx, |store, cx| {
+            store.request_connection(agent, server, window, cx)
+        });
 
         let task = connection.read(cx).wait_for_connection();
         self._refresh_history_task = cx.spawn(async move |this, cx| {

@@ -640,7 +640,11 @@ impl TitleBar {
             .style(ButtonStyle::Tinted(TintColor::Warning))
             .label_size(LabelSize::Small)
             .color(Color::Warning)
-            .start_icon(Icon::new(IconName::Warning).color(Color::Warning).size(IconSize::Small))
+            .start_icon(
+                Icon::new(IconName::Warning)
+                    .color(Color::Warning)
+                    .size(IconSize::Small),
+            )
             .tooltip(|_, cx| {
                 Tooltip::with_meta(
                     "You're in Restricted Mode",
@@ -871,12 +875,9 @@ impl TitleBar {
                         .color(Color::Muted)
                         .when(settings.show_branch_icon, |branch_button| {
                             let (icon, icon_color) = icon_info;
-                            branch_button
-                                .start_icon(
-                                    Icon::new(icon)
-                                        .color(icon_color)
-                                        .size(IconSize::Indicator),
-                                )
+                            branch_button.start_icon(
+                                Icon::new(icon).color(icon_color).size(IconSize::Indicator),
+                            )
                         }),
                     move |_window, cx| {
                         Tooltip::with_meta(

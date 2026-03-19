@@ -35,11 +35,11 @@ use objc::{
     sel, sel_impl,
 };
 #[cfg(feature = "acp_tabs")]
-use project::{AgentId, AgentRegistryStore};
-#[cfg(feature = "acp_tabs")]
 use project::agent_server_store::{AllAgentServersSettings, CustomAgentServerSettings};
 use project::git_store::{GitStoreEvent, Repository, RepositoryEvent, pending_op};
 use project::project_settings::ProjectSettings;
+#[cfg(feature = "acp_tabs")]
+use project::{AgentId, AgentRegistryStore};
 use project_panel::ProjectPanel;
 use recent_projects::open_remote_project;
 use remote::{RemoteConnectionOptions, SshConnectionOptions};
