@@ -2748,8 +2748,9 @@ impl SuperzentSidebar {
             project_id: workspace.project_id.clone(),
             label: workspace_sidebar_title(workspace),
         };
-        let metadata_chips = workspace_metadata_chips(workspace);
-        let has_metadata = !metadata_chips.is_empty();
+        let branch_subtitle = workspace_branch_subtitle(workspace);
+        let has_branch_subtitle = branch_subtitle.is_some();
+        let git_status_pill = render_workspace_git_status_pill(workspace, cx);
 
         v_flex()
             .w_full()
@@ -2844,36 +2845,40 @@ impl SuperzentSidebar {
                                     .min_w_0()
                                     .h(px(48.))
                                     .py_1()
-                                    .when(has_metadata, |this| {
-                                        this.gap_0p5()
+                                    .justify_center()
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap_2()
+                                            .items_center()
                                             .child(
-                                                h_flex()
-                                                    .w_full()
-                                                    .gap_1()
-                                                    .items_center()
-                                                    .child(
-                                                        self.render_workspace_title(workspace, cx),
-                                                    )
-                                                    .child(div().flex_1()),
+                                                v_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .when_some(branch_subtitle, |this, branch| {
+                                                        this.gap_0p5()
+                                                            .child(self.render_workspace_title(
+                                                                workspace, cx,
+                                                            ))
+                                                            .child(
+                                                                Label::new(branch)
+                                                                    .size(LabelSize::XSmall)
+                                                                    .color(Color::Muted)
+                                                                    .truncate(),
+                                                            )
+                                                    })
+                                                    .when(!has_branch_subtitle, |this| {
+                                                        this.child(
+                                                            self.render_workspace_title(
+                                                                workspace, cx,
+                                                            ),
+                                                        )
+                                                    }),
                                             )
-                                            .child(
-                                                h_flex()
-                                                    .w_full()
-                                                    .gap_0p5()
-                                                    .flex_wrap()
-                                                    .children(metadata_chips),
-                                            )
-                                    })
-                                    .when(!has_metadata, |this| {
-                                        this.justify_center().child(
-                                            h_flex()
-                                                .w_full()
-                                                .gap_1()
-                                                .items_center()
-                                                .child(self.render_workspace_title(workspace, cx))
-                                                .child(div().flex_1()),
-                                        )
-                                    }),
+                                            .when_some(git_status_pill, |this, git_status_pill| {
+                                                this.child(git_status_pill)
+                                            }),
+                                    ),
                             ),
                     ),
             )
@@ -2909,6 +2914,7 @@ impl SuperzentSidebar {
         match workspace.kind {
             WorkspaceKind::Primary => Label::new(workspace_display_name(workspace))
                 .size(LabelSize::Small)
+                .truncate()
                 .into_any_element(),
             WorkspaceKind::Worktree => Label::new(workspace_sidebar_title(workspace))
                 .size(LabelSize::Small)
@@ -4928,6 +4934,8 @@ fn git_change_summary_from_repository(repository: &Repository) -> GitChangeSumma
     let mut changed_files = 0;
     let mut staged_files = 0;
     let mut untracked_files = 0;
+    let mut added_lines = 0;
+    let mut deleted_lines = 0;
 
     for status_entry in repository.cached_status() {
         let pending_ops = repository.pending_ops_for_path(&status_entry.repo_path);
@@ -4950,12 +4958,26 @@ fn git_change_summary_from_repository(repository: &Repository) -> GitChangeSumma
         if has_staged_changes(status_entry.status, pending_stage_state) {
             staged_files += 1;
         }
+
+        if let Some(diff_stat) = status_entry.diff_stat {
+            added_lines += diff_stat.added as usize;
+            deleted_lines += diff_stat.deleted as usize;
+        }
     }
+
+    let tracking_status = repository
+        .branch
+        .as_ref()
+        .and_then(|branch| branch.tracking_status());
 
     GitChangeSummary {
         changed_files,
         staged_files,
         untracked_files,
+        added_lines,
+        deleted_lines,
+        ahead_commits: tracking_status.map_or(0, |status| status.ahead as usize),
+        behind_commits: tracking_status.map_or(0, |status| status.behind as usize),
     }
 }
 
@@ -5572,51 +5594,131 @@ fn workspace_notification_title(workspace: &WorkspaceEntry) -> String {
     }
 }
 
-fn workspace_metadata_chips(workspace: &WorkspaceEntry) -> Vec<gpui::AnyElement> {
-    let mut chips = Vec::new();
-    let show_branch_chip = workspace.is_primary() || workspace_has_display_alias(workspace);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkspaceGitStatusVisualSummary {
+    changed_files: usize,
+    untracked_files: usize,
+    added_lines: usize,
+    deleted_lines: usize,
+    ahead_commits: usize,
+    behind_commits: usize,
+}
 
-    if show_branch_chip {
-        let branch_label = workspace_branch_label(workspace);
-        chips.push(
-            Chip::new(branch_label.clone())
-                .label_color(Color::Muted)
-                .tooltip({
-                    let branch = branch_label;
-                    move |window, cx| ui::Tooltip::text(branch.clone())(window, cx)
-                })
-                .into_any_element(),
-        );
+fn workspace_git_status_visual_summary(
+    workspace: &WorkspaceEntry,
+) -> Option<WorkspaceGitStatusVisualSummary> {
+    if !workspace.has_git() {
+        return None;
     }
 
-    if let Some(summary) = &workspace.git_summary {
-        if summary.changed_files > 0 {
-            chips.push(
-                Chip::new(format!("{} files", summary.changed_files))
-                    .label_color(Color::Muted)
-                    .tooltip(|window, cx| ui::Tooltip::text("Changed files")(window, cx))
-                    .into_any_element(),
-            );
-        }
-        if summary.staged_files > 0 {
-            chips.push(
-                Chip::new(format!("{} staged", summary.staged_files))
-                    .label_color(Color::Accent)
-                    .tooltip(|window, cx| ui::Tooltip::text("Staged files")(window, cx))
-                    .into_any_element(),
-            );
-        }
-        if summary.untracked_files > 0 {
-            chips.push(
-                Chip::new(format!("{} new", summary.untracked_files))
-                    .label_color(Color::Created)
-                    .tooltip(|window, cx| ui::Tooltip::text("Untracked files")(window, cx))
-                    .into_any_element(),
-            );
-        }
+    let summary = workspace.git_summary.as_ref()?;
+    let has_sync = summary.ahead_commits > 0 || summary.behind_commits > 0;
+    let has_diff = summary.added_lines > 0 || summary.deleted_lines > 0;
+    let has_dirty_files = summary.changed_files > 0;
+
+    if !has_sync && !has_diff && !has_dirty_files {
+        return None;
     }
 
-    chips
+    Some(WorkspaceGitStatusVisualSummary {
+        changed_files: summary.changed_files,
+        untracked_files: summary.untracked_files,
+        added_lines: summary.added_lines,
+        deleted_lines: summary.deleted_lines,
+        ahead_commits: summary.ahead_commits,
+        behind_commits: summary.behind_commits,
+    })
+}
+
+fn render_workspace_git_status_pill(
+    workspace: &WorkspaceEntry,
+    cx: &mut Context<SuperzentSidebar>,
+) -> Option<gpui::AnyElement> {
+    let summary = workspace_git_status_visual_summary(workspace)?;
+    let has_sync = summary.ahead_commits > 0 || summary.behind_commits > 0;
+    let has_diff = summary.added_lines > 0 || summary.deleted_lines > 0;
+    let has_file_status = summary.changed_files > 0 && !has_diff;
+    let is_untracked_only = summary.untracked_files > 0
+        && summary.untracked_files == summary.changed_files
+        && !has_diff;
+
+    Some(
+        h_flex()
+            .gap_1()
+            .items_center()
+            .flex_none()
+            .px_2()
+            .py_0p5()
+            .border_1()
+            .rounded_md()
+            .border_color(cx.theme().colors().border_variant)
+            .bg(cx.theme().colors().element_background)
+            .when(has_sync, |this| {
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .when(summary.behind_commits > 0, |this| {
+                            this.child(
+                                Label::new(format!("↓{}", summary.behind_commits))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Warning),
+                            )
+                        })
+                        .when(summary.ahead_commits > 0, |this| {
+                            this.child(
+                                Label::new(format!("↑{}", summary.ahead_commits))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Success),
+                            )
+                        }),
+                )
+            })
+            .when(has_sync && (has_diff || has_file_status), |this| {
+                this.child(Label::new("·").size(LabelSize::XSmall).color(Color::Muted))
+            })
+            .when(has_diff, |this| {
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .when(summary.added_lines > 0, |this| {
+                            this.child(
+                                Label::new(format!("+{}", summary.added_lines))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Success),
+                            )
+                        })
+                        .when(summary.deleted_lines > 0, |this| {
+                            this.child(
+                                Label::new(format!("-{}", summary.deleted_lines))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Error),
+                            )
+                        }),
+                )
+            })
+            .when(has_file_status, |this| {
+                this.child(
+                    Label::new(if is_untracked_only {
+                        format!("{} new", summary.untracked_files)
+                    } else {
+                        format!(
+                            "{} file{}",
+                            summary.changed_files,
+                            if summary.changed_files == 1 { "" } else { "s" }
+                        )
+                    })
+                    .size(LabelSize::XSmall)
+                    .color(if is_untracked_only {
+                        Color::Created
+                    } else {
+                        Color::Muted
+                    }),
+                )
+            })
+            .into_any_element(),
+    )
 }
 
 fn workspace_branch_label(workspace: &WorkspaceEntry) -> String {
@@ -5636,6 +5738,20 @@ fn project_workspace_label(count: usize) -> String {
 
 fn workspace_display_name(workspace: &WorkspaceEntry) -> String {
     workspace.display_name().to_string()
+}
+
+fn workspace_branch_subtitle(workspace: &WorkspaceEntry) -> Option<String> {
+    if !workspace.has_git() {
+        return None;
+    }
+
+    match workspace.kind {
+        WorkspaceKind::Primary => Some(workspace_branch_label(workspace)),
+        WorkspaceKind::Worktree if workspace_has_display_alias(workspace) => {
+            Some(workspace_branch_label(workspace))
+        }
+        WorkspaceKind::Worktree => None,
+    }
 }
 
 fn workspace_sidebar_title(workspace: &WorkspaceEntry) -> String {
@@ -5659,6 +5775,30 @@ fn workspace_has_display_alias(workspace: &WorkspaceEntry) -> bool {
 mod tests {
     use super::*;
     use git::status::StatusCode;
+    use std::path::PathBuf;
+
+    fn workspace_entry(kind: WorkspaceKind) -> WorkspaceEntry {
+        WorkspaceEntry {
+            id: "workspace".to_string(),
+            project_id: "project".to_string(),
+            kind,
+            name: "workspace".to_string(),
+            display_name: None,
+            branch: "feature/visual-update".to_string(),
+            location: WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/workspace"),
+            },
+            agent_preset_id: "codex".to_string(),
+            managed: false,
+            git_status: WorkspaceGitStatus::Available,
+            git_summary: None,
+            attention_status: WorkspaceAttentionStatus::Idle,
+            review_pending: false,
+            last_attention_reason: None,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        }
+    }
 
     #[test]
     fn render_preset_command_line_preserves_verbatim_shell_commands() {
@@ -5699,5 +5839,85 @@ mod tests {
             StatusCode::Modified.index(),
             Some(false)
         ));
+    }
+
+    #[test]
+    fn workspace_branch_subtitle_only_shows_for_primary_and_aliased_worktrees() {
+        let primary = workspace_entry(WorkspaceKind::Primary);
+        let mut aliased_worktree = workspace_entry(WorkspaceKind::Worktree);
+        aliased_worktree.display_name = Some("local".to_string());
+        let worktree = workspace_entry(WorkspaceKind::Worktree);
+
+        assert_eq!(
+            workspace_branch_subtitle(&primary),
+            Some("feature/visual-update".to_string())
+        );
+        assert_eq!(
+            workspace_branch_subtitle(&aliased_worktree),
+            Some("feature/visual-update".to_string())
+        );
+        assert_eq!(workspace_branch_subtitle(&worktree), None);
+    }
+
+    #[test]
+    fn workspace_git_status_visual_summary_hides_empty_and_gitless_rows() {
+        let mut workspace = workspace_entry(WorkspaceKind::Primary);
+        workspace.git_summary = Some(GitChangeSummary::default());
+        assert_eq!(workspace_git_status_visual_summary(&workspace), None);
+
+        workspace.git_status = WorkspaceGitStatus::Unavailable;
+        workspace.git_summary = Some(GitChangeSummary {
+            added_lines: 4,
+            deleted_lines: 1,
+            ..GitChangeSummary::default()
+        });
+        assert_eq!(workspace_git_status_visual_summary(&workspace), None);
+    }
+
+    #[test]
+    fn workspace_git_status_visual_summary_exposes_sync_and_diff_counts() {
+        let mut workspace = workspace_entry(WorkspaceKind::Primary);
+        workspace.git_summary = Some(GitChangeSummary {
+            changed_files: 2,
+            added_lines: 19,
+            deleted_lines: 3,
+            ahead_commits: 2,
+            behind_commits: 1,
+            ..GitChangeSummary::default()
+        });
+
+        assert_eq!(
+            workspace_git_status_visual_summary(&workspace),
+            Some(WorkspaceGitStatusVisualSummary {
+                changed_files: 2,
+                untracked_files: 0,
+                added_lines: 19,
+                deleted_lines: 3,
+                ahead_commits: 2,
+                behind_commits: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_git_status_visual_summary_preserves_untracked_only_dirty_state() {
+        let mut workspace = workspace_entry(WorkspaceKind::Primary);
+        workspace.git_summary = Some(GitChangeSummary {
+            changed_files: 1,
+            untracked_files: 1,
+            ..GitChangeSummary::default()
+        });
+
+        assert_eq!(
+            workspace_git_status_visual_summary(&workspace),
+            Some(WorkspaceGitStatusVisualSummary {
+                changed_files: 1,
+                untracked_files: 1,
+                added_lines: 0,
+                deleted_lines: 0,
+                ahead_commits: 0,
+                behind_commits: 0,
+            })
+        );
     }
 }

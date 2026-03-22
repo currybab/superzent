@@ -302,7 +302,63 @@ fn git_change_summary(repo_hint: &Path) -> Result<GitChangeSummary> {
         }
     }
 
+    let (added_lines, deleted_lines) = git_diff_line_summary(repo_hint)?;
+    summary.added_lines = added_lines;
+    summary.deleted_lines = deleted_lines;
+
+    let (ahead_commits, behind_commits) = git_tracking_summary(repo_hint);
+    summary.ahead_commits = ahead_commits;
+    summary.behind_commits = behind_commits;
+
     Ok(summary)
+}
+
+fn git_has_head(repo_hint: &Path) -> bool {
+    git_output(repo_hint, &["rev-parse", "--verify", "HEAD"]).is_ok()
+}
+
+fn git_diff_line_summary(repo_hint: &Path) -> Result<(usize, usize)> {
+    if !git_has_head(repo_hint) {
+        return Ok((0, 0));
+    }
+
+    let output = git_output(repo_hint, &["diff", "--numstat", "--no-renames", "HEAD"])?;
+    let mut added_lines = 0usize;
+    let mut deleted_lines = 0usize;
+
+    for line in output.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(_path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (Ok(added), Ok(deleted)) = (added.parse::<usize>(), deleted.parse::<usize>()) else {
+            continue;
+        };
+        added_lines += added;
+        deleted_lines += deleted;
+    }
+
+    Ok((added_lines, deleted_lines))
+}
+
+fn git_tracking_summary(repo_hint: &Path) -> (usize, usize) {
+    let Ok(output) = git_output(
+        repo_hint,
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+    ) else {
+        return (0, 0);
+    };
+
+    let mut counts = output.split_whitespace();
+    let Some(behind_commits) = counts.next().and_then(|count| count.parse::<usize>().ok()) else {
+        return (0, 0);
+    };
+    let Some(ahead_commits) = counts.next().and_then(|count| count.parse::<usize>().ok()) else {
+        return (0, 0);
+    };
+
+    (ahead_commits, behind_commits)
 }
 
 fn run_git(repo_root: &Path, args: &[&str]) -> Result<()> {
@@ -783,6 +839,79 @@ mod tests {
     }
 
     #[test]
+    fn git_change_summary_collects_line_counts_from_head_diff() {
+        let repo = init_repo();
+        fs::write(repo.repo_path.join("README.md"), "hi\nthere\n").unwrap();
+
+        let summary = git_change_summary(&repo.repo_path).unwrap();
+
+        assert_eq!(summary.added_lines, 2);
+        assert_eq!(summary.deleted_lines, 1);
+    }
+
+    #[test]
+    fn git_change_summary_defaults_tracking_counts_without_upstream() {
+        let repo = init_repo();
+        fs::write(repo.repo_path.join("README.md"), "hi\nthere\n").unwrap();
+
+        let summary = git_change_summary(&repo.repo_path).unwrap();
+
+        assert_eq!(summary.ahead_commits, 0);
+        assert_eq!(summary.behind_commits, 0);
+    }
+
+    #[test]
+    fn git_change_summary_collects_upstream_tracking_counts() {
+        let repo = init_repo();
+        let remote_path = repo.repo_path.parent().unwrap().join("remote.git");
+        let other_clone_path = repo.repo_path.parent().unwrap().join("other-clone");
+
+        git(
+            remote_path.parent().unwrap(),
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                remote_path.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repo.repo_path,
+            &["remote", "add", "origin", remote_path.to_str().unwrap()],
+        );
+        git(&repo.repo_path, &["push", "-u", "origin", "main"]);
+
+        fs::write(repo.repo_path.join("README.md"), "hello\nlocal\n").unwrap();
+        git(&repo.repo_path, &["commit", "-am", "local change"]);
+
+        git(
+            repo.repo_path.parent().unwrap(),
+            &[
+                "clone",
+                remote_path.to_str().unwrap(),
+                other_clone_path.to_str().unwrap(),
+            ],
+        );
+        git(
+            &other_clone_path,
+            &["config", "user.name", "Superzent Tests"],
+        );
+        git(
+            &other_clone_path,
+            &["config", "user.email", "tests@superzent.dev"],
+        );
+        fs::write(other_clone_path.join("README.md"), "hello\nremote\n").unwrap();
+        git(&other_clone_path, &["commit", "-am", "remote change"]);
+        git(&other_clone_path, &["push", "origin", "main"]);
+        git(&repo.repo_path, &["fetch", "origin"]);
+
+        let summary = git_change_summary(&repo.repo_path).unwrap();
+
+        assert_eq!(summary.ahead_commits, 1);
+        assert_eq!(summary.behind_commits, 1);
+    }
+
+    #[test]
     fn create_workspace_reports_missing_copy_sources_as_warning() {
         let repo = init_repo();
         fs::create_dir_all(repo.repo_path.join(".superzent")).unwrap();
@@ -843,8 +972,9 @@ mod tests {
 
         if !output.status.success() {
             panic!(
-                "git {} failed: {}",
+                "git {} failed\nstdout: {}\nstderr: {}",
                 args.join(" "),
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
         }

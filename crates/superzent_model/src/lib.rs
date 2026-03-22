@@ -49,9 +49,20 @@ pub enum PresetLaunchMode {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitChangeSummary {
+    #[serde(default)]
     pub changed_files: usize,
+    #[serde(default)]
     pub staged_files: usize,
+    #[serde(default)]
     pub untracked_files: usize,
+    #[serde(default)]
+    pub added_lines: usize,
+    #[serde(default)]
+    pub deleted_lines: usize,
+    #[serde(default)]
+    pub ahead_commits: usize,
+    #[serde(default)]
+    pub behind_commits: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2085,6 +2096,10 @@ mod tests {
             changed_files: 3,
             staged_files: 1,
             untracked_files: 2,
+            added_lines: 19,
+            deleted_lines: 7,
+            ahead_commits: 2,
+            behind_commits: 1,
         };
 
         assert!(update_workspace_metadata(
@@ -2095,6 +2110,29 @@ mod tests {
         ));
         assert_eq!(workspace.branch, "feature/fast");
         assert_eq!(workspace.git_summary, Some(summary));
+    }
+
+    #[test]
+    fn git_change_summary_defaults_missing_extended_fields() {
+        let summary: GitChangeSummary = serde_json::from_value(serde_json::json!({
+            "changed_files": 3,
+            "staged_files": 1,
+            "untracked_files": 2
+        }))
+        .unwrap();
+
+        assert_eq!(
+            summary,
+            GitChangeSummary {
+                changed_files: 3,
+                staged_files: 1,
+                untracked_files: 2,
+                added_lines: 0,
+                deleted_lines: 0,
+                ahead_commits: 0,
+                behind_commits: 0,
+            }
+        );
     }
 
     #[test]
