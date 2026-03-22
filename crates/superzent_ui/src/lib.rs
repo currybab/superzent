@@ -5355,7 +5355,7 @@ fn build_synced_local_workspace_entry(
                 .map(|workspace| workspace.managed)
                 .unwrap_or(true)
         },
-        git_status: discovered_worktree.git_status.clone(),
+        git_status: discovered_worktree.git_status,
         git_summary: if discovered_worktree.git_status == WorkspaceGitStatus::Available {
             discovered_worktree.git_summary.clone().or_else(|| {
                 existing_workspace

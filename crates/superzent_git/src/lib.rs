@@ -1038,7 +1038,7 @@ mod tests {
             .local_worktree_path()
             .expect("workspace should be local")
             .to_path_buf();
-        let mut unavailable_workspace = outcome.workspace.clone();
+        let mut unavailable_workspace = outcome.workspace;
         unavailable_workspace.git_status = WorkspaceGitStatus::Unavailable;
 
         fs::remove_dir_all(repo.repo_path.join(".git")).unwrap();
