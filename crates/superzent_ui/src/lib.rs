@@ -2836,16 +2836,12 @@ impl SuperzentSidebar {
                             )
                             .when(workspace.managed && is_deleting, |this| {
                                 this.end_slot(
-                                    div()
-                                        .h_full()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            Icon::new(IconName::ArrowCircle)
-                                                .size(IconSize::Small)
-                                                .color(Color::Muted)
-                                                .with_rotate_animation(2),
-                                        ),
+                                    div().h_full().items_center().justify_center().child(
+                                        Icon::new(IconName::ArrowCircle)
+                                            .size(IconSize::Small)
+                                            .color(Color::Muted)
+                                            .with_rotate_animation(2),
+                                    ),
                                 )
                             })
                             .when(workspace.managed && !is_deleting, |this| {
@@ -4278,11 +4274,7 @@ fn run_delete_workspace_entry(
                     cx.background_spawn({
                         let repo_root = repo_root.clone();
                         async move {
-                            superzent_git::delete_workspace(
-                                &workspace_to_delete,
-                                &repo_root,
-                                false,
-                            )
+                            superzent_git::delete_workspace(&workspace_to_delete, &repo_root, false)
                         }
                     })
                     .await?;
@@ -4479,7 +4471,12 @@ fn run_sync_project_worktrees(
                 workspace.show_toast(
                     Toast::new(
                         NotificationId::unique::<SuperzentSidebar>(),
-                        project_worktree_sync_message(&project.name, added_count, removed_count, refreshed_count),
+                        project_worktree_sync_message(
+                            &project.name,
+                            added_count,
+                            removed_count,
+                            refreshed_count,
+                        ),
                     ),
                     cx,
                 );
@@ -4668,12 +4665,12 @@ async fn close_workspace_in_all_windows(
     app_state: Arc<WorkspaceAppState>,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<()> {
-    let Some(serialized_location) = serialized_workspace_location_for_workspace(
-        &workspace_entry,
-    ) else {
+    let Some(serialized_location) = serialized_workspace_location_for_workspace(&workspace_entry)
+    else {
         return Ok(());
     };
-    let workspace_windows = cx.update(|cx| workspace_windows_for_location(&serialized_location, cx));
+    let workspace_windows =
+        cx.update(|cx| workspace_windows_for_location(&serialized_location, cx));
 
     for workspace_window in workspace_windows {
         let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, cx| {
@@ -5410,7 +5407,10 @@ fn project_worktree_sync_message(
         changes.push(format!("{refreshed_count} refreshed"));
     }
 
-    format!("Synced worktrees for {project_name}: {}.", changes.join(", "))
+    format!(
+        "Synced worktrees for {project_name}: {}.",
+        changes.join(", ")
+    )
 }
 
 fn build_local_workspace_bundle(

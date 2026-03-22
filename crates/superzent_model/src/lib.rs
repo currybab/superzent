@@ -879,9 +879,7 @@ impl SuperzentStore {
         removed_workspace_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        let removed_workspace_ids = removed_workspace_ids
-            .into_iter()
-            .collect::<BTreeSet<_>>();
+        let removed_workspace_ids = removed_workspace_ids.into_iter().collect::<BTreeSet<_>>();
 
         if !removed_workspace_ids.is_empty() {
             self.state

@@ -219,7 +219,9 @@ pub fn delete_workspace(workspace: &WorkspaceEntry, repo_root: &Path, force: boo
                 || should_remove_workspace_path_after_git_failure(&error) =>
         {
             remove_workspace_path(Path::new(&worktree_path)).with_context(|| {
-                format!("failed to remove workspace path after git worktree remove failed: {error:#}")
+                format!(
+                    "failed to remove workspace path after git worktree remove failed: {error:#}"
+                )
             })
         }
         Err(error) => Err(error),
