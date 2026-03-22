@@ -5596,6 +5596,8 @@ fn workspace_notification_title(workspace: &WorkspaceEntry) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WorkspaceGitStatusVisualSummary {
+    changed_files: usize,
+    untracked_files: usize,
     added_lines: usize,
     deleted_lines: usize,
     ahead_commits: usize,
@@ -5612,12 +5614,15 @@ fn workspace_git_status_visual_summary(
     let summary = workspace.git_summary.as_ref()?;
     let has_sync = summary.ahead_commits > 0 || summary.behind_commits > 0;
     let has_diff = summary.added_lines > 0 || summary.deleted_lines > 0;
+    let has_dirty_files = summary.changed_files > 0;
 
-    if !has_sync && !has_diff {
+    if !has_sync && !has_diff && !has_dirty_files {
         return None;
     }
 
     Some(WorkspaceGitStatusVisualSummary {
+        changed_files: summary.changed_files,
+        untracked_files: summary.untracked_files,
         added_lines: summary.added_lines,
         deleted_lines: summary.deleted_lines,
         ahead_commits: summary.ahead_commits,
@@ -5632,6 +5637,10 @@ fn render_workspace_git_status_pill(
     let summary = workspace_git_status_visual_summary(workspace)?;
     let has_sync = summary.ahead_commits > 0 || summary.behind_commits > 0;
     let has_diff = summary.added_lines > 0 || summary.deleted_lines > 0;
+    let has_file_status = summary.changed_files > 0 && !has_diff;
+    let is_untracked_only = summary.untracked_files > 0
+        && summary.untracked_files == summary.changed_files
+        && !has_diff;
 
     Some(
         h_flex()
@@ -5665,7 +5674,7 @@ fn render_workspace_git_status_pill(
                         }),
                 )
             })
-            .when(has_sync && has_diff, |this| {
+            .when(has_sync && (has_diff || has_file_status), |this| {
                 this.child(Label::new("·").size(LabelSize::XSmall).color(Color::Muted))
             })
             .when(has_diff, |this| {
@@ -5687,6 +5696,25 @@ fn render_workspace_git_status_pill(
                                     .color(Color::Error),
                             )
                         }),
+                )
+            })
+            .when(has_file_status, |this| {
+                this.child(
+                    Label::new(if is_untracked_only {
+                        format!("{} new", summary.untracked_files)
+                    } else {
+                        format!(
+                            "{} file{}",
+                            summary.changed_files,
+                            if summary.changed_files == 1 { "" } else { "s" }
+                        )
+                    })
+                    .size(LabelSize::XSmall)
+                    .color(if is_untracked_only {
+                        Color::Created
+                    } else {
+                        Color::Muted
+                    }),
                 )
             })
             .into_any_element(),
@@ -5850,6 +5878,7 @@ mod tests {
     fn workspace_git_status_visual_summary_exposes_sync_and_diff_counts() {
         let mut workspace = workspace_entry(WorkspaceKind::Primary);
         workspace.git_summary = Some(GitChangeSummary {
+            changed_files: 2,
             added_lines: 19,
             deleted_lines: 3,
             ahead_commits: 2,
@@ -5860,10 +5889,34 @@ mod tests {
         assert_eq!(
             workspace_git_status_visual_summary(&workspace),
             Some(WorkspaceGitStatusVisualSummary {
+                changed_files: 2,
+                untracked_files: 0,
                 added_lines: 19,
                 deleted_lines: 3,
                 ahead_commits: 2,
                 behind_commits: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_git_status_visual_summary_preserves_untracked_only_dirty_state() {
+        let mut workspace = workspace_entry(WorkspaceKind::Primary);
+        workspace.git_summary = Some(GitChangeSummary {
+            changed_files: 1,
+            untracked_files: 1,
+            ..GitChangeSummary::default()
+        });
+
+        assert_eq!(
+            workspace_git_status_visual_summary(&workspace),
+            Some(WorkspaceGitStatusVisualSummary {
+                changed_files: 1,
+                untracked_files: 1,
+                added_lines: 0,
+                deleted_lines: 0,
+                ahead_commits: 0,
+                behind_commits: 0,
             })
         );
     }
