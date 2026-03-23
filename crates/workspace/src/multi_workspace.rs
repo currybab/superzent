@@ -870,6 +870,16 @@ impl MultiWorkspace {
 
         self.sync_workspace_usage_order();
 
+        // Clear session_id and cancel any in-flight serialization on the
+        // removed workspace. Without this, a pending throttle timer from
+        // `serialize_workspace` could fire and write the old session_id
+        // back to the DB, resurrecting the workspace on next launch.
+        removed_workspace.update(cx, |workspace, _cx| {
+            workspace.session_id.take();
+            workspace._schedule_serialize_workspace.take();
+            workspace._serialize_workspace_task.take();
+        });
+
         if let Some(workspace_id) = removed_workspace.read(cx).database_id() {
             self.pending_removal_tasks.retain(|task| !task.is_ready());
             self.pending_removal_tasks

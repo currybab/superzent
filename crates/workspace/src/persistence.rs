@@ -4381,6 +4381,74 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_remove_workspace_cancels_pending_serialization(cx: &mut gpui::TestAppContext) {
+        use crate::multi_workspace::MultiWorkspace;
+        use feature_flags::FeatureFlagAppExt;
+        use gpui::AppContext as _;
+        use project::Project;
+
+        crate::tests::init_test(cx);
+
+        cx.update(|cx| {
+            cx.set_staff(true);
+            cx.update_flags(true, vec!["agent-v2".to_string()]);
+        });
+
+        let fs = fs::FakeFs::new(cx.executor());
+        let dir1 = unique_test_dir(&fs, "pending-serialization-1").await;
+        let dir2 = unique_test_dir(&fs, "pending-serialization-2").await;
+        let project1 = Project::test(fs.clone(), [dir1.as_path()], cx).await;
+        let project2 = Project::test(fs.clone(), [dir2.as_path()], cx).await;
+
+        let ws2_id = DB.next_id().await.unwrap();
+
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project1.clone(), window, cx));
+
+        // Keep a handle to the second workspace so it outlives its removal,
+        // as it does when other parts of the app still reference it.
+        let workspace2 = multi_workspace.update_in(cx, |mw, window, cx| {
+            let workspace = cx.new(|cx| crate::Workspace::test_new(project2.clone(), window, cx));
+            workspace.update(cx, |ws: &mut crate::Workspace, _cx| {
+                ws.set_database_id(ws2_id)
+            });
+            mw.activate(workspace.clone(), cx);
+            workspace
+        });
+
+        cx.executor()
+            .advance_clock(crate::SERIALIZATION_THROTTLE_TIME * 2);
+        cx.run_until_parked();
+
+        let session_id = workspace2
+            .read_with(cx, |workspace, _| workspace.session_id())
+            .expect("test workspace has a session id");
+
+        workspace2.update_in(cx, |workspace, window, cx| {
+            workspace.serialize_workspace(window, cx);
+        });
+        multi_workspace.update_in(cx, |mw, window, cx| {
+            mw.remove_workspace(1, window, cx);
+        });
+
+        cx.executor()
+            .advance_clock(crate::SERIALIZATION_THROTTLE_TIME * 2);
+        cx.run_until_parked();
+
+        let restored_ids: Vec<WorkspaceId> = DB
+            .last_session_workspace_locations(&session_id, None, fs.as_ref())
+            .await
+            .unwrap()
+            .iter()
+            .map(|sw| sw.workspace_id)
+            .collect();
+        assert!(
+            !restored_ids.contains(&ws2_id),
+            "A serialization scheduled before removal must not restore the removed workspace. Found: {restored_ids:?}"
+        );
+    }
+
+    #[gpui::test]
     async fn test_pending_removal_tasks_drained_on_flush(cx: &mut gpui::TestAppContext) {
         use crate::multi_workspace::MultiWorkspace;
         use feature_flags::FeatureFlagAppExt;
