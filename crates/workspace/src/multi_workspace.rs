@@ -45,6 +45,18 @@ pub enum SidebarEvent {
     Close,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceCycleDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceCycleState {
+    ordered_workspace_ids: Vec<EntityId>,
+    selected_index: usize,
+}
+
 pub trait Sidebar: EventEmitter<SidebarEvent> + Focusable + Render + Sized {
     fn width(&self, cx: &App) -> Pixels;
     fn set_width(&mut self, width: Option<Pixels>, cx: &mut Context<Self>);
@@ -126,6 +138,7 @@ pub struct MultiWorkspace {
     window_id: WindowId,
     workspaces: Vec<Entity<Workspace>>,
     workspace_usage_order: Vec<EntityId>,
+    workspace_cycle_state: Option<WorkspaceCycleState>,
     active_workspace_index: usize,
     sidebar: Option<Box<dyn SidebarHandle>>,
     sidebar_open: bool,
@@ -156,6 +169,7 @@ impl MultiWorkspace {
             window_id: window.window_handle().window_id(),
             workspaces: vec![workspace],
             workspace_usage_order: vec![workspace_id],
+            workspace_cycle_state: None,
             active_workspace_index: 0,
             sidebar: None,
             sidebar_open: true,
@@ -364,6 +378,7 @@ impl MultiWorkspace {
             self.workspaces[0] = workspace;
             self.active_workspace_index = 0;
             self.record_workspace_usage(self.workspaces[0].entity_id());
+            self.reset_workspace_cycle_state();
             cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged);
             cx.notify();
             return;
@@ -381,6 +396,7 @@ impl MultiWorkspace {
         workspace: Entity<Workspace>,
         cx: &mut Context<Self>,
     ) -> usize {
+        self.reset_workspace_cycle_state();
         let index = self.add_workspace(workspace, cx);
         let changed = self.active_workspace_index != index;
         self.active_workspace_index = index;
@@ -395,6 +411,7 @@ impl MultiWorkspace {
     /// Adds a workspace to this window without changing which workspace is active.
     /// Returns the index of the workspace (existing or newly inserted).
     pub fn add_workspace(&mut self, workspace: Entity<Workspace>, cx: &mut Context<Self>) -> usize {
+        self.reset_workspace_cycle_state();
         if let Some(index) = self.workspaces.iter().position(|w| *w == workspace) {
             self.record_workspace_usage(self.workspaces[index].entity_id());
             index
@@ -419,6 +436,7 @@ impl MultiWorkspace {
         new_workspace: Entity<Workspace>,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.reset_workspace_cycle_state();
         let Some(index) = self
             .workspaces
             .iter()
@@ -451,10 +469,35 @@ impl MultiWorkspace {
     }
 
     pub fn activate_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_index_internal(index, window, cx, false);
+    }
+
+    pub fn activate_next_recent_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_recent_workspace(WorkspaceCycleDirection::Forward, window, cx);
+    }
+
+    pub fn activate_previous_recent_workspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_recent_workspace(WorkspaceCycleDirection::Backward, window, cx);
+    }
+
+    fn activate_index_internal(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        preserve_cycle_state: bool,
+    ) {
         debug_assert!(
             index < self.workspaces.len(),
             "workspace index out of bounds"
         );
+        if !preserve_cycle_state {
+            self.reset_workspace_cycle_state();
+        }
         let changed = self.active_workspace_index != index;
         self.active_workspace_index = index;
         self.record_workspace_usage(self.workspaces[index].entity_id());
@@ -464,6 +507,85 @@ impl MultiWorkspace {
             cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged);
         }
         cx.notify();
+    }
+
+    fn cycle_recent_workspace(
+        &mut self,
+        direction: WorkspaceCycleDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspaces.len() <= 1 {
+            return;
+        }
+
+        let active_workspace_id = self.workspaces[self.active_workspace_index].entity_id();
+        let ordered_workspace_ids = self
+            .workspace_cycle_state
+            .take()
+            .filter(|state| self.can_resume_workspace_cycle(state, active_workspace_id))
+            .map(|state| {
+                let target_index = match direction {
+                    WorkspaceCycleDirection::Forward => {
+                        (state.selected_index + 1) % state.ordered_workspace_ids.len()
+                    }
+                    WorkspaceCycleDirection::Backward => {
+                        if state.selected_index == 0 {
+                            state.ordered_workspace_ids.len() - 1
+                        } else {
+                            state.selected_index - 1
+                        }
+                    }
+                };
+
+                (state.ordered_workspace_ids, target_index)
+            })
+            .or_else(|| {
+                let ordered_workspace_ids = self
+                    .workspaces_by_recent_use()
+                    .into_iter()
+                    .map(|workspace| workspace.entity_id())
+                    .collect::<Vec<_>>();
+                let selected_index = ordered_workspace_ids
+                    .iter()
+                    .position(|workspace_id| *workspace_id == active_workspace_id)?;
+                let target_index = match direction {
+                    WorkspaceCycleDirection::Forward => {
+                        (selected_index + 1) % ordered_workspace_ids.len()
+                    }
+                    WorkspaceCycleDirection::Backward => {
+                        if selected_index == 0 {
+                            ordered_workspace_ids.len() - 1
+                        } else {
+                            selected_index - 1
+                        }
+                    }
+                };
+
+                Some((ordered_workspace_ids, target_index))
+            });
+
+        let Some((ordered_workspace_ids, target_index)) = ordered_workspace_ids else {
+            return;
+        };
+        let Some(target_workspace_id) = ordered_workspace_ids.get(target_index).copied() else {
+            self.reset_workspace_cycle_state();
+            return;
+        };
+        let Some(target_workspace_index) = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.entity_id() == target_workspace_id)
+        else {
+            self.reset_workspace_cycle_state();
+            return;
+        };
+
+        self.workspace_cycle_state = Some(WorkspaceCycleState {
+            ordered_workspace_ids,
+            selected_index: target_index,
+        });
+        self.activate_index_internal(target_workspace_index, window, cx, true);
     }
 
     fn serialize(&mut self, cx: &mut App) {
@@ -673,6 +795,7 @@ impl MultiWorkspace {
             return;
         }
 
+        self.reset_workspace_cycle_state();
         let removed_workspace = self.workspaces.remove(index);
         self.remove_workspace_from_usage_order(removed_workspace.entity_id());
 
@@ -746,6 +869,25 @@ impl MultiWorkspace {
         self.workspace_usage_order
             .retain(|existing_id| *existing_id != workspace_id);
         self.workspace_usage_order.insert(0, workspace_id);
+    }
+
+    fn can_resume_workspace_cycle(
+        &self,
+        state: &WorkspaceCycleState,
+        active_workspace_id: EntityId,
+    ) -> bool {
+        state.selected_index < state.ordered_workspace_ids.len()
+            && state.ordered_workspace_ids[state.selected_index] == active_workspace_id
+            && state.ordered_workspace_ids.len() == self.workspaces.len()
+            && state.ordered_workspace_ids.iter().all(|workspace_id| {
+                self.workspaces
+                    .iter()
+                    .any(|workspace| workspace.entity_id() == *workspace_id)
+            })
+    }
+
+    fn reset_workspace_cycle_state(&mut self) {
+        self.workspace_cycle_state = None;
     }
 
     fn remove_workspace_from_usage_order(&mut self, workspace_id: EntityId) {
@@ -925,6 +1067,15 @@ mod tests {
         })
     }
 
+    fn active_workspace_id(
+        multi_workspace: &Entity<MultiWorkspace>,
+        cx: &TestAppContext,
+    ) -> EntityId {
+        multi_workspace.read_with(cx, |multi_workspace, _cx| {
+            multi_workspace.workspace().entity_id()
+        })
+    }
+
     #[gpui::test]
     async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContext) {
         init_test(cx);
@@ -1080,5 +1231,75 @@ mod tests {
             vec![workspace_c.entity_id(), workspace_a.entity_id()]
         );
         assert!(!recent_workspace_ids(&multi_workspace, cx).contains(&workspace_b.entity_id()));
+    }
+
+    #[gpui::test]
+    async fn test_activate_next_recent_workspace_cycles_through_mru_snapshot(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project_a = Project::test(fs.clone(), [], cx).await;
+        let project_b = Project::test(fs.clone(), [], cx).await;
+        let project_c = Project::test(fs.clone(), [], cx).await;
+        let project_d = Project::test(fs, [], cx).await;
+
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+
+        let workspace_a = multi_workspace.read_with(cx, |multi_workspace, _cx| {
+            multi_workspace.workspace().clone()
+        });
+        let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(project_b, window, cx)
+        });
+        let workspace_c = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(project_c, window, cx)
+        });
+        let workspace_d = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(project_d, window, cx)
+        });
+
+        assert_eq!(
+            recent_workspace_ids(&multi_workspace, cx),
+            vec![
+                workspace_d.entity_id(),
+                workspace_c.entity_id(),
+                workspace_b.entity_id(),
+                workspace_a.entity_id()
+            ]
+        );
+
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate_next_recent_workspace(window, cx);
+        });
+        assert_eq!(
+            active_workspace_id(&multi_workspace, cx),
+            workspace_c.entity_id()
+        );
+
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate_next_recent_workspace(window, cx);
+        });
+        assert_eq!(
+            active_workspace_id(&multi_workspace, cx),
+            workspace_b.entity_id()
+        );
+
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate_next_recent_workspace(window, cx);
+        });
+        assert_eq!(
+            active_workspace_id(&multi_workspace, cx),
+            workspace_a.entity_id()
+        );
+
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate_next_recent_workspace(window, cx);
+        });
+        assert_eq!(
+            active_workspace_id(&multi_workspace, cx),
+            workspace_d.entity_id()
+        );
     }
 }

@@ -2113,29 +2113,13 @@ fn cycle_workspace_in_window_from_window<T: 'static>(
             return;
         };
 
-        let Some(next_index) = multi_workspace.read_with(cx, |multi_workspace, _cx| {
-            let workspace_count = multi_workspace.workspaces().len();
-            if workspace_count <= 1 {
-                return None;
+        multi_workspace.update(cx, |multi_workspace, cx| match direction {
+            WorkspaceSwitchDirection::Forward => {
+                multi_workspace.activate_next_recent_workspace(window, cx);
             }
-
-            let active_index = multi_workspace.active_workspace_index();
-            Some(match direction {
-                WorkspaceSwitchDirection::Forward => (active_index + 1) % workspace_count,
-                WorkspaceSwitchDirection::Backward => {
-                    if active_index == 0 {
-                        workspace_count - 1
-                    } else {
-                        active_index - 1
-                    }
-                }
-            })
-        }) else {
-            return;
-        };
-
-        multi_workspace.update(cx, |multi_workspace, cx| {
-            multi_workspace.activate_index(next_index, window, cx);
+            WorkspaceSwitchDirection::Backward => {
+                multi_workspace.activate_previous_recent_workspace(window, cx);
+            }
         });
     });
 }
