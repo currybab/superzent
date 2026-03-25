@@ -2555,7 +2555,7 @@ impl SuperzentSidebar {
 
             menu.entry("Close Project", None, {
                 let entity = entity.clone();
-                let project_id = project.id.clone();
+                let project_id = project.id;
                 move |window, cx| {
                     entity.update(cx, |this, cx| {
                         this.close_project(&project_id, window, cx);
