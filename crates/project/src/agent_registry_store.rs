@@ -9,9 +9,8 @@ use futures::AsyncReadExt;
 use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
 use http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
-use settings::Settings as _;
 
-use crate::{AgentId, DisableAiSettings};
+use crate::AgentId;
 
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const REFRESH_THROTTLE_DURATION: Duration = Duration::from_secs(60 * 60);
@@ -187,10 +186,6 @@ impl AgentRegistryStore {
             return;
         }
 
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return;
-        }
-
         self.is_fetching = true;
         self.fetch_error = None;
         self.last_refresh = Some(Instant::now());
@@ -267,10 +262,6 @@ impl AgentRegistryStore {
         http_client: Arc<dyn HttpClient>,
         cx: &mut Context<Self>,
     ) {
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return;
-        }
-
         cx.spawn(async move |this, cx| -> Result<()> {
             let cache_path = registry_cache_path();
             if !fs.is_file(&cache_path).await {

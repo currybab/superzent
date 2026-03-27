@@ -7,7 +7,6 @@ use agent_client_protocol::ModelId;
 use collections::{HashSet, IndexMap};
 use gpui::{App, Pixels, px};
 use language_model::LanguageModel;
-use project::DisableAiSettings;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{
@@ -55,8 +54,8 @@ pub struct AgentSettings {
 }
 
 impl AgentSettings {
-    pub fn enabled(&self, cx: &App) -> bool {
-        self.enabled && !DisableAiSettings::get_global(cx).disable_ai
+    pub fn enabled(&self, _cx: &App) -> bool {
+        self.enabled
     }
 
     pub fn temperature_for_model(model: &Arc<dyn LanguageModel>, cx: &App) -> Option<f32> {
