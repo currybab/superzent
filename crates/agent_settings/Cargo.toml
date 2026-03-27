@@ -20,7 +20,6 @@ fs.workspace = true
 gpui.workspace = true
 language_model.workspace = true
 log.workspace = true
-project.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
