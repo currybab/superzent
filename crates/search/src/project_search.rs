@@ -936,6 +936,7 @@ impl ProjectSearchView {
         let query_editor = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text("Search all files…", window, cx);
+            editor.set_use_autoclose(false);
             editor.set_text(query_text, window, cx);
             editor
         });
