@@ -107,6 +107,8 @@ use audio::{AudioSettings, REPLAY_DURATION};
 #[cfg(feature = "ai")]
 use gpui::{AsyncWindowContext, WeakEntity};
 #[cfg(feature = "ai")]
+use project::DisableAiSettings;
+#[cfg(feature = "ai")]
 use prompt_store::PromptBuilder;
 #[cfg(feature = "calls")]
 use std::time::Duration;
@@ -718,17 +720,32 @@ fn setup_or_teardown_ai_panel<P: Panel>(
     ) -> Task<anyhow::Result<Entity<P>>>
     + 'static,
 ) -> Task<anyhow::Result<()>> {
+    // `disable_ai` is not just an action/palette filter. Keep workspace panels in sync so
+    // ACP/chat UI does not linger after upstream merges or async panel loading races.
+    let disable_ai = SettingsStore::global(cx)
+        .get::<DisableAiSettings>(None)
+        .disable_ai
+        || cfg!(test);
     let existing_panel = workspace.panel::<P>(cx);
-    match existing_panel {
-        None => cx.spawn_in(window, async move |workspace, cx| {
+    match (disable_ai, existing_panel) {
+        (false, None) => cx.spawn_in(window, async move |workspace, cx| {
             let panel = load_panel(workspace.clone(), cx.clone()).await?;
             workspace.update_in(cx, |workspace, window, cx| {
+                // Re-check after the async load so toggling `disable_ai` cannot re-add
+                // panels that were intentionally removed while the task was in flight.
+                let disable_ai = SettingsStore::global(cx)
+                    .get::<DisableAiSettings>(None)
+                    .disable_ai;
                 let have_panel = workspace.panel::<P>(cx).is_some();
-                if !have_panel {
+                if !disable_ai && !have_panel {
                     workspace.add_panel(panel, window, cx);
                 }
             })
         }),
+        (true, Some(existing_panel)) => {
+            workspace.remove_panel::<P>(&existing_panel, window, cx);
+            Task::ready(Ok(()))
+        }
         _ => Task::ready(Ok(())),
     }
 }

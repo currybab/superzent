@@ -395,20 +395,13 @@ fn notify_script_content() -> String {
     r#"#!/bin/bash
 # Superzent agent notification hook
 
-if [ "${SUPERZENT_DEBUG:-}" = "1" ]; then
-  _SUPERZENT_DEBUG_LOG="${TMPDIR:-/tmp}/superzent-notify-debug.log"
-fi
-
 if [ -n "$1" ]; then
   INPUT="$1"
 else
   INPUT=$(cat)
 fi
 
-[ -n "${_SUPERZENT_DEBUG_LOG:-}" ] && echo "$(date '+%H:%M:%S') notify.sh called, HOOK_URL=$SUPERZENT_AGENT_HOOK_URL TERMINAL_ID=$SUPERZENT_TERMINAL_ID" >> "$_SUPERZENT_DEBUG_LOG"
-
 if [ -z "$SUPERZENT_AGENT_HOOK_URL" ] || [ -z "$SUPERZENT_TERMINAL_ID" ]; then
-  [ -n "${_SUPERZENT_DEBUG_LOG:-}" ] && echo "$(date '+%H:%M:%S') SKIP: missing env vars" >> "$_SUPERZENT_DEBUG_LOG"
   exit 0
 fi
 
@@ -417,11 +410,9 @@ if [ -z "$EVENT_TYPE" ]; then
   EVENT_TYPE=$(printf '%s\n' "$INPUT" | grep -oE '"type"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
 fi
 
-[ -n "${_SUPERZENT_DEBUG_LOG:-}" ] && echo "$(date '+%H:%M:%S') EVENT_TYPE=$EVENT_TYPE" >> "$_SUPERZENT_DEBUG_LOG"
-
 [ -z "$EVENT_TYPE" ] && exit 0
 
-CURL_OUTPUT=$(curl -fsSG "$SUPERZENT_AGENT_HOOK_URL" \
+curl -fsSG "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
   --data-urlencode "event_type=$EVENT_TYPE" \
@@ -430,9 +421,7 @@ CURL_OUTPUT=$(curl -fsSG "$SUPERZENT_AGENT_HOOK_URL" \
   --data-urlencode "session_id=$SUPERZENT_SESSION_ID" \
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
-  2>&1)
-CURL_STATUS=$?
-[ -n "${_SUPERZENT_DEBUG_LOG:-}" ] && echo "$(date '+%H:%M:%S') curl exit=$CURL_STATUS output=$CURL_OUTPUT" >> "$_SUPERZENT_DEBUG_LOG"
+  > /dev/null 2>&1
 
 exit 0
 "#
@@ -492,11 +481,6 @@ fn claude_wrapper_content(bin_dir: &Path, claude_settings_path: &Path) -> String
     format!(
         r#"#!/bin/bash
 {WRAPPER_MARKER}
-if [ "${{SUPERZENT_DEBUG:-}}" = "1" ]; then
-  _SUPERZENT_DEBUG_LOG="${{TMPDIR:-/tmp}}/superzent-notify-debug.log"
-fi
-[ -n "${{_SUPERZENT_DEBUG_LOG:-}}" ] && echo "$(date '+%H:%M:%S') claude wrapper invoked, settings={claude_settings_path}" >> "$_SUPERZENT_DEBUG_LOG"
-[ -n "${{_SUPERZENT_DEBUG_LOG:-}}" ] && echo "$(date '+%H:%M:%S') HOOK_URL=$SUPERZENT_AGENT_HOOK_URL TERMINAL_ID=$SUPERZENT_TERMINAL_ID" >> "$_SUPERZENT_DEBUG_LOG"
 {resolver}
 REAL_BIN="$(find_real_binary)"
 if [ -z "$REAL_BIN" ]; then
@@ -504,7 +488,6 @@ if [ -z "$REAL_BIN" ]; then
   exit 127
 fi
 
-[ -n "${{_SUPERZENT_DEBUG_LOG:-}}" ] && echo "$(date '+%H:%M:%S') REAL_BIN=$REAL_BIN, exec with --settings" >> "$_SUPERZENT_DEBUG_LOG"
 exec "$REAL_BIN" --settings {claude_settings_path} "$@"
 "#,
         resolver = wrapper_resolver_content("claude", AGENT_REAL_CLAUDE_BIN_ENV_VAR, bin_dir),

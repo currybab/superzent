@@ -843,6 +843,7 @@ impl TerminalView {
         if let Some(text) = clipboard.text() {
             self.terminal
                 .update(cx, |terminal, _cx| terminal.paste(&text));
+            cx.emit(Event::Input);
         }
     }
 
@@ -852,6 +853,7 @@ impl TerminalView {
         self.terminal.update(cx, |term, _| {
             term.input(vec![0x16]);
         });
+        cx.emit(Event::Input);
     }
 
     fn add_paths_to_terminal(&self, paths: &[PathBuf], window: &mut Window, cx: &mut App) {
@@ -861,6 +863,13 @@ impl TerminalView {
         self.terminal.update(cx, |terminal, _| {
             terminal.paste(&text);
         });
+        if let Some(this) = self.self_handle.upgrade() {
+            cx.defer(move |cx| {
+                let _ = this.update(cx, |_, cx| {
+                    cx.emit(Event::Input);
+                });
+            });
+        }
     }
 
     fn send_text(&mut self, text: &SendText, _: &mut Window, cx: &mut Context<Self>) {
@@ -868,6 +877,7 @@ impl TerminalView {
         self.terminal.update(cx, |term, _| {
             term.input(text.0.to_string().into_bytes());
         });
+        cx.emit(Event::Input);
     }
 
     fn send_keystroke(&mut self, text: &SendKeystroke, _: &mut Window, cx: &mut Context<Self>) {
@@ -1032,6 +1042,8 @@ fn subscribe_for_terminal_events(
                     cx.emit(Event::Wakeup);
                 }
 
+                Event::Input => {}
+
                 Event::BlinkChanged(blinking) => {
                     terminal_view.blinking_terminal_enabled = *blinking;
 
@@ -1168,6 +1180,8 @@ impl TerminalView {
 
         if handled && vi_mode_enabled {
             cx.notify();
+        } else if handled {
+            cx.emit(Event::Input);
         }
 
         handled

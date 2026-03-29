@@ -137,6 +137,7 @@ pub enum Event {
     BreadcrumbsChanged,
     CloseTerminal,
     Bell,
+    Input,
     Wakeup,
     BlinkChanged(bool),
     SelectionsChanged,

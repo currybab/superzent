@@ -12,10 +12,10 @@ path = "src/lib.rs"
 workspace = true
 
 [features]
-acp_tabs = ["dep:fs", "dep:schemars", "dep:serde"]
+acp_tabs = ["dep:agent_ui", "dep:fs", "dep:schemars", "dep:serde"]
 
 [dependencies]
-agent_ui.workspace = true
+agent_ui = { workspace = true, optional = true }
 anyhow.workspace = true
 chrono.workspace = true
 editor.workspace = true
@@ -32,6 +32,7 @@ remote.workspace = true
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 settings.workspace = true
+smol.workspace = true
 superzent_git.workspace = true
 superzent_agent.workspace = true
 superzent_model.workspace = true
@@ -42,3 +43,7 @@ ui.workspace = true
 uuid.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa.workspace = true
+objc.workspace = true
