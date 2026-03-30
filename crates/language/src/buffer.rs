@@ -3306,6 +3306,10 @@ impl Buffer {
     pub fn preserve_preview(&self) -> bool {
         !self.has_edits_since(&self.preview_version)
     }
+
+    pub fn set_group_interval(&mut self, group_interval: Duration) {
+        self.text.set_group_interval(group_interval);
+    }
 }
 
 #[doc(hidden)]
@@ -3319,10 +3323,6 @@ impl Buffer {
     ) {
         let edits = self.edits_for_marked_text(marked_string);
         self.edit(edits, autoindent_mode, cx);
-    }
-
-    pub fn set_group_interval(&mut self, group_interval: Duration) {
-        self.text.set_group_interval(group_interval);
     }
 
     pub fn randomly_edit<T>(&mut self, rng: &mut T, old_range_count: usize, cx: &mut Context<Self>)
