@@ -1560,13 +1560,17 @@ impl GitStore {
             } else if let UpdatedGitRepository {
                 new_work_directory_abs_path: Some(work_directory_abs_path),
                 dot_git_abs_path: Some(dot_git_abs_path),
-                repository_dir_abs_path: Some(_repository_dir_abs_path),
+                repository_dir_abs_path: Some(repository_dir_abs_path),
                 common_dir_abs_path: Some(common_dir_abs_path),
                 ..
             } = update
             {
-                let original_repo_abs_path: Arc<Path> =
-                    git::repository::original_repo_path_from_common_dir(common_dir_abs_path).into();
+                let original_repo_abs_path: Arc<Path> = git::repository::original_repo_path(
+                    work_directory_abs_path,
+                    common_dir_abs_path,
+                    repository_dir_abs_path,
+                )
+                .into();
                 let id = RepositoryId(next_repository_id.fetch_add(1, atomic::Ordering::Release));
                 let is_trusted = TrustedWorktrees::try_get_global(cx)
                     .map(|trusted_worktrees| {
