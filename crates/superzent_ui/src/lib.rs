@@ -95,6 +95,7 @@ actions!(
         AddProject,
         NewWorkspace,
         RevealChanges,
+        CloseFromRightSidebar,
         OpenWorkspaceInNewWindow,
         CloseWorkspace,
         DeleteWorkspace,
@@ -736,8 +737,93 @@ pub fn init(cx: &mut App) {
                 .register_action(|workspace, _: &OpenWorkspaceInNewWindow, window, cx| {
                     run_open_workspace_in_new_window(workspace, window, cx);
                 })
+                .register_action(|workspace, _: &workspace::CloseWindow, window, cx| {
+                    let right_dock = workspace.right_dock().clone();
+                    if !right_dock.read(cx).is_open() {
+                        cx.propagate();
+                        return;
+                    }
+
+                    let Some(active_panel) = right_dock.read(cx).active_panel().cloned() else {
+                        cx.propagate();
+                        return;
+                    };
+                    if active_panel.panel_key() != SuperzentRightSidebar::panel_key() {
+                        cx.propagate();
+                        return;
+                    }
+
+                    let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) else {
+                        cx.propagate();
+                        return;
+                    };
+
+                    match panel.read(cx).tab {
+                        RightSidebarTab::Changes | RightSidebarTab::Files => {
+                            window.dispatch_action(Box::new(CloseFromRightSidebar), cx);
+                        }
+                        RightSidebarTab::Panel(_) => {
+                            window.dispatch_action(Box::new(workspace::CloseActiveDock), cx);
+                        }
+                    }
+                })
                 .register_action(|workspace, _: &CloseWorkspace, window, cx| {
                     run_close_workspace(workspace, window, cx);
+                })
+                .register_action(|workspace, _: &CloseFromRightSidebar, window, cx| {
+                    let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) else {
+                        return;
+                    };
+
+                    match panel.read(cx).tab {
+                        RightSidebarTab::Changes | RightSidebarTab::Files => {
+                            let active_pane = workspace.active_pane().clone();
+                            if active_pane.read(cx).items_len() > 0 {
+                                active_pane.update(cx, |pane, cx| {
+                                    pane.close_active_item(
+                                        &workspace::CloseActiveItem::default(),
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                                });
+                            } else {
+                                let workspace_id = cx.entity().entity_id();
+                                window.defer(cx, move |window, cx| {
+                                    let Some(multi_workspace) =
+                                        window.window_handle().downcast::<MultiWorkspace>()
+                                    else {
+                                        return;
+                                    };
+
+                                    if let Err(error) =
+                                        multi_workspace.update(cx, |multi_workspace, window, cx| {
+                                            let Some(index) = multi_workspace
+                                                .workspaces()
+                                                .iter()
+                                                .position(|candidate| {
+                                                    candidate.entity_id() == workspace_id
+                                                })
+                                            else {
+                                                return;
+                                            };
+
+                                            multi_workspace
+                                                .close_workspace_at_index(index, window, cx)
+                                                .detach_and_log_err(cx);
+                                        })
+                                    {
+                                        log::error!(
+                                            "failed to close workspace in current window: {error:#}"
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                        RightSidebarTab::Panel(_) => {
+                            window.dispatch_action(Box::new(workspace::CloseActiveDock), cx);
+                        }
+                    }
                 })
                 .register_action(|workspace, _: &DeleteWorkspace, window, cx| {
                     run_delete_workspace(workspace, window, cx);
@@ -3759,9 +3845,10 @@ impl SuperzentRightSidebar {
     ) -> Self {
         let store = SuperzentStore::global(cx);
         let mut subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let workspace_for_restore = workspace.clone();
         subscriptions.push(cx.observe_in(&right_dock, window, {
             move |this, dock, window, cx| {
-                this.restore_active_sidebar(workspace.clone(), dock, window, cx);
+                this.restore_active_sidebar(workspace_for_restore.clone(), dock, window, cx);
             }
         }));
 

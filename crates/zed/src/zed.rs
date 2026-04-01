@@ -5056,7 +5056,9 @@ mod tests {
 
     fn init_superzent_test(cx: &mut TestAppContext) -> Arc<AppState> {
         cx.update(superzent_model::SuperzentStore::init);
-        init_test(cx)
+        let app_state = init_test(cx);
+        cx.update(superzent_ui::init);
+        app_state
     }
 
     fn init_test_with_state(
@@ -5180,6 +5182,19 @@ mod tests {
             .unwrap()
     }
 
+    fn right_dock_open(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> bool {
+        window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .right_dock()
+                    .read(cx)
+                    .is_open()
+            })
+            .unwrap()
+    }
+
     fn left_dock_panel_name(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> String {
         window
             .read_with(cx, |multi_workspace, cx| {
@@ -5193,6 +5208,36 @@ mod tests {
                     .unwrap_or_default()
             })
             .unwrap()
+    }
+
+    fn active_center_pane_item_count(
+        window: WindowHandle<MultiWorkspace>,
+        cx: &TestAppContext,
+    ) -> usize {
+        window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .items_len()
+            })
+            .unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn dispatch_right_sidebar_close(window: WindowHandle<MultiWorkspace>, cx: &mut TestAppContext) {
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(superzent_ui::CloseFromRightSidebar), cx);
+            })
+            .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn dispatch_close_window(window: WindowHandle<MultiWorkspace>, cx: &mut TestAppContext) {
+        cx.dispatch_action(window.into(), workspace::CloseWindow);
     }
 
     fn left_dock_open(window: WindowHandle<MultiWorkspace>, cx: &TestAppContext) -> bool {
@@ -5300,6 +5345,124 @@ mod tests {
         assert!(!left_dock_open(window, cx));
     }
 
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn test_superzent_changes_cmd_w_closes_center_item_before_sidebar(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "", "b.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root/a.txt")), PathBuf::from(path!("/root/b.txt"))],
+                app_state.clone(),
+                workspace::OpenOptions {
+                    open_new_workspace: Some(false),
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), git_ui::git_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        assert_eq!(active_center_pane_item_count(window, cx), 2);
+        assert!(right_dock_open(window, cx));
+        assert_eq!(right_sidebar_tab(window, cx), "changes");
+
+        dispatch_right_sidebar_close(window, cx);
+        cx.run_until_parked();
+
+        assert_eq!(active_center_pane_item_count(window, cx), 1);
+        assert!(right_dock_open(window, cx));
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+        assert_eq!(right_sidebar_tab(window, cx), "changes");
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn test_superzent_files_cmd_w_closes_center_item_before_sidebar(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "", "b.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root/a.txt")), PathBuf::from(path!("/root/b.txt"))],
+                app_state.clone(),
+                workspace::OpenOptions {
+                    open_new_workspace: Some(false),
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    show_superzent_files_sidebar(workspace, true, window, cx);
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(active_center_pane_item_count(window, cx), 2);
+        assert!(right_dock_open(window, cx));
+        assert_eq!(right_sidebar_tab(window, cx), "files");
+
+        dispatch_right_sidebar_close(window, cx);
+        cx.run_until_parked();
+
+        assert_eq!(active_center_pane_item_count(window, cx), 1);
+        assert!(right_dock_open(window, cx));
+        assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
+        assert_eq!(right_sidebar_tab(window, cx), "files");
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    }
+
     #[gpui::test]
     async fn test_superzent_outline_panel_stays_in_left_dock_by_default(cx: &mut TestAppContext) {
         let app_state = init_superzent_test(cx);
@@ -5368,6 +5531,149 @@ mod tests {
         assert_eq!(right_dock_panel_name(window, cx), "Superzent Right Sidebar");
         assert_eq!(right_sidebar_tab(window, cx), "Outline Panel");
         assert!(!left_dock_open(window, cx));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn test_superzent_external_right_panel_cmd_w_closes_active_dock(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.outline_panel.get_or_insert_default().dock =
+                        Some(settings::DockSide::Right);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), outline_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        assert!(right_dock_open(window, cx));
+        assert_eq!(right_sidebar_tab(window, cx), "Outline Panel");
+
+        dispatch_right_sidebar_close(window, cx);
+        cx.run_until_parked();
+
+        assert!(!right_dock_open(window, cx));
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn test_superzent_close_window_action_in_changes_tab_does_not_close_window(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "", "b.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root/a.txt")), PathBuf::from(path!("/root/b.txt"))],
+                app_state.clone(),
+                workspace::OpenOptions {
+                    open_new_workspace: Some(false),
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), git_ui::git_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        dispatch_close_window(window, cx);
+        cx.run_until_parked();
+
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        assert_eq!(active_center_pane_item_count(window, cx), 1);
+        assert!(right_dock_open(window, cx));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn test_superzent_close_window_action_with_external_right_panel_closes_dock_not_window(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_superzent_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "a.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.outline_panel.get_or_insert_default().dock =
+                        Some(settings::DockSide::Right);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        cx.dispatch_action(window.into(), outline_panel::ToggleFocus);
+        cx.run_until_parked();
+
+        dispatch_close_window(window, cx);
+        cx.run_until_parked();
+
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        assert!(!right_dock_open(window, cx));
     }
 
     #[track_caller]
