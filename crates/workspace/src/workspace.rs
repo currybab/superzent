@@ -8642,15 +8642,23 @@ fn activate_any_workspace_window(cx: &mut AsyncApp) -> Option<WindowHandle<Multi
 pub fn preferred_workspace_window(cx: &App) -> Option<WindowHandle<MultiWorkspace>> {
     // The shell is intentionally single-window: prefer the focused MultiWorkspace,
     // otherwise reuse the first one we already have instead of spawning another.
+    let open_window_ids = cx
+        .windows()
+        .into_iter()
+        .map(|window| window.window_id())
+        .collect::<Vec<_>>();
+    let is_open_workspace_window =
+        |window: &WindowHandle<MultiWorkspace>| open_window_ids.contains(&window.window_id());
+
     cx.active_window()
         .and_then(|window| window.downcast::<MultiWorkspace>())
-        .filter(|window| window.read(cx).is_ok())
+        .filter(is_open_workspace_window)
         .or_else(|| {
             cx.window_stack()
                 .unwrap_or_else(|| cx.windows())
                 .into_iter()
                 .filter_map(|window| window.downcast::<MultiWorkspace>())
-                .find(|window| window.read(cx).is_ok())
+                .find(is_open_workspace_window)
         })
 }
 
