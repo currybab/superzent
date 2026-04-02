@@ -2506,7 +2506,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(cx.read(|cx| cx.windows().len()), 2);
+        assert_eq!(cx.read(|cx| cx.windows().len()), 1);
 
         // Replace existing windows
         let window = cx
@@ -2526,7 +2526,7 @@ mod tests {
         .await
         .unwrap();
         cx.background_executor.run_until_parked();
-        assert_eq!(cx.read(|cx| cx.windows().len()), 2);
+        assert_eq!(cx.read(|cx| cx.windows().len()), 1);
         let multi_workspace_1 = cx
             .update(|cx| cx.windows()[0].downcast::<MultiWorkspace>())
             .unwrap();
@@ -2597,7 +2597,15 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        let multi_workspace = cx
+            .update(|cx| cx.windows()[0].downcast::<MultiWorkspace>())
+            .unwrap();
+        multi_workspace
+            .update(cx, |multi_workspace, _, _| {
+                assert_eq!(multi_workspace.workspaces().len(), 2);
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -2647,9 +2655,15 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
-        let window2 = cx.update(|cx| cx.active_window().unwrap());
-        assert!(window1 != window2);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        let multi_workspace = cx
+            .update(|cx| cx.windows()[0].downcast::<MultiWorkspace>())
+            .unwrap();
+        multi_workspace
+            .update(cx, |multi_workspace, _, _| {
+                assert_eq!(multi_workspace.workspaces().len(), 2);
+            })
+            .unwrap();
         cx.update_window(window1, |_, window, _| window.activate_window())
             .unwrap();
 
@@ -2663,9 +2677,19 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
-        // should have opened in window2 because that has dir2 visibly open (window1 has it open, but not in the project panel)
-        assert!(cx.update(|cx| cx.active_window().unwrap()) == window2);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        multi_workspace
+            .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                assert_eq!(
+                    workspace
+                        .visible_worktrees(cx)
+                        .map(|worktree| worktree.read(cx).abs_path())
+                        .collect::<Vec<_>>(),
+                    vec![Path::new(path!("/root/dir2")).into()]
+                );
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -6138,10 +6162,9 @@ mod tests {
 
         let session_id = cx.read(|cx| app_state.session.read(cx).id().to_owned());
 
-        // --- Create 3 workspaces in 2 windows ---
+        // --- Create 3 workspaces in a single window ---
         //
-        //   Window A: workspace for dir1, workspace for dir2
-        //   Window B: workspace for dir3
+        //   Window A: workspace for dir1, workspace for dir2, workspace for dir3
         let (window_a, _) = cx
             .update(|cx| {
                 Workspace::new_local(
@@ -6166,20 +6189,13 @@ mod tests {
             .expect("failed to open second workspace into window A");
         cx.run_until_parked();
 
-        let (window_b, _) = cx
-            .update(|cx| {
-                Workspace::new_local(
-                    vec![dir3.into()],
-                    app_state.clone(),
-                    None,
-                    None,
-                    None,
-                    true,
-                    cx,
-                )
+        window_a
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.open_project(vec![dir3.into()], window, cx)
             })
+            .unwrap()
             .await
-            .expect("failed to open third workspace");
+            .expect("failed to open third workspace into window A");
 
         // Currently dir2 is active because it was added last.
         // So, switch window_a's active workspace to dir1 (index 0).
@@ -6207,9 +6223,6 @@ mod tests {
 
         // Close the original windows.
         window_a
-            .update(cx, |_, window, _| window.remove_window())
-            .unwrap();
-        window_b
             .update(cx, |_, window, _| window.remove_window())
             .unwrap();
         cx.run_until_parked();
@@ -6242,16 +6255,12 @@ mod tests {
         }
         assert_eq!(
             groups_by_window.len(),
-            2,
-            "expected 2 window groups, got {groups_by_window:?}"
+            1,
+            "expected 1 window group, got {groups_by_window:?}"
         );
         assert!(
-            groups_by_window.values().any(|g| g.len() == 2),
-            "expected one group with 2 workspaces"
-        );
-        assert!(
-            groups_by_window.values().any(|g| g.len() == 1),
-            "expected one group with 1 workspace"
+            groups_by_window.values().any(|g| g.len() == 3),
+            "expected one group with 3 workspaces"
         );
 
         let mut async_cx = cx.to_async();

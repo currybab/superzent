@@ -54,7 +54,7 @@ use util::{
 use workspace::{
     AppState, ModalView, MultiWorkspace, OpenLog, OpenOptions, Toast, Workspace,
     notifications::{DetachAndPromptErr, NotificationId},
-    open_remote_project_with_existing_connection,
+    open_remote_project_with_existing_connection, preferred_workspace_window,
 };
 
 pub struct RemoteServerProjects {
@@ -506,7 +506,14 @@ impl ProjectPicker {
                     })
                     .log_err();
 
-                    let window = if let Some(window) = existing_window {
+                    // Project pickers can outlive the original window focus, so fall back to the
+                    // shared shell window before we consider opening a fresh MultiWorkspace.
+                    let preferred_window = cx
+                        .update(|_, cx| preferred_workspace_window(cx))
+                        .log_err()
+                        .flatten();
+
+                    let window = if let Some(window) = existing_window.or(preferred_window) {
                         window
                     } else {
                         let options = cx

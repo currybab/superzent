@@ -471,23 +471,6 @@ impl WorkspaceAttentionController {
 
         cx.activate(true);
 
-        if let Some(target_window) = notification_window_for_workspace_entry(&workspace_entry, cx) {
-            if let Err(error) = target_window.update(cx, |multi_workspace, window, cx| {
-                let live_workspace = multi_workspace
-                    .workspaces()
-                    .iter()
-                    .find(|workspace| workspace_matches_entry(workspace, &workspace_entry, cx))
-                    .cloned();
-                window.activate_window();
-                if let Some(live_workspace) = live_workspace {
-                    multi_workspace.activate(live_workspace, cx);
-                }
-            }) {
-                log::error!("failed to activate workspace from notification: {error:#}");
-            }
-            return;
-        }
-
         let Some(app_state) = WorkspaceAppState::try_global(cx).and_then(|state| state.upgrade())
         else {
             log::error!("failed to open workspace from notification: missing app state");
@@ -497,6 +480,31 @@ impl WorkspaceAttentionController {
             log::error!("failed to open workspace from notification: no workspace window found");
             return;
         };
+
+        let activated_existing_workspace =
+            match target_window.update(cx, |multi_workspace, window, cx| {
+                let live_workspace = multi_workspace
+                    .workspaces()
+                    .iter()
+                    .find(|workspace| workspace_matches_entry(workspace, &workspace_entry, cx))
+                    .cloned();
+                window.activate_window();
+                if let Some(live_workspace) = live_workspace {
+                    multi_workspace.activate(live_workspace, cx);
+                    true
+                } else {
+                    false
+                }
+            }) {
+                Ok(activated_existing_workspace) => activated_existing_workspace,
+                Err(error) => {
+                    log::error!("failed to activate workspace from notification: {error:#}");
+                    false
+                }
+            };
+        if activated_existing_workspace {
+            return;
+        }
 
         let open_task = match target_window.update(cx, |_, window, cx| {
             window.activate_window();
@@ -2303,28 +2311,51 @@ impl SuperzentSidebar {
         let Some(current_workspace) = self.current_workspace_entity(cx) else {
             return;
         };
-        let existing_workspace_id = {
+        let (candidate_count, existing_workspace_id, inferred_project_id) = {
             let store = self.store.read(cx);
-            store_workspace_id_for_live_workspace(&current_workspace, &store, cx)
+            let candidate_locations = workspace_location_candidates(&current_workspace, cx);
+            let existing_workspace_id = matched_workspace_id_for_candidate_locations(
+                &candidate_locations,
+                store.workspaces(),
+                store.active_workspace_id(),
+            );
+            let inferred_project_id =
+                if existing_workspace_id.is_none() && candidate_locations.len() > 1 {
+                    inferred_project_id_for_live_workspace(&current_workspace, &store, cx)
+                } else {
+                    None
+                };
+            (
+                candidate_locations.len(),
+                existing_workspace_id,
+                inferred_project_id,
+            )
         };
         self.store.update(cx, |store, cx| {
             if let Some(workspace_id) = existing_workspace_id.as_deref() {
-                store.record_workspace_opened(&workspace_id, cx);
+                store.record_workspace_opened(workspace_id, cx);
                 return;
             }
 
-            let workspace_bundle = build_local_workspace_bundle(&current_workspace, store, cx)
-                .or_else(|| build_remote_workspace_bundle(&current_workspace, store, cx));
-            if let Some((project_entry, workspace_entry)) = workspace_bundle {
-                let workspace_id = workspace_entry.id.clone();
-                store.upsert_project_bundle(project_entry, workspace_entry, cx);
-                store.record_workspace_opened(&workspace_id, cx);
-                return;
+            if candidate_count == 1 {
+                let workspace_bundle = build_local_workspace_bundle(&current_workspace, store, cx)
+                    .or_else(|| build_remote_workspace_bundle(&current_workspace, store, cx));
+                if let Some((project_entry, workspace_entry)) = workspace_bundle {
+                    let workspace_id = workspace_entry.id.clone();
+                    store.upsert_project_bundle(project_entry, workspace_entry, cx);
+                    store.record_workspace_opened(&workspace_id, cx);
+                    return;
+                }
             }
 
-            let workspace_id = workspace_location_snapshot(&current_workspace, cx)
-                .as_ref()
-                .and_then(|location| store.workspace_for_location(location))
+            let workspace_id = inferred_project_id
+                .as_deref()
+                .and_then(|project_id| store.primary_workspace_for_project(project_id))
+                .or_else(|| {
+                    inferred_project_id.as_deref().and_then(|project_id| {
+                        store.workspaces_for_project(project_id).into_iter().next()
+                    })
+                })
                 .map(|workspace| workspace.id.clone());
             store.set_active_workspace(workspace_id, cx);
         });
@@ -2378,26 +2409,22 @@ impl SuperzentSidebar {
         persist: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(location) = workspace_location_snapshot(workspace, cx) else {
-            return;
-        };
-        let Some(workspace_id) = self
-            .store
-            .read(cx)
-            .workspace_for_location(&location)
-            .map(|workspace| workspace.id.clone())
-        else {
+        let Some(workspace_id) = ({
+            let store = self.store.read(cx);
+            store_workspace_id_for_live_workspace(
+                workspace,
+                &store,
+                store.active_workspace_id(),
+                cx,
+            )
+        }) else {
             return;
         };
         let (branch, git_status, git_summary) =
             if let Some(repository) = active_repository_for_workspace(workspace, cx) {
                 let repository = repository.read(cx);
                 (
-                    repository
-                        .branch
-                        .as_ref()
-                        .map(|branch| branch.name().to_string())
-                        .unwrap_or_else(|| "HEAD".to_string()),
+                    repository_branch_display_name(&repository),
                     WorkspaceGitStatus::Available,
                     Some(git_change_summary_from_repository(&repository)),
                 )
@@ -3346,11 +3373,7 @@ impl SuperzentSidebar {
                         {
                             let repository = repository.read(cx);
                             (
-                                repository
-                                    .branch
-                                    .as_ref()
-                                    .map(|branch| branch.name().to_string())
-                                    .unwrap_or_else(|| "HEAD".to_string()),
+                                repository_branch_display_name(&repository),
                                 WorkspaceGitStatus::Available,
                                 Some(git_change_summary_from_repository(&repository)),
                             )
@@ -5237,9 +5260,7 @@ fn open_local_workspace_path(
             .iter()
             .enumerate()
             .find_map(|(index, workspace)| {
-                local_workspace_root_path(workspace, cx)
-                    .filter(|workspace_path| *workspace_path == path)
-                    .map(|_| index)
+                workspace_contains_local_worktree_path(workspace, &path, cx).then_some(index)
             })
     {
         return cx.spawn(async move |cx| {
@@ -5294,6 +5315,7 @@ fn open_workspace_entry(
                     vec![path],
                     app_state,
                     OpenOptions {
+                        open_new_workspace: Some(true),
                         replace_window,
                         ..Default::default()
                     },
@@ -5312,35 +5334,205 @@ fn workspace_from_window(window: &gpui::Window, cx: &App) -> Option<Entity<Works
     Some(multi_workspace.workspace().clone())
 }
 
-fn local_workspace_root_path(workspace: &Entity<Workspace>, cx: &App) -> Option<PathBuf> {
-    let project = workspace.read(cx).project();
-    project.read(cx).visible_worktrees(cx).find_map(|worktree| {
-        worktree
-            .read(cx)
-            .as_local()
-            .map(|local| local.abs_path().to_path_buf())
-    })
-}
-
-fn workspace_location_snapshot(
+fn workspace_location_candidates(
     workspace: &Entity<Workspace>,
     cx: &App,
-) -> Option<WorkspaceLocation> {
-    let root_path = workspace.read(cx).root_paths(cx).into_iter().next()?;
+) -> Vec<WorkspaceLocation> {
     let project = workspace.read(cx).project();
     let project = project.read(cx);
 
     if let Some(connection) = project.remote_connection_options(cx) {
+        let Some(connection) = stored_ssh_connection_from_options(&connection) else {
+            return Vec::new();
+        };
+        return project
+            .visible_worktrees(cx)
+            .map(|worktree| WorkspaceLocation::Ssh {
+                connection: connection.clone(),
+                worktree_path: worktree.read(cx).abs_path().to_string_lossy().into_owned(),
+            })
+            .collect();
+    }
+
+    if project.is_local() {
+        return project
+            .visible_worktrees(cx)
+            .filter_map(|worktree| {
+                worktree
+                    .read(cx)
+                    .as_local()
+                    .map(|local| WorkspaceLocation::Local {
+                        worktree_path: local.abs_path().to_path_buf(),
+                    })
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+fn single_workspace_location_snapshot(
+    workspace: &Entity<Workspace>,
+    cx: &App,
+) -> Option<WorkspaceLocation> {
+    let mut candidate_locations = workspace_location_candidates(workspace, cx);
+    if candidate_locations.len() == 1 {
+        candidate_locations.pop()
+    } else {
+        None
+    }
+}
+
+fn workspace_entry_matches_candidate_locations(
+    workspace_entry: &WorkspaceEntry,
+    candidate_locations: &[WorkspaceLocation],
+) -> bool {
+    candidate_locations
+        .iter()
+        .any(|location| workspace_entry.matches_locator(&workspace_location_to_locator(location)))
+}
+
+fn matched_workspace_ids_for_candidate_locations(
+    candidate_locations: &[WorkspaceLocation],
+    workspace_entries: &[WorkspaceEntry],
+) -> Vec<String> {
+    let mut workspace_ids = Vec::new();
+
+    for location in candidate_locations {
+        let Some(workspace_entry) = workspace_entries.iter().find(|workspace_entry| {
+            workspace_entry.matches_locator(&workspace_location_to_locator(location))
+        }) else {
+            continue;
+        };
+
+        if workspace_ids
+            .iter()
+            .all(|workspace_id| workspace_id != &workspace_entry.id)
+        {
+            workspace_ids.push(workspace_entry.id.clone());
+        }
+    }
+
+    workspace_ids
+}
+
+fn matched_workspace_id_for_candidate_locations(
+    candidate_locations: &[WorkspaceLocation],
+    workspace_entries: &[WorkspaceEntry],
+    preferred_workspace_id: Option<&str>,
+) -> Option<String> {
+    let matched_workspace_ids =
+        matched_workspace_ids_for_candidate_locations(candidate_locations, workspace_entries);
+
+    if let Some(preferred_workspace_id) = preferred_workspace_id
+        && matched_workspace_ids
+            .iter()
+            .any(|workspace_id| workspace_id == preferred_workspace_id)
+    {
+        return Some(preferred_workspace_id.to_string());
+    }
+
+    if matched_workspace_ids.len() == 1 {
+        matched_workspace_ids.first().cloned()
+    } else {
+        None
+    }
+}
+
+fn store_workspace_id_for_live_workspace(
+    workspace: &Entity<Workspace>,
+    store: &SuperzentStore,
+    preferred_workspace_id: Option<&str>,
+    cx: &App,
+) -> Option<String> {
+    let candidate_locations = workspace_location_candidates(workspace, cx);
+    matched_workspace_id_for_candidate_locations(
+        &candidate_locations,
+        store.workspaces(),
+        preferred_workspace_id,
+    )
+}
+
+fn workspace_contains_local_worktree_path(
+    workspace: &Entity<Workspace>,
+    path: &Path,
+    cx: &App,
+) -> bool {
+    workspace_location_candidates(workspace, cx)
+        .iter()
+        .any(|candidate_location| match candidate_location {
+            WorkspaceLocation::Local { worktree_path } => worktree_path == path,
+            WorkspaceLocation::Ssh { .. } => false,
+        })
+}
+
+fn live_project_location_for_workspace(
+    workspace: &Entity<Workspace>,
+    cx: &App,
+) -> Option<ProjectLocation> {
+    let project = workspace.read(cx).project();
+    let project = project.read(cx);
+    let repository = project
+        .active_repository(cx)
+        .or_else(|| project.repositories(cx).values().next().cloned());
+
+    if let Some(connection) = project.remote_connection_options(cx) {
         let connection = stored_ssh_connection_from_options(&connection)?;
-        return Some(WorkspaceLocation::Ssh {
+        let repository = repository?;
+        let repo_root = repository
+            .read(cx)
+            .original_repo_abs_path
+            .to_string_lossy()
+            .into_owned();
+        return Some(ProjectLocation::Ssh {
             connection,
-            worktree_path: root_path.to_string_lossy().into_owned(),
+            repo_root,
         });
     }
 
-    project.is_local().then_some(WorkspaceLocation::Local {
-        worktree_path: root_path.as_ref().to_path_buf(),
-    })
+    if project.is_local() {
+        let repository = repository?;
+        return Some(ProjectLocation::Local {
+            repo_root: repository.read(cx).original_repo_abs_path.to_path_buf(),
+        });
+    }
+
+    None
+}
+
+fn inferred_project_id_for_live_workspace(
+    workspace: &Entity<Workspace>,
+    store: &SuperzentStore,
+    cx: &App,
+) -> Option<String> {
+    let candidate_locations = workspace_location_candidates(workspace, cx);
+    let mut project_ids = Vec::new();
+
+    for workspace_id in
+        matched_workspace_ids_for_candidate_locations(&candidate_locations, store.workspaces())
+    {
+        let Some(project_id) = store
+            .workspace(&workspace_id)
+            .map(|workspace| workspace.project_id.clone())
+        else {
+            continue;
+        };
+        if project_ids
+            .iter()
+            .all(|existing_project_id| existing_project_id != &project_id)
+        {
+            project_ids.push(project_id);
+        }
+    }
+
+    if project_ids.len() == 1 {
+        return project_ids.first().cloned();
+    }
+
+    let project_location = live_project_location_for_workspace(workspace, cx)?;
+    store
+        .project_for_location(&project_location)
+        .map(|project| project.id.clone())
 }
 
 fn workspace_matches_entry(
@@ -5348,20 +5540,8 @@ fn workspace_matches_entry(
     workspace_entry: &WorkspaceEntry,
     cx: &App,
 ) -> bool {
-    workspace_location_snapshot(workspace, cx).is_some_and(|location| {
-        workspace_entry.matches_locator(&workspace_location_to_locator(&location))
-    })
-}
-
-fn store_workspace_id_for_live_workspace(
-    workspace: &Entity<Workspace>,
-    store: &SuperzentStore,
-    cx: &App,
-) -> Option<String> {
-    workspace_location_snapshot(workspace, cx)
-        .as_ref()
-        .and_then(|location| store.workspace_for_location(location))
-        .map(|workspace_entry| workspace_entry.id.clone())
+    let candidate_locations = workspace_location_candidates(workspace, cx);
+    workspace_entry_matches_candidate_locations(workspace_entry, &candidate_locations)
 }
 
 fn workspace_for_entry_in_window(
@@ -5441,24 +5621,6 @@ fn ordered_multi_workspace_windows(cx: &App) -> Vec<WindowHandle<MultiWorkspace>
         .collect()
 }
 
-fn notification_window_for_workspace_entry(
-    workspace_entry: &WorkspaceEntry,
-    cx: &App,
-) -> Option<WindowHandle<MultiWorkspace>> {
-    ordered_multi_workspace_windows(cx)
-        .into_iter()
-        .find(|window| {
-            window
-                .read_with(cx, |multi_workspace, cx| {
-                    multi_workspace
-                        .workspaces()
-                        .iter()
-                        .any(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
-                })
-                .unwrap_or(false)
-        })
-}
-
 fn fallback_notification_window(cx: &App) -> Option<WindowHandle<MultiWorkspace>> {
     cx.active_window()
         .and_then(|window| window.downcast::<MultiWorkspace>())
@@ -5474,6 +5636,27 @@ fn active_repository_for_workspace(
     project
         .active_repository(cx)
         .or_else(|| project.repositories(cx).values().next().cloned())
+}
+
+fn detached_head_display_name(head_commit_sha: Option<&str>) -> String {
+    head_commit_sha
+        .map(|sha| sha.chars().take(7).collect())
+        .unwrap_or_else(|| "Detached".to_string())
+}
+
+fn repository_branch_display_name(repository: &Repository) -> String {
+    repository
+        .branch
+        .as_ref()
+        .map(|branch| branch.name().to_string())
+        .unwrap_or_else(|| {
+            detached_head_display_name(
+                repository
+                    .head_commit
+                    .as_ref()
+                    .map(|commit| commit.sha.as_ref()),
+            )
+        })
 }
 
 fn workspace_location_to_locator(
@@ -5760,7 +5943,7 @@ fn build_local_workspace_bundle(
     store: &SuperzentStore,
     cx: &App,
 ) -> Option<(ProjectEntry, WorkspaceEntry)> {
-    let workspace_location = match workspace_location_snapshot(workspace, cx)? {
+    let workspace_location = match single_workspace_location_snapshot(workspace, cx)? {
         WorkspaceLocation::Local { worktree_path } => WorkspaceLocation::Local { worktree_path },
         WorkspaceLocation::Ssh { .. } => return None,
     };
@@ -5780,11 +5963,7 @@ fn build_local_workspace_bundle(
             let repository = repository.read(cx);
             (
                 repository.original_repo_abs_path.to_path_buf(),
-                repository
-                    .branch
-                    .as_ref()
-                    .map(|branch| branch.name().to_string())
-                    .unwrap_or_else(|| "HEAD".to_string()),
+                repository_branch_display_name(&repository),
                 WorkspaceGitStatus::Available,
                 Some(git_change_summary_from_repository(&repository)),
             )
@@ -5905,7 +6084,7 @@ fn build_remote_workspace_bundle(
     store: &SuperzentStore,
     cx: &App,
 ) -> Option<(ProjectEntry, WorkspaceEntry)> {
-    let workspace_location = match workspace_location_snapshot(workspace, cx)? {
+    let workspace_location = match single_workspace_location_snapshot(workspace, cx)? {
         WorkspaceLocation::Ssh {
             connection,
             worktree_path,
@@ -5936,11 +6115,7 @@ fn build_remote_workspace_bundle(
             .original_repo_abs_path
             .to_string_lossy()
             .into_owned();
-        let branch = repository
-            .branch
-            .as_ref()
-            .map(|branch| branch.name().to_string())
-            .unwrap_or_else(|| "HEAD".to_string());
+        let branch = repository_branch_display_name(&repository);
         (
             repo_root,
             branch,
@@ -6524,6 +6699,66 @@ mod tests {
         }
     }
 
+    fn local_workspace_entry(id: &str, project_id: &str, worktree_path: &str) -> WorkspaceEntry {
+        WorkspaceEntry {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            kind: WorkspaceKind::Worktree,
+            name: id.to_string(),
+            display_name: None,
+            branch: id.to_string(),
+            location: WorkspaceLocation::Local {
+                worktree_path: PathBuf::from(worktree_path),
+            },
+            agent_preset_id: "codex".to_string(),
+            managed: true,
+            git_status: WorkspaceGitStatus::Available,
+            git_summary: None,
+            attention_status: WorkspaceAttentionStatus::Idle,
+            review_pending: false,
+            last_attention_reason: None,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        }
+    }
+
+    fn ssh_connection() -> StoredSshConnection {
+        StoredSshConnection {
+            host: "example.com".to_string(),
+            username: Some("developer".to_string()),
+            port: Some(22),
+            args: Vec::new(),
+            nickname: None,
+            upload_binary_over_ssh: false,
+            port_forwards: Vec::new(),
+            connection_timeout: None,
+        }
+    }
+
+    fn ssh_workspace_entry(id: &str, project_id: &str, worktree_path: &str) -> WorkspaceEntry {
+        WorkspaceEntry {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            kind: WorkspaceKind::Worktree,
+            name: id.to_string(),
+            display_name: None,
+            branch: id.to_string(),
+            location: WorkspaceLocation::Ssh {
+                connection: ssh_connection(),
+                worktree_path: worktree_path.to_string(),
+            },
+            agent_preset_id: "codex".to_string(),
+            managed: true,
+            git_status: WorkspaceGitStatus::Available,
+            git_summary: None,
+            attention_status: WorkspaceAttentionStatus::Idle,
+            review_pending: false,
+            last_attention_reason: None,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn render_preset_command_line_preserves_verbatim_shell_commands() {
         let command = r#"codex -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#;
@@ -6662,6 +6897,117 @@ mod tests {
                 ahead_commits: 0,
                 behind_commits: 0,
             })
+        );
+    }
+
+    #[test]
+    fn detached_head_display_name_uses_short_sha() {
+        assert_eq!(
+            detached_head_display_name(Some("0123456789abcdef0123456789abcdef01234567")),
+            "0123456"
+        );
+    }
+
+    #[test]
+    fn detached_head_display_name_falls_back_when_sha_missing() {
+        assert_eq!(detached_head_display_name(None), "Detached");
+    }
+
+    #[test]
+    fn workspace_entry_matches_candidate_locations_matches_secondary_local_root() {
+        let workspace_entry =
+            local_workspace_entry("workspace-b", "project", "/tmp/project/worktrees/b");
+        let candidate_locations = vec![
+            WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/project"),
+            },
+            WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/project/worktrees/b"),
+            },
+        ];
+
+        assert!(workspace_entry_matches_candidate_locations(
+            &workspace_entry,
+            &candidate_locations
+        ));
+    }
+
+    #[test]
+    fn matched_workspace_id_for_candidate_locations_returns_none_when_multiroot_match_is_ambiguous()
+    {
+        let workspace_entries = vec![
+            local_workspace_entry("workspace-a", "project", "/tmp/project"),
+            local_workspace_entry("workspace-b", "project", "/tmp/project/worktrees/b"),
+        ];
+        let candidate_locations = vec![
+            WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/project"),
+            },
+            WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/project/worktrees/b"),
+            },
+        ];
+
+        assert_eq!(
+            matched_workspace_id_for_candidate_locations(
+                &candidate_locations,
+                &workspace_entries,
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn matched_workspace_id_for_candidate_locations_prefers_current_workspace_when_ambiguous() {
+        let workspace_entries = vec![
+            local_workspace_entry("workspace-a", "project", "/tmp/project"),
+            local_workspace_entry("workspace-b", "project", "/tmp/project/worktrees/b"),
+        ];
+        let candidate_locations = vec![
+            WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/project"),
+            },
+            WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/project/worktrees/b"),
+            },
+        ];
+
+        assert_eq!(
+            matched_workspace_id_for_candidate_locations(
+                &candidate_locations,
+                &workspace_entries,
+                Some("workspace-b")
+            ),
+            Some("workspace-b".to_string())
+        );
+    }
+
+    #[test]
+    fn matched_workspace_id_for_candidate_locations_matches_remote_worktree_candidates() {
+        let workspace_entries = vec![ssh_workspace_entry(
+            "workspace-remote",
+            "project",
+            "/repo/worktrees/feature-a",
+        )];
+        let candidate_locations = vec![
+            WorkspaceLocation::Ssh {
+                connection: ssh_connection(),
+                worktree_path: "/repo/main".to_string(),
+            },
+            WorkspaceLocation::Ssh {
+                connection: ssh_connection(),
+                worktree_path: "/repo/worktrees/feature-a".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            matched_workspace_id_for_candidate_locations(
+                &candidate_locations,
+                &workspace_entries,
+                None
+            ),
+            Some("workspace-remote".to_string())
         );
     }
 }

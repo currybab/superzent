@@ -1887,8 +1887,13 @@ impl Workspace {
                 });
             }
 
+            // Path opens and workspace restores share the same window-selection policy so
+            // no side path silently reintroduces extra MultiWorkspace windows.
+            let target_window =
+                requesting_window.or_else(|| cx.update(|cx| preferred_workspace_window(cx)));
+
             let (window, workspace): (WindowHandle<MultiWorkspace>, Entity<Workspace>) =
-                if let Some(window) = requesting_window {
+                if let Some(window) = target_window {
                     let centered_layout = serialized_workspace
                         .as_ref()
                         .map(|w| w.centered_layout)
@@ -8626,23 +8631,35 @@ pub async fn get_any_active_multi_workspace(
 
 fn activate_any_workspace_window(cx: &mut AsyncApp) -> Option<WindowHandle<MultiWorkspace>> {
     cx.update(|cx| {
-        if let Some(workspace_window) = cx
-            .active_window()
-            .and_then(|window| window.downcast::<MultiWorkspace>())
-        {
-            return Some(workspace_window);
-        }
-
-        for window in cx.windows() {
-            if let Some(workspace_window) = window.downcast::<MultiWorkspace>() {
-                workspace_window
-                    .update(cx, |_, window, _| window.activate_window())
-                    .ok();
-                return Some(workspace_window);
-            }
-        }
-        None
+        let workspace_window = preferred_workspace_window(cx)?;
+        workspace_window
+            .update(cx, |_, window, _| window.activate_window())
+            .ok();
+        Some(workspace_window)
     })
+}
+
+pub fn preferred_workspace_window(cx: &App) -> Option<WindowHandle<MultiWorkspace>> {
+    // The shell is intentionally single-window: prefer the focused MultiWorkspace,
+    // otherwise reuse the first one we already have instead of spawning another.
+    let open_window_ids = cx
+        .windows()
+        .into_iter()
+        .map(|window| window.window_id())
+        .collect::<Vec<_>>();
+    let is_open_workspace_window =
+        |window: &WindowHandle<MultiWorkspace>| open_window_ids.contains(&window.window_id());
+
+    cx.active_window()
+        .and_then(|window| window.downcast::<MultiWorkspace>())
+        .filter(is_open_workspace_window)
+        .or_else(|| {
+            cx.window_stack()
+                .unwrap_or_else(|| cx.windows())
+                .into_iter()
+                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .find(is_open_workspace_window)
+        })
 }
 
 pub fn local_workspace_windows(cx: &App) -> Vec<WindowHandle<MultiWorkspace>> {
@@ -8821,7 +8838,12 @@ pub fn open_workspace_by_id(
 
         let centered_layout = serialized_workspace.centered_layout;
 
-        let (window, workspace) = if let Some(window) = requesting_window {
+        // Empty-workspace restores also join the preferred shell window so persisted state
+        // cannot fan back out into multiple top-level windows.
+        let target_window =
+            requesting_window.or_else(|| cx.update(|cx| preferred_workspace_window(cx)));
+
+        let (window, workspace) = if let Some(window) = target_window {
             let workspace = window.update(cx, |multi_workspace, window, cx| {
                 let workspace = cx.new(|cx| {
                     let mut workspace = Workspace::new(
@@ -10000,10 +10022,7 @@ pub fn with_active_or_new_workspace(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + 'static,
 ) {
-    match cx
-        .active_window()
-        .and_then(|w| w.downcast::<MultiWorkspace>())
-    {
+    match preferred_workspace_window(cx) {
         Some(multi_workspace) => {
             cx.defer(move |cx| {
                 multi_workspace
