@@ -1,5 +1,7 @@
 # Rust coding guidelines
 
+`docs/solutions/` contains documented fixes and workflow learnings, organized by category with searchable frontmatter such as `module`, `problem_type`, and `tags`. Relevant when implementing or debugging in already-documented areas.
+
 * Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
 * Do not write organizational or comments that summarize the code. Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
 * Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
