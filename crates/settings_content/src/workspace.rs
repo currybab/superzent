@@ -119,6 +119,11 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub close_panel_on_toggle: Option<bool>,
+    /// Whether to show folders opened by Superzent in macOS Dock recent items.
+    /// This setting is user-global only and does not apply to project settings.
+    ///
+    /// Default: false on macOS, true otherwise
+    pub show_dock_recent_folders: Option<bool>,
     /// What draws window decorations/titlebar, the client application (Zed) or display server
     /// Default: client
     pub window_decorations: Option<WindowDecorations>,

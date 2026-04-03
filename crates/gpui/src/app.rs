@@ -2076,6 +2076,11 @@ impl App {
         self.platform.add_recent_document(path);
     }
 
+    /// Clears the recent paths associated with the application.
+    pub fn clear_recent_documents(&self) {
+        self.platform.clear_recent_documents();
+    }
+
     /// Updates the jump list with the updated list of recent paths for the application, only used on Windows for now.
     /// Note that this also sets the dock menu on Windows.
     pub fn update_jump_list(

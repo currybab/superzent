@@ -183,6 +183,7 @@ pub trait Platform: 'static {
     fn set_dock_menu(&self, menu: Vec<MenuItem>, keymap: &Keymap);
     fn perform_dock_menu_action(&self, _action: usize) {}
     fn add_recent_document(&self, _path: &Path) {}
+    fn clear_recent_documents(&self) {}
     fn update_jump_list(
         &self,
         _menus: Vec<MenuItem>,

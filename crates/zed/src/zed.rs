@@ -170,6 +170,7 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
+    bind_dock_recent_documents(cx);
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &Hide, cx| cx.hide());
     #[cfg(target_os = "macos")]
@@ -329,6 +330,23 @@ fn bind_on_window_closed(cx: &mut App) -> Option<gpui::Subscription> {
             }
         }))
     }
+}
+
+fn bind_dock_recent_documents(cx: &mut App) {
+    let mut were_recent_folders_enabled =
+        WorkspaceSettings::get_global(cx).show_dock_recent_folders;
+    if !were_recent_folders_enabled {
+        cx.clear_recent_documents();
+    }
+
+    cx.observe_global::<SettingsStore>(move |cx| {
+        let are_recent_folders_enabled = WorkspaceSettings::get_global(cx).show_dock_recent_folders;
+        if were_recent_folders_enabled && !are_recent_folders_enabled {
+            cx.clear_recent_documents();
+        }
+        were_recent_folders_enabled = are_recent_folders_enabled;
+    })
+    .detach();
 }
 
 pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowOptions {
@@ -5594,6 +5612,113 @@ mod tests {
         cx.run_until_parked();
 
         // If this panics, the test has failed
+    }
+
+    #[gpui::test]
+    async fn test_recent_documents_cleared_on_startup_when_disabled(cx: &mut gpui::TestAppContext) {
+        let _app_state = init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.workspace.show_dock_recent_folders = Some(false);
+                });
+            });
+            cx.add_recent_document(Path::new(path!("/root/old-worktree")));
+        });
+
+        assert_eq!(
+            cx.recent_documents(),
+            vec![PathBuf::from(path!("/root/old-worktree"))]
+        );
+
+        cx.update(init);
+        cx.run_until_parked();
+
+        assert!(cx.recent_documents().is_empty());
+        assert_eq!(cx.recent_documents_clear_count(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_recent_documents_not_cleared_on_startup_when_enabled(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _app_state = init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.workspace.show_dock_recent_folders = Some(true);
+                });
+            });
+            cx.add_recent_document(Path::new(path!("/root/old-worktree")));
+        });
+
+        cx.update(init);
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.recent_documents(),
+            vec![PathBuf::from(path!("/root/old-worktree"))]
+        );
+        assert_eq!(cx.recent_documents_clear_count(), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn test_recent_documents_cleared_on_startup_with_macos_default(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _app_state = init_test(cx);
+        cx.update(|cx| {
+            cx.add_recent_document(Path::new(path!("/root/old-worktree")));
+        });
+
+        cx.update(init);
+        cx.run_until_parked();
+
+        assert!(cx.recent_documents().is_empty());
+        assert_eq!(cx.recent_documents_clear_count(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_recent_documents_cleared_on_enabled_to_disabled_transition(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _app_state = init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.workspace.show_dock_recent_folders = Some(true);
+                });
+            });
+            cx.add_recent_document(Path::new(path!("/root/old-worktree")));
+        });
+
+        cx.update(init);
+        cx.run_until_parked();
+        assert_eq!(cx.recent_documents_clear_count(), 0);
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.workspace.show_dock_recent_folders = Some(false);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(cx.recent_documents().is_empty());
+        assert_eq!(cx.recent_documents_clear_count(), 1);
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings_store, cx| {
+                settings_store.update_user_settings(cx, |settings| {
+                    settings.workspace.show_dock_recent_folders = Some(false);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        assert_eq!(cx.recent_documents_clear_count(), 1);
     }
 
     #[gpui::test]

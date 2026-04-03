@@ -34,6 +34,8 @@ pub(crate) struct TestPlatform {
     pub opened_url: RefCell<Option<String>>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart: RefCell<Option<oneshot::Sender<Option<PathBuf>>>>,
+    recent_documents: RefCell<Vec<PathBuf>>,
+    recent_documents_clear_count: RefCell<usize>,
     headless_renderer_factory: Option<Box<dyn Fn() -> Option<Box<dyn PlatformHeadlessRenderer>>>>,
     weak: Weak<Self>,
 }
@@ -129,6 +131,8 @@ impl TestPlatform {
             current_find_pasteboard_item: Mutex::new(None),
             weak: weak.clone(),
             opened_url: Default::default(),
+            recent_documents: Default::default(),
+            recent_documents_clear_count: Default::default(),
             text_system,
             headless_renderer_factory,
         })
@@ -179,6 +183,14 @@ impl TestPlatform {
 
     pub(crate) fn set_screen_capture_sources(&self, sources: Vec<TestScreenCaptureSource>) {
         *self.screen_capture_sources.borrow_mut() = sources;
+    }
+
+    pub(crate) fn recent_documents(&self) -> Vec<PathBuf> {
+        self.recent_documents.borrow().clone()
+    }
+
+    pub(crate) fn recent_documents_clear_count(&self) -> usize {
+        *self.recent_documents_clear_count.borrow()
     }
 
     pub(crate) fn prompt(
@@ -383,7 +395,21 @@ impl Platform for TestPlatform {
     fn set_menus(&self, _menus: Vec<crate::Menu>, _keymap: &Keymap) {}
     fn set_dock_menu(&self, _menu: Vec<crate::MenuItem>, _keymap: &Keymap) {}
 
-    fn add_recent_document(&self, _paths: &Path) {}
+    fn add_recent_document(&self, path: &Path) {
+        let mut recent_documents = self.recent_documents.borrow_mut();
+        if let Some(index) = recent_documents
+            .iter()
+            .position(|existing| existing == path)
+        {
+            recent_documents.remove(index);
+        }
+        recent_documents.push(path.to_path_buf());
+    }
+
+    fn clear_recent_documents(&self) {
+        self.recent_documents.borrow_mut().clear();
+        *self.recent_documents_clear_count.borrow_mut() += 1;
+    }
 
     fn on_app_menu_action(&self, _callback: Box<dyn FnMut(&dyn crate::Action)>) {}
 

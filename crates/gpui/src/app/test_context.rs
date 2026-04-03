@@ -354,6 +354,16 @@ impl TestAppContext {
         self.test_platform.opened_url.borrow().clone()
     }
 
+    /// Returns the recent documents recorded by the test platform.
+    pub fn recent_documents(&self) -> Vec<PathBuf> {
+        self.test_platform.recent_documents()
+    }
+
+    /// Returns how many times the test platform cleared recent documents.
+    pub fn recent_documents_clear_count(&self) -> usize {
+        self.test_platform.recent_documents_clear_count()
+    }
+
     /// Simulates the user resizing the window to the new size.
     pub fn simulate_window_resize(&self, window_handle: AnyWindowHandle, size: Size<Pixels>) {
         self.test_window(window_handle).simulate_resize(size);
