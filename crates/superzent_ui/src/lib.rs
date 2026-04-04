@@ -202,6 +202,7 @@ struct LiveTerminalAttention {
 struct WorkspaceAttentionController {
     store: Entity<SuperzentStore>,
     terminal_ids_by_entity: BTreeMap<EntityId, String>,
+    workspace_ids_by_terminal: BTreeMap<String, String>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -250,6 +251,7 @@ impl WorkspaceAttentionController {
         Self {
             store,
             terminal_ids_by_entity: BTreeMap::new(),
+            workspace_ids_by_terminal: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
@@ -264,6 +266,7 @@ impl WorkspaceAttentionController {
         &mut self,
         terminal: Entity<T>,
         terminal_id: String,
+        workspace_id: Option<String>,
         cx: &mut Context<Self>,
     ) where
         T: 'static,
@@ -271,6 +274,10 @@ impl WorkspaceAttentionController {
         let entity_id = terminal.entity_id();
         self.terminal_ids_by_entity
             .insert(entity_id, terminal_id.clone());
+        if let Some(workspace_id) = workspace_id {
+            self.workspace_ids_by_terminal
+                .insert(terminal_id.clone(), workspace_id);
+        }
 
         cx.observe_release(&terminal, move |this, _, cx| {
             this.unregister_terminal(&terminal_id, entity_id, cx);
@@ -285,8 +292,13 @@ impl WorkspaceAttentionController {
         cx: &mut Context<Self>,
     ) {
         self.terminal_ids_by_entity.remove(&entity_id);
-        if let Some(live_attention) = self.live_terminal_attention.remove(terminal_id) {
-            self.recompute_workspace_attention(&live_attention.workspace_id, cx);
+        let tracked_workspace_id = self.workspace_ids_by_terminal.remove(terminal_id);
+        let workspace_id = workspace_id_for_terminal_unregister(
+            self.live_terminal_attention.remove(terminal_id).as_ref(),
+            tracked_workspace_id.as_deref(),
+        );
+        if let Some(workspace_id) = workspace_id {
+            self.recompute_workspace_attention(&workspace_id, cx);
         }
     }
 
@@ -760,7 +772,12 @@ pub fn init(cx: &mut App) {
             };
 
             attention_controller.update(cx, |controller, cx| {
-                controller.register_terminal(terminal, terminal_id.clone(), cx);
+                controller.register_terminal(
+                    terminal,
+                    terminal_id.clone(),
+                    workspace_id.clone(),
+                    cx,
+                );
             });
 
             let Some(workspace_id) = workspace_id else {
@@ -6391,6 +6408,15 @@ fn workspace_attention_reason_for_terminal_status(
     }
 }
 
+fn workspace_id_for_terminal_unregister(
+    live_attention: Option<&LiveTerminalAttention>,
+    tracked_workspace_id: Option<&str>,
+) -> Option<String> {
+    live_attention
+        .map(|attention| attention.workspace_id.clone())
+        .or_else(|| tracked_workspace_id.map(ToOwned::to_owned))
+}
+
 fn workspace_row_status_kind(
     workspace: &WorkspaceEntry,
     is_open_in_current_window: bool,
@@ -7003,6 +7029,27 @@ mod tests {
         assert_eq!(
             workspace_attention_reason_for_terminal_status(&TaskStatus::Failed, reason.clone()),
             reason
+        );
+    }
+
+    #[test]
+    fn terminal_unregister_prefers_live_attention_workspace() {
+        let live_attention = LiveTerminalAttention {
+            workspace_id: "workspace-live".to_string(),
+            status: WorkspaceAttentionStatus::Working,
+        };
+
+        assert_eq!(
+            workspace_id_for_terminal_unregister(Some(&live_attention), Some("workspace-tracked")),
+            Some("workspace-live".to_string())
+        );
+    }
+
+    #[test]
+    fn terminal_unregister_falls_back_to_tracked_workspace_when_live_attention_is_missing() {
+        assert_eq!(
+            workspace_id_for_terminal_unregister(None, Some("workspace-tracked")),
+            Some("workspace-tracked".to_string())
         );
     }
 
