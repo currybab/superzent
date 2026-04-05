@@ -20,7 +20,7 @@ use settings::{DevContainerConnection, ExtendingVec, RegisterSetting, Settings, 
 use util::paths::PathWithPosition;
 use workspace::{
     AppState, MultiWorkspace, OpenOptions, SerializedWorkspaceLocation, Workspace,
-    find_existing_workspace,
+    find_existing_workspace, preferred_workspace_window,
 };
 
 pub use remote_connection::{
@@ -234,7 +234,12 @@ pub async fn open_remote_project(
                 Some(existing_workspace),
                 workspace_paths,
             )
-        } else if let Some(window) = open_options.replace_window {
+        } else if let Some(window) = open_options
+            .replace_window
+            .or_else(|| cx.update(|cx| preferred_workspace_window(cx)))
+        {
+            // Remote opens should also land in the single shell window when we do not already
+            // have a more specific target, otherwise reconnect flows fork extra app windows.
             let workspace = window.update(cx, |multi_workspace, _, _| {
                 multi_workspace.workspace().clone()
             })?;

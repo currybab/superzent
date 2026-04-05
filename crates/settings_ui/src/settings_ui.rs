@@ -560,7 +560,7 @@ fn init_renderers(cx: &mut App) {
         // please semicolon stay on next line
         ;
 
-    #[cfg(feature = "ai")]
+    #[cfg(feature = "edit_prediction")]
     cx.default_global::<SettingFieldRenderer>()
         .add_basic_renderer::<settings::OllamaModelName>(
             crate::components::render_ollama_model_picker,
@@ -3028,7 +3028,7 @@ impl SettingsWindow {
         self.render_sub_page_items_in(page_content, items, false, window, cx)
     }
 
-    #[cfg(feature = "ai")]
+    #[cfg(feature = "edit_prediction")]
     fn render_sub_page_items_section<'a, Items>(
         &self,
         items: Items,
@@ -4721,6 +4721,37 @@ pub mod test {
         > Appearance & Behavior
         "
     );
+
+    #[cfg(feature = "edit_prediction")]
+    #[gpui::test]
+    async fn test_edit_prediction_provider_subpage_is_registered(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            register_settings(cx);
+            let app_state = AppState::test(cx);
+            AppState::set_global(Arc::downgrade(&app_state), cx);
+        });
+
+        let (settings_window, cx) =
+            cx.add_window_view(|window, cx| SettingsWindow::new(None, window, cx));
+
+        settings_window.read_with(cx, |settings_window, _| {
+            assert!(
+                settings_window
+                    .pages
+                    .iter()
+                    .any(|page| page.items.iter().any(|item| {
+                        matches!(
+                            item,
+                            SettingsPageItem::SubPageLink(SubPageLink {
+                                json_path: Some("edit_predictions.providers"),
+                                ..
+                            })
+                        )
+                    })),
+                "settings UI should register the edit prediction providers sub-page"
+            );
+        });
+    }
 
     #[gpui::test]
     async fn test_settings_window_shows_worktrees_from_multiple_workspaces(

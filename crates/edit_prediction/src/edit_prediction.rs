@@ -31,13 +31,11 @@ use language::language_settings::all_language_settings;
 use language::{Anchor, Buffer, File, Point, TextBufferSnapshot, ToOffset, ToPoint};
 use language::{BufferSnapshot, OffsetRangeExt};
 use language_model::{LlmApiToken, NeedsLlmTokenRefresh};
-use project::{DisableAiSettings, Project, ProjectPath, WorktreeId};
+use project::{Project, ProjectPath, WorktreeId};
 use release_channel::AppVersion;
 use semver::Version;
 use serde::de::DeserializeOwned;
-use settings::{
-    EditPredictionPromptFormat, EditPredictionProvider, Settings as _, update_settings_file,
-};
+use settings::{EditPredictionPromptFormat, EditPredictionProvider, update_settings_file};
 use std::collections::{VecDeque, hash_map};
 use std::env;
 use text::{AnchorRangeExt, Edit};
@@ -1035,9 +1033,6 @@ impl EditPredictionStore {
         project: &Entity<Project>,
         cx: &mut Context<Self>,
     ) -> Option<Entity<Copilot>> {
-        if DisableAiSettings::get(None, cx).disable_ai {
-            return None;
-        }
         let state = self.get_or_init_project(project, cx);
 
         if state.copilot.is_some() {

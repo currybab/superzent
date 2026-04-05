@@ -2564,5 +2564,7 @@ mod tests {
 
         assert!(user_schema_str.contains("\"auto_update\""));
         assert!(!project_schema_str.contains("\"auto_update\""));
+        assert!(user_schema_str.contains("\"show_dock_recent_folders\""));
+        assert!(!project_schema_str.contains("\"show_dock_recent_folders\""));
     }
 }

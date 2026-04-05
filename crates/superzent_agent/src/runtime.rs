@@ -20,6 +20,7 @@ pub const AGENT_REAL_CLAUDE_BIN_ENV_VAR: &str = "SUPERZENT_REAL_CLAUDE_BIN";
 pub const AGENT_REAL_CODEX_BIN_ENV_VAR: &str = "SUPERZENT_REAL_CODEX_BIN";
 pub const AGENT_TERMINAL_ID_ENV_VAR: &str = "SUPERZENT_TERMINAL_ID";
 pub const AGENT_WORKSPACE_ID_ENV_VAR: &str = "SUPERZENT_WORKSPACE_ID";
+pub const AGENT_DEBUG_HOOKS_ENV_VAR: &str = "SUPERZENT_DEBUG_HOOKS";
 
 const CLAUDE_SETTINGS_FILE_NAME: &str = "claude-settings.json";
 const HOOK_ENDPOINT_PATH: &str = "/agent-hook";
@@ -27,6 +28,12 @@ const NOTIFY_SCRIPT_FILE_NAME: &str = "notify.sh";
 const WRAPPER_MARKER: &str = "# Superzent agent wrapper v1";
 
 static HOOK_RUNTIME: OnceLock<AgentHookRuntime> = OnceLock::new();
+
+fn debug_hooks_enabled() -> bool {
+    std::env::var("SUPERZENT_DEBUG_HOOKS")
+        .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "False"))
+        .unwrap_or(false)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedWorkspaceLaunch {
@@ -81,6 +88,9 @@ pub fn inject_terminal_environment(environment: &mut HashMap<String, String>) ->
         AGENT_HOOK_VERSION.to_string(),
     );
     environment.insert(AGENT_TERMINAL_ID_ENV_VAR.to_string(), terminal_id.clone());
+    if let Ok(debug_hooks) = std::env::var(AGENT_DEBUG_HOOKS_ENV_VAR) {
+        environment.insert(AGENT_DEBUG_HOOKS_ENV_VAR.to_string(), debug_hooks);
+    }
     prepend_path_entry(environment, &runtime.paths.bin_dir);
 
     Ok(terminal_id)
@@ -234,13 +244,28 @@ fn spawn_hook_server(
 
                 let response = match parse_request(request.url()) {
                     Ok(Some(event)) => {
+                        if debug_hooks_enabled() {
+                            log::info!(
+                                "superzent hook server accepted event: type={:?} terminal_id={} workspace_id={:?} session_id={:?} cwd={:?}",
+                                event.event_type,
+                                event.terminal_id,
+                                event.workspace_id,
+                                event.session_id,
+                                event.cwd,
+                            );
+                        }
                         if let Ok(mut subscribers) = subscribers.lock() {
                             subscribers
                                 .retain(|sender| sender.send_blocking(event.clone()).is_ok());
                         }
                         Response::empty(204)
                     }
-                    Ok(None) => Response::empty(204),
+                    Ok(None) => {
+                        if debug_hooks_enabled() {
+                            log::info!("superzent hook server ignored request: url={}", request.url());
+                        }
+                        Response::empty(204)
+                    }
                     Err(error) => {
                         log::warn!("failed to parse agent hook request: {error:#}");
                         Response::empty(400)
@@ -259,6 +284,9 @@ fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
     let url =
         Url::parse(&format!("http://127.0.0.1{url}")).context("failed to parse agent hook url")?;
     if url.path() != HOOK_ENDPOINT_PATH {
+        if debug_hooks_enabled() {
+            log::info!("superzent hook parse skipped non-hook path: {}", url.path());
+        }
         return Ok(None);
     }
 
@@ -274,6 +302,13 @@ fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
     }
 
     let Some(event_type) = params.event_type.as_deref().and_then(map_hook_event_type) else {
+        if debug_hooks_enabled() {
+            log::info!(
+                "superzent hook parse ignored unknown event_type: raw={:?} query={}",
+                params.event_type,
+                query
+            );
+        }
         return Ok(None);
     };
 
@@ -281,6 +316,17 @@ fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
         .terminal_id
         .filter(|terminal_id| !terminal_id.trim().is_empty())
         .context("missing terminal_id in agent hook request")?;
+
+    if debug_hooks_enabled() {
+        log::info!(
+            "superzent hook parse mapped event: raw={:?} mapped={:?} terminal_id={} workspace_id={:?} session_id={:?}",
+            params.event_type,
+            event_type,
+            terminal_id,
+            params.workspace_id,
+            params.session_id,
+        );
+    }
 
     Ok(Some(AgentHookEvent {
         event_type,
@@ -313,10 +359,22 @@ struct HookRequestParams {
 
 fn map_hook_event_type(event_type: &str) -> Option<AgentHookEventType> {
     match event_type {
-        "Start" | "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "BeforeAgent"
-        | "AfterTool" => Some(AgentHookEventType::Start),
-        "PermissionRequest" | "preToolUse" => Some(AgentHookEventType::PermissionRequest),
-        "Stop" | "AfterAgent" | "agent-turn-complete" => Some(AgentHookEventType::Stop),
+        "Start"
+        | "UserPromptSubmit"
+        | "PostToolUse"
+        | "PostToolUseFailure"
+        | "BeforeAgent"
+        | "AfterTool"
+        | "SessionStart"
+        | "sessionStart"
+        | "userPromptSubmitted"
+        | "postToolUse" => Some(AgentHookEventType::Start),
+        "PermissionRequest" | "preToolUse" | "Notification" => {
+            Some(AgentHookEventType::PermissionRequest)
+        }
+        "Stop" | "AfterAgent" | "agent-turn-complete" | "sessionEnd" => {
+            Some(AgentHookEventType::Stop)
+        }
         _ => None,
     }
 }
@@ -395,13 +453,22 @@ fn notify_script_content() -> String {
     r#"#!/bin/bash
 # Superzent agent notification hook
 
+_superzent_debug_enabled=0
+case "${SUPERZENT_DEBUG_HOOKS:-}" in
+  1|true|TRUE|True|yes|YES|on|ON) _superzent_debug_enabled=1 ;;
+esac
+_superzent_debug_log="${TMPDIR:-/tmp}/superzent-notify-debug.log"
+
 if [ -n "$1" ]; then
   INPUT="$1"
 else
   INPUT=$(cat)
 fi
 
+[ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') notify.sh called hook_url=$SUPERZENT_AGENT_HOOK_URL terminal_id=$SUPERZENT_TERMINAL_ID workspace_id=$SUPERZENT_WORKSPACE_ID input=$INPUT" >> "$_superzent_debug_log"
+
 if [ -z "$SUPERZENT_AGENT_HOOK_URL" ] || [ -z "$SUPERZENT_TERMINAL_ID" ]; then
+  [ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') notify.sh skipped missing hook env" >> "$_superzent_debug_log"
   exit 0
 fi
 
@@ -410,9 +477,12 @@ if [ -z "$EVENT_TYPE" ]; then
   EVENT_TYPE=$(printf '%s\n' "$INPUT" | grep -oE '"type"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
 fi
 
-[ -z "$EVENT_TYPE" ] && exit 0
+if [ -z "$EVENT_TYPE" ]; then
+  [ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') notify.sh skipped missing event_type" >> "$_superzent_debug_log"
+  exit 0
+fi
 
-curl -fsSG "$SUPERZENT_AGENT_HOOK_URL" \
+_superzent_status=$(curl -sSG "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
   --data-urlencode "event_type=$EVENT_TYPE" \
@@ -421,7 +491,9 @@ curl -fsSG "$SUPERZENT_AGENT_HOOK_URL" \
   --data-urlencode "session_id=$SUPERZENT_SESSION_ID" \
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
-  > /dev/null 2>&1
+  -o /dev/null -w "%{http_code}" 2>/dev/null)
+_superzent_exit=$?
+[ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') notify.sh dispatched event_type=$EVENT_TYPE curl_exit=$_superzent_exit status=$_superzent_status" >> "$_superzent_debug_log"
 
 exit 0
 "#
@@ -430,13 +502,18 @@ exit 0
 
 fn claude_settings_content(notify_script_path: &Path) -> Result<String> {
     let notify_script_path = notify_script_path.to_string_lossy().to_string();
+    let notify_command = format!(
+        "[ -x {path} ] && {path} || true",
+        path = shell_single_quote(&notify_script_path)
+    );
     let settings = serde_json::json!({
         "hooks": {
-            "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": notify_script_path }] }],
-            "Stop": [{ "hooks": [{ "type": "command", "command": notify_script_path }] }],
-            "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_script_path }] }],
-            "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_script_path }] }],
-            "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_script_path }] }],
+            "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
+            "SessionStart": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
+            "Stop": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
+            "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
+            "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
+            "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
         }
     });
     serde_json::to_string(&settings).context("failed to serialize Claude settings")
@@ -481,13 +558,25 @@ fn claude_wrapper_content(bin_dir: &Path, claude_settings_path: &Path) -> String
     format!(
         r#"#!/bin/bash
 {WRAPPER_MARKER}
+_superzent_debug_enabled=0
+case "${{{AGENT_DEBUG_HOOKS_ENV_VAR}:-}}" in
+  1|true|TRUE|True|yes|YES|on|ON) _superzent_debug_enabled=1 ;;
+esac
+_superzent_debug_log="${{TMPDIR:-/tmp}}/superzent-notify-debug.log"
+if [ "$_superzent_debug_enabled" = "1" ]; then
+  echo "$(date '+%H:%M:%S') claude wrapper invoked settings={claude_settings_path} hook_url=$SUPERZENT_AGENT_HOOK_URL terminal_id=$SUPERZENT_TERMINAL_ID" >> "$_superzent_debug_log"
+fi
 {resolver}
 REAL_BIN="$(find_real_binary)"
 if [ -z "$REAL_BIN" ]; then
   echo "Superzent: claude not found in PATH." >&2
+  [ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') claude wrapper failed: real binary not found" >> "$_superzent_debug_log"
   exit 127
 fi
 
+if [ "$_superzent_debug_enabled" = "1" ]; then
+  echo "$(date '+%H:%M:%S') claude wrapper exec REAL_BIN=$REAL_BIN" >> "$_superzent_debug_log"
+fi
 exec "$REAL_BIN" --settings {claude_settings_path} "$@"
 "#,
         resolver = wrapper_resolver_content("claude", AGENT_REAL_CLAUDE_BIN_ENV_VAR, bin_dir),
@@ -611,7 +700,27 @@ mod tests {
             Some(AgentHookEventType::PermissionRequest)
         );
         assert_eq!(
+            map_hook_event_type("Notification"),
+            Some(AgentHookEventType::PermissionRequest)
+        );
+        assert_eq!(
+            map_hook_event_type("sessionStart"),
+            Some(AgentHookEventType::Start)
+        );
+        assert_eq!(
+            map_hook_event_type("userPromptSubmitted"),
+            Some(AgentHookEventType::Start)
+        );
+        assert_eq!(
+            map_hook_event_type("postToolUse"),
+            Some(AgentHookEventType::Start)
+        );
+        assert_eq!(
             map_hook_event_type("agent-turn-complete"),
+            Some(AgentHookEventType::Stop)
+        );
+        assert_eq!(
+            map_hook_event_type("sessionEnd"),
             Some(AgentHookEventType::Stop)
         );
         assert_eq!(map_hook_event_type("Unknown"), None);

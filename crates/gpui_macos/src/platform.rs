@@ -958,6 +958,14 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn clear_recent_documents(&self) {
+        unsafe {
+            let document_controller: id =
+                msg_send![class!(NSDocumentController), sharedDocumentController];
+            let _: () = msg_send![document_controller, clearRecentDocuments:nil];
+        }
+    }
+
     fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf> {
         unsafe {
             let bundle: id = NSBundle::mainBundle();

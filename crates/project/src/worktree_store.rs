@@ -19,6 +19,7 @@ use rpc::{
     AnyProtoClient, ErrorExt, TypedEnvelope,
     proto::{self, REMOTE_SERVER_PROJECT_ID},
 };
+use settings::{RegisterSetting, Settings};
 use text::ReplicaId;
 use util::{
     ResultExt,
@@ -63,6 +64,22 @@ impl WorktreeIdCounter {
 }
 
 impl Global for WorktreeIdCounter {}
+
+#[derive(Copy, Clone, Debug, RegisterSetting)]
+struct DockRecentFoldersSettings {
+    show_dock_recent_folders: bool,
+}
+
+impl Settings for DockRecentFoldersSettings {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        Self {
+            show_dock_recent_folders: content
+                .workspace
+                .show_dock_recent_folders
+                .unwrap_or(!cfg!(target_os = "macos")),
+        }
+    }
+}
 
 pub struct WorktreeStore {
     next_entry_id: Arc<AtomicUsize>,
@@ -680,7 +697,11 @@ impl WorktreeStore {
 
             this.update(cx, |this, cx| this.add(&worktree, cx))?;
 
-            if visible {
+            let should_add_recent_document = visible
+                && cx.update(|cx| {
+                    DockRecentFoldersSettings::get_global(cx).show_dock_recent_folders
+                });
+            if should_add_recent_document {
                 cx.update(|cx| {
                     cx.add_recent_document(abs_path.as_path());
                 });

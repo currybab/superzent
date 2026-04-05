@@ -20,7 +20,7 @@ use language::{
     EditPredictionsMode, File, Language,
     language_settings::{self, AllLanguageSettings, EditPredictionProvider, all_language_settings},
 };
-use project::{DisableAiSettings, Project};
+use project::Project;
 use regex::Regex;
 use settings::{Settings, SettingsStore, update_settings_file};
 use std::{
@@ -41,7 +41,12 @@ use workspace::{
 use zed_actions::{OpenBrowser, OpenSettingsAt};
 
 use crate::{
-    CaptureExample, RatePredictions, rate_prediction_modal::PredictEditsRatePredictionsFeatureFlag,
+    CaptureExample, RatePredictions,
+    provider_policy::{
+        current_edit_prediction_provider, edit_prediction_provider_supported,
+        normalize_edit_prediction_provider, zed_hosted_provider_supported,
+    },
+    rate_prediction_modal::PredictEditsRatePredictionsFeatureFlag,
 };
 
 actions!(
@@ -74,19 +79,15 @@ pub struct EditPredictionButton {
 
 impl Render for EditPredictionButton {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Return empty div if AI is disabled
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return div().hidden();
-        }
+        let current_provider = current_edit_prediction_provider(cx);
 
-        let language_settings = all_language_settings(None, cx);
-
-        match language_settings.edit_predictions.provider {
+        match current_provider {
             EditPredictionProvider::Copilot => {
                 let Some(copilot) = EditPredictionStore::try_global(cx)
                     .and_then(|store| store.read(cx).copilot_for_project(&self.project.upgrade()?))
                 else {
-                    return div().hidden();
+                    return div()
+                        .child(self.render_setup_button(self.editor_enabled.unwrap_or(true), cx));
                 };
                 let status = copilot.read(cx).status();
 
@@ -379,7 +380,11 @@ impl Render for EditPredictionButton {
                     }
                 };
 
-                if edit_prediction::should_show_upsell_modal() {
+                if matches!(
+                    provider,
+                    EditPredictionProvider::Zed | EditPredictionProvider::Experimental(_)
+                ) && edit_prediction::should_show_upsell_modal()
+                {
                     let tooltip_meta = if self.user_store.read(cx).current_user().is_some() {
                         "Choose a Plan"
                     } else {
@@ -519,12 +524,49 @@ impl Render for EditPredictionButton {
                 div().child(popover_menu.into_any_element())
             }
 
-            EditPredictionProvider::None => div().hidden(),
+            EditPredictionProvider::None => {
+                div().child(self.render_setup_button(self.editor_enabled.unwrap_or(true), cx))
+            }
         }
     }
 }
 
 impl EditPredictionButton {
+    fn render_setup_button(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
+        IconButton::new("edit-prediction-setup-button", IconName::ZedPredict)
+            .shape(IconButtonShape::Square)
+            .when(!enabled, |this| {
+                this.indicator(Indicator::dot().color(Color::Ignored))
+                    .indicator_border_color(Some(cx.theme().colors().status_bar_background))
+            })
+            .when(enabled, |this| {
+                this.indicator(Indicator::dot().color(Color::Muted))
+                    .indicator_border_color(Some(cx.theme().colors().status_bar_background))
+            })
+            .tooltip(|_window, cx| {
+                Tooltip::with_meta(
+                    "Edit Prediction",
+                    Some(&ToggleMenu),
+                    "No provider configured",
+                    cx,
+                )
+            })
+            .on_click(cx.listener(|_, _, window, cx| {
+                telemetry::event!(
+                    "Edit Prediction Menu Action",
+                    action = "configure_providers",
+                );
+                window.dispatch_action(
+                    OpenSettingsAt {
+                        path: "edit_predictions.providers".to_string(),
+                    }
+                    .boxed_clone(),
+                    cx,
+                );
+            }))
+            .into_any_element()
+    }
+
     pub fn new(
         fs: Arc<dyn Fs>,
         user_store: Entity<UserStore>,
@@ -587,12 +629,7 @@ impl EditPredictionButton {
         current_provider: EditPredictionProvider,
         cx: &mut App,
     ) -> ContextMenu {
-        let available_providers = get_available_providers(cx);
-
-        let providers: Vec<_> = available_providers
-            .into_iter()
-            .filter(|p| *p != EditPredictionProvider::None)
-            .collect();
+        let providers = get_available_providers(cx);
 
         if !providers.is_empty() {
             menu = menu.separator().header("Providers");
@@ -625,38 +662,43 @@ impl EditPredictionButton {
         let fs = self.fs.clone();
         let project = self.project.clone();
         ContextMenu::build(window, cx, |menu, _, _| {
-            menu.entry("Sign In to Copilot", None, move |window, cx| {
-                telemetry::event!(
-                    "Edit Prediction Menu Action",
-                    action = "sign_in",
-                    provider = "copilot",
-                );
-                if let Some(copilot) = EditPredictionStore::try_global(cx).and_then(|store| {
-                    store.update(cx, |this, cx| {
-                        this.start_copilot_for_project(&project.upgrade()?, cx)
-                    })
-                }) {
-                    copilot_ui::initiate_sign_in(copilot, window, cx);
-                }
-            })
-            .entry("Disable Copilot", None, {
-                let fs = fs.clone();
-                move |_window, cx| {
+            let menu = menu
+                .entry("Sign In to Copilot", None, move |window, cx| {
                     telemetry::event!(
                         "Edit Prediction Menu Action",
-                        action = "disable_provider",
+                        action = "sign_in",
                         provider = "copilot",
                     );
-                    hide_copilot(fs.clone(), cx)
-                }
-            })
-            .separator()
-            .entry("Use Zed AI", None, {
-                let fs = fs.clone();
-                move |_window, cx| {
-                    set_completion_provider(fs.clone(), cx, EditPredictionProvider::Zed)
-                }
-            })
+                    if let Some(copilot) = EditPredictionStore::try_global(cx).and_then(|store| {
+                        store.update(cx, |this, cx| {
+                            this.start_copilot_for_project(&project.upgrade()?, cx)
+                        })
+                    }) {
+                        copilot_ui::initiate_sign_in(copilot, window, cx);
+                    }
+                })
+                .entry("Disable Copilot", None, {
+                    let fs = fs.clone();
+                    move |_window, cx| {
+                        telemetry::event!(
+                            "Edit Prediction Menu Action",
+                            action = "disable_provider",
+                            provider = "copilot",
+                        );
+                        hide_copilot(fs.clone(), cx)
+                    }
+                });
+
+            if zed_hosted_provider_supported() {
+                menu.separator().entry("Use Zed AI", None, {
+                    let fs = fs.clone();
+                    move |_window, cx| {
+                        set_completion_provider(fs.clone(), cx, EditPredictionProvider::Zed)
+                    }
+                })
+            } else {
+                menu
+            }
         })
     }
 
@@ -738,7 +780,7 @@ impl EditPredictionButton {
             });
         menu = menu.item(entry);
 
-        let provider = settings.edit_predictions.provider;
+        let provider = normalize_edit_prediction_provider(settings.edit_predictions.provider);
         let current_mode = settings.edit_predictions_mode();
         let subtle_mode = matches!(current_mode, EditPredictionsMode::Subtle);
         let eager_mode = matches!(current_mode, EditPredictionsMode::Eager);
@@ -1049,7 +1091,8 @@ impl EditPredictionButton {
         ContextMenu::build(window, cx, |mut menu, window, cx| {
             let user = self.user_store.read(cx).current_user();
 
-            let needs_sign_in = user.is_none()
+            let needs_sign_in = zed_hosted_provider_supported()
+                && user.is_none()
                 && matches!(
                     provider,
                     EditPredictionProvider::None | EditPredictionProvider::Zed
@@ -1418,6 +1461,7 @@ async fn open_disabled_globs_setting_in_editor(
 }
 
 pub fn set_completion_provider(fs: Arc<dyn Fs>, cx: &mut App, provider: EditPredictionProvider) {
+    let provider = normalize_edit_prediction_provider(provider);
     update_settings_file(fs, cx, move |settings, _| {
         settings
             .project
@@ -1431,7 +1475,9 @@ pub fn set_completion_provider(fs: Arc<dyn Fs>, cx: &mut App, provider: EditPred
 pub fn get_available_providers(cx: &mut App) -> Vec<EditPredictionProvider> {
     let mut providers = Vec::new();
 
-    providers.push(EditPredictionProvider::Zed);
+    if edit_prediction_provider_supported(EditPredictionProvider::Zed) {
+        providers.push(EditPredictionProvider::Zed);
+    }
 
     if let Some(app_state) = workspace::AppState::global(cx).upgrade()
         && copilot::GlobalCopilotAuth::try_get_or_init(app_state, cx)

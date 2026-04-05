@@ -154,7 +154,6 @@ impl Project {
             })
             .await
             .unwrap_or_default();
-
             let builder = project
                 .update(cx, move |_, cx| {
                     let format_to_run = || {

@@ -50,6 +50,7 @@ The default build is intentionally narrow:
 - local repositories and worktrees
 - native editor, panes, and diffs
 - terminal-driven agent workflows
+- center-pane footer next-edit in regular editor buffers via non-Zed-hosted providers
 
 Not part of the current public shell surface:
 

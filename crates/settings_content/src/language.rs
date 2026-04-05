@@ -153,11 +153,12 @@ impl EditPredictionProvider {
     pub fn display_name(&self) -> Option<&'static str> {
         match self {
             EditPredictionProvider::Zed => Some("Zed AI"),
+            EditPredictionProvider::None => Some("Off"),
             EditPredictionProvider::Copilot => Some("GitHub Copilot"),
             EditPredictionProvider::Codestral => Some("Codestral"),
             EditPredictionProvider::Sweep => Some("Sweep"),
             EditPredictionProvider::Mercury => Some("Mercury"),
-            EditPredictionProvider::Experimental(_) | EditPredictionProvider::None => None,
+            EditPredictionProvider::Experimental(_) => None,
             EditPredictionProvider::Ollama => Some("Ollama"),
             EditPredictionProvider::OpenAiCompatibleApi => Some("OpenAI-Compatible API"),
         }

@@ -2,7 +2,7 @@
 description = "The terminal for coding agents."
 edition.workspace = true
 name = "superzent"
-version = "0.2.9"
+version = "0.3.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["superzent contributors"]
@@ -14,7 +14,7 @@ workspace = true
 [features]
 # Default local builds stay on the lightweight single-user shell surface.
 # Use `--features full` to opt back into the upstream-like AI/collab stack.
-default = ["lite", "acp_tabs"]
+default = ["lite", "acp_tabs", "next_edit"]
 lite = []
 acp_tabs = [
     "dep:acp_tools",
@@ -25,21 +25,26 @@ acp_tabs = [
     "dep:web_search_providers",
     "superzent_ui/acp_tabs",
 ]
-calls = ["dep:audio", "dep:call", "title_bar/calls"]
-collab = ["calls", "dep:channel", "dep:collab_ui"]
-ai = [
-    "acp_tabs",
-    "dep:acp_thread",
-    "dep:acp_tools",
-    "dep:agent-client-protocol",
-    "dep:agent_settings",
+next_edit = [
     "dep:codestral",
     "dep:copilot",
     "dep:copilot_chat",
     "dep:edit_prediction",
     "dep:edit_prediction_ui",
-    "git_ui/ai",
     "language_tools/edit-prediction",
+    "settings_ui/edit_prediction",
+]
+calls = ["dep:audio", "dep:call", "title_bar/calls"]
+collab = ["calls", "dep:channel", "dep:collab_ui"]
+ai = [
+    "next_edit",
+    "acp_tabs",
+    "dep:acp_thread",
+    "dep:acp_tools",
+    "dep:agent-client-protocol",
+    "dep:agent_settings",
+    "edit_prediction_ui/zed-hosted-provider",
+    "git_ui/ai",
     "settings_ui/ai",
     "terminal_view/assistant",
 ]

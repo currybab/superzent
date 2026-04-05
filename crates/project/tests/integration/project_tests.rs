@@ -809,6 +809,95 @@ async fn test_removing_worktree_cleans_up_external_editorconfig(cx: &mut gpui::T
 }
 
 #[gpui::test]
+async fn test_recent_documents_follow_show_dock_recent_folders_setting(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "base": {
+                "main.rs": ""
+            },
+            "visible-enabled": {},
+            "visible-disabled": {},
+            "visible-reenabled": {},
+            "invisible": {}
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/root/base").as_ref()], cx).await;
+    cx.update(|cx| cx.clear_recent_documents());
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.workspace.show_dock_recent_folders = Some(true);
+            });
+        });
+    });
+
+    let _ = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/root/visible-enabled"), true, cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        cx.recent_documents(),
+        vec![PathBuf::from(path!("/root/visible-enabled"))]
+    );
+
+    cx.update(|cx| cx.clear_recent_documents());
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.workspace.show_dock_recent_folders = Some(false);
+            });
+        });
+    });
+
+    let _ = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/root/visible-disabled"), true, cx)
+        })
+        .await
+        .unwrap();
+    assert!(cx.recent_documents().is_empty());
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.workspace.show_dock_recent_folders = Some(true);
+            });
+        });
+    });
+
+    let _ = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/root/visible-reenabled"), true, cx)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        cx.recent_documents(),
+        vec![PathBuf::from(path!("/root/visible-reenabled"))]
+    );
+
+    cx.update(|cx| cx.clear_recent_documents());
+    let _ = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/root/invisible"), false, cx)
+        })
+        .await
+        .unwrap();
+    assert!(cx.recent_documents().is_empty());
+}
+
+#[gpui::test]
 async fn test_shared_external_editorconfig_cleanup_with_multiple_worktrees(
     cx: &mut gpui::TestAppContext,
 ) {

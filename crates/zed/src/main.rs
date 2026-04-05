@@ -71,7 +71,7 @@ use collab_ui::channel_view::ChannelView;
 use gpui::Focusable;
 #[cfg(feature = "acp_tabs")]
 use superzent_ui::NewAcpTab;
-#[cfg(feature = "ai")]
+#[cfg(feature = "next_edit")]
 use zed::edit_prediction_registry;
 
 #[cfg(target_os = "macos")]
@@ -763,6 +763,10 @@ fn main() {
                 copilot_chat_configuration,
                 cx,
             );
+            language_models::register_copilot_chat_provider(cx);
+        }
+        #[cfg(feature = "next_edit")]
+        {
             edit_prediction_registry::init(
                 app_state.client.clone(),
                 app_state.user_store.clone(),
@@ -836,7 +840,7 @@ fn main() {
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
-        #[cfg(feature = "ai")]
+        #[cfg(feature = "next_edit")]
         edit_prediction::init(cx);
         inspector_ui::init(app_state.clone(), cx);
         json_schema_store::init(cx);

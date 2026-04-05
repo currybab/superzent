@@ -156,7 +156,7 @@ use parking_lot::Mutex;
 use persistence::DB;
 use project::{
     BreakpointWithPosition, CodeAction, Completion, CompletionDisplayOptions, CompletionIntent,
-    CompletionResponse, CompletionSource, DisableAiSettings, DocumentHighlight, InlayHint, InlayId,
+    CompletionResponse, CompletionSource, DocumentHighlight, InlayHint, InlayId,
     InvalidationStrategy, Location, LocationLink, LspAction, PrepareRenameResponse, Project,
     ProjectItem, ProjectPath, ProjectTransaction,
     debugger::{
@@ -7811,10 +7811,6 @@ impl Editor {
         let (buffer, cursor_buffer_position) =
             self.buffer.read(cx).text_anchor_for_position(cursor, cx)?;
 
-        if DisableAiSettings::is_ai_disabled_for_buffer(Some(&buffer), cx) {
-            return None;
-        }
-
         if !self.edit_predictions_enabled_in_buffer(&buffer, cursor_buffer_position, cx) {
             self.discard_edit_prediction(EditPredictionDiscardReason::Ignored, cx);
             return None;
@@ -7873,11 +7869,6 @@ impl Editor {
         if let Some((buffer, cursor_buffer_position)) =
             self.buffer.read(cx).text_anchor_for_position(cursor, cx)
         {
-            if DisableAiSettings::is_ai_disabled_for_buffer(Some(&buffer), cx) {
-                self.edit_prediction_settings = EditPredictionSettings::Disabled;
-                self.discard_edit_prediction(EditPredictionDiscardReason::Ignored, cx);
-                return;
-            }
             self.edit_prediction_settings =
                 self.edit_prediction_settings_at_position(&buffer, cursor_buffer_position, cx);
         }
@@ -8530,12 +8521,6 @@ impl Editor {
         let cursor = selection.head();
         let multibuffer = self.buffer.read(cx).snapshot(cx);
 
-        // Check project-level disable_ai setting for the current buffer
-        if let Some((buffer, _)) = self.buffer.read(cx).text_anchor_for_position(cursor, cx) {
-            if DisableAiSettings::is_ai_disabled_for_buffer(Some(&buffer), cx) {
-                return None;
-            }
-        }
         let offset_selection = selection.map(|endpoint| endpoint.to_offset(&multibuffer));
         let excerpt_id = cursor.excerpt_id;
 
