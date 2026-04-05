@@ -2574,7 +2574,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(stream_rx.try_next().is_err());
+        assert!(stream_rx.try_recv().is_err());
 
         // Test 4: Path with .zed in the middle should require confirmation
         let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
@@ -2621,7 +2621,7 @@ mod tests {
         cx.update(|cx| tool.authorize(&PathBuf::from("/etc/hosts"), "test 5.2", &stream_tx, cx))
             .await
             .unwrap();
-        assert!(stream_rx.try_next().is_err());
+        assert!(stream_rx.try_recv().is_err());
 
         // 5.3: Normal in-project path with allow — no confirmation needed
         let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
@@ -2635,7 +2635,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(stream_rx.try_next().is_err());
+        assert!(stream_rx.try_recv().is_err());
 
         // 5.4: With Confirm default, non-project paths still prompt
         cx.update(|cx| {
@@ -2845,8 +2845,8 @@ mod tests {
         assert!(result.is_err(), "Tool should fail when policy denies");
         assert!(
             !matches!(
-                stream_rx.try_next(),
-                Ok(Some(Ok(crate::ThreadEvent::ToolCallAuthorization(_))))
+                stream_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "Deny policy should not emit symlink authorization prompt",
         );
@@ -2888,7 +2888,7 @@ mod tests {
             } else {
                 auth.await.unwrap();
                 assert!(
-                    stream_rx.try_next().is_err(),
+                    stream_rx.try_recv().is_err(),
                     "Failed for case: {} - path: {} - expected no confirmation but got one",
                     description,
                     path
@@ -2965,7 +2965,7 @@ mod tests {
             } else {
                 auth.await.unwrap();
                 assert!(
-                    stream_rx.try_next().is_err(),
+                    stream_rx.try_recv().is_err(),
                     "Failed for case: {} - path: {} - expected no confirmation but got one",
                     description,
                     path
@@ -3025,7 +3025,7 @@ mod tests {
                 stream_rx.expect_authorization().await;
             } else {
                 assert!(
-                    stream_rx.try_next().is_err(),
+                    stream_rx.try_recv().is_err(),
                     "Failed for case: {} - path: {} - expected no confirmation but got one",
                     description,
                     path
@@ -3093,7 +3093,7 @@ mod tests {
             })
             .await
             .unwrap();
-            assert!(stream_rx.try_next().is_err());
+            assert!(stream_rx.try_recv().is_err());
         }
     }
 
