@@ -5139,6 +5139,7 @@ mod tests {
                 copilot_chat::CopilotChatConfiguration::default(),
                 cx,
             );
+            language_models::register_copilot_chat_provider(cx);
             image_viewer::init(cx);
             web_search::init(cx);
             git_graph::init(cx);

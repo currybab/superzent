@@ -122,6 +122,17 @@ pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
     .detach();
 }
 
+pub fn register_copilot_chat_provider(cx: &mut App) {
+    let registry = LanguageModelRegistry::global(cx);
+    registry.update(cx, |registry, cx| {
+        registry.unregister_provider(
+            LanguageModelProviderId::from("copilot_chat".to_string()),
+            cx,
+        );
+        registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
+    });
+}
+
 fn register_openai_compatible_providers(
     registry: &mut LanguageModelRegistry,
     old: &HashSet<Arc<str>>,
@@ -220,7 +231,4 @@ fn register_language_model_providers(
         Arc::new(XAiLanguageModelProvider::new(client.http_client(), cx)),
         cx,
     );
-    if copilot_chat::CopilotChat::global(cx).is_some() {
-        registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
-    }
 }

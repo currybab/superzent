@@ -763,6 +763,7 @@ fn main() {
                 copilot_chat_configuration,
                 cx,
             );
+            language_models::register_copilot_chat_provider(cx);
         }
         #[cfg(feature = "next_edit")]
         {

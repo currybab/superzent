@@ -1,6 +1,7 @@
 ---
 title: Restoring default-build next-edit requires separating it from hosted AI surfaces
 date: 2026-04-05
+last_updated: 2026-04-05
 category: integration-issues
 module: default-build next edit
 problem_type: integration_issue
@@ -9,6 +10,7 @@ symptoms:
   - Default `superzent` builds did not expose next-edit even though the runtime, provider setup page, and entry UI already existed in the repo
   - Re-enabling next-edit through the broad `ai` feature also pulled hosted AI/chat surfaces back into the default build
   - Provider setup and switching behavior diverged because some call sites treated provider lists as "supported by this build" while others treated them as "ready to use right now"
+  - Gating `CopilotChat` provider registration on `CopilotChat::global(cx)` during startup broke full `ai` builds because `language_models::init()` runs before `copilot_chat::init()`
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -47,6 +49,7 @@ tags:
 - Using one provider helper for both setup and runtime switching caused UX drift:
   - Setup wants the full supported list.
   - Runtime switching wants providers that are actually ready now.
+- Guarding `CopilotChat` provider registration on `CopilotChat::global(cx)` inside `language_models::init()` looked like an easy way to keep chat models out of the default build, but it made provider registration depend on startup order and removed Copilot Chat models from full builds too.
 - Keeping the entry on the hidden global status bar made the feature effectively undiscoverable in the current `superzent` shell.
 
 ## Solution
@@ -95,12 +98,13 @@ pub fn normalize_edit_prediction_provider(
 }
 ```
 
-3. Keep hosted chat/model surfaces out of the default build even when Copilot is still a valid next-edit provider:
+3. Keep hosted chat/model surfaces out of the default build while preserving them in full builds by separating chat boot from provider registration:
 
 ```rust
 #[cfg(feature = "ai")]
 {
     copilot_chat::init(..., cx);
+    language_models::register_copilot_chat_provider(cx);
 }
 
 #[cfg(feature = "next_edit")]
@@ -109,11 +113,18 @@ pub fn normalize_edit_prediction_provider(
 }
 ```
 
-And only register the Copilot Chat language-model provider when `CopilotChat` actually exists:
+Inside `language_models`, use an explicit registration hook instead of an order-sensitive `CopilotChat::global(cx)` guard during base provider init:
 
 ```rust
-if copilot_chat::CopilotChat::global(cx).is_some() {
-    registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
+pub fn register_copilot_chat_provider(cx: &mut App) {
+    let registry = LanguageModelRegistry::global(cx);
+    registry.update(cx, |registry, cx| {
+        registry.unregister_provider(
+            LanguageModelProviderId::from("copilot_chat".to_string()),
+            cx,
+        );
+        registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
+    });
 }
 ```
 
@@ -144,14 +155,17 @@ The fix works because each layer now has a narrower contract:
 - Unsupported hosted providers normalize to `None` instead of leaving hidden dead states behind.
 - Setup uses the supported provider list; runtime switching uses the currently ready list.
 - Default builds no longer initialize Copilot Chat just because Copilot is allowed for next-edit.
+- Full builds still recover Copilot Chat models because provider registration happens explicitly after `copilot_chat::init()`, not opportunistically during earlier startup.
 - Users can always find the feature from the footer entry and reach setup directly.
 
 ## Prevention
 
 - Keep "supported by this build" and "usable right now" as separate helpers. Do not reuse one provider list for both setup and runtime menus.
 - If a feature slice is supposed to exclude hosted AI/chat surfaces, audit boot code and provider registration, not just Cargo features.
+- Avoid order-sensitive global-presence guards during startup. If a provider depends on a later init step, expose an explicit `register_*` hook and call it after the dependency is initialized.
 - Add targeted regression coverage for:
   - default build does not initialize hosted chat/model surfaces
+  - full builds still register Copilot Chat providers after `copilot_chat::init()`
   - stale `provider: "zed"` normalizes to an unconfigured next-edit state
   - `disable_ai` policy still does what the product intends after any exception is introduced
   - the user-visible entry surface matches the actual shell surface (`footer` vs hidden status bar)
