@@ -3811,7 +3811,15 @@ impl Render for SuperzentSidebar {
                             )
                             .child(div().flex_1()),
                     )
-                    .child(v_flex().flex_1().px_2().pb_1().children(project_content))
+                    .child(
+                        v_flex()
+                            .id("workspace-list")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px_2()
+                            .pb_1()
+                            .children(project_content),
+                    )
                     .child(
                         v_flex()
                             .border_t_1()
