@@ -5139,7 +5139,6 @@ mod tests {
                 copilot_chat::CopilotChatConfiguration::default(),
                 cx,
             );
-            language_models::register_copilot_chat_provider(cx);
             image_viewer::init(cx);
             web_search::init(cx);
             git_graph::init(cx);
@@ -5147,6 +5146,8 @@ mod tests {
             {
                 language_model::init(app_state.user_store.clone(), app_state.client.clone(), cx);
                 language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+                #[cfg(feature = "ai")]
+                language_models::register_copilot_chat_provider(cx);
                 acp_tools::init(cx);
                 web_search_providers::init(
                     app_state.client.clone(),
