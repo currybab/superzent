@@ -3674,9 +3674,14 @@ impl SuperzentEmptyPaneView {
             return EmptyPaneMode::Initial;
         }
 
-        let has_worktrees = self
-            .current_workspace_entity(cx)
-            .is_some_and(|ws| ws.read(cx).project().read(cx).visible_worktrees(cx).next().is_some());
+        let has_worktrees = self.current_workspace_entity(cx).is_some_and(|ws| {
+            ws.read(cx)
+                .project()
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .is_some()
+        });
 
         if has_worktrees {
             EmptyPaneMode::Workspace
