@@ -5,11 +5,11 @@ use edit_prediction::{
     open_ai_compatible::{open_ai_compatible_api_token, open_ai_compatible_api_url},
     sweep_ai::{SWEEP_CREDENTIALS_URL, sweep_api_token},
 };
-use edit_prediction_ui::{get_available_providers, set_completion_provider};
+use edit_prediction_ui::{
+    current_edit_prediction_provider, set_completion_provider, supported_edit_prediction_providers,
+};
 use gpui::{Entity, ScrollHandle, prelude::*};
-use language::language_settings::AllLanguageSettings;
 
-use settings::Settings as _;
 use ui::{ButtonLink, ConfiguredApiCard, ContextMenu, DropdownMenu, DropdownStyle, prelude::*};
 use workspace::AppState;
 
@@ -138,13 +138,11 @@ pub(crate) fn render_edit_prediction_setup_page(
 }
 
 fn render_provider_dropdown(window: &mut Window, cx: &mut App) -> AnyElement {
-    let current_provider = AllLanguageSettings::get_global(cx)
-        .edit_predictions
-        .provider;
+    let current_provider = current_edit_prediction_provider(cx);
     let current_provider_name = current_provider.display_name().unwrap_or("No provider set");
 
     let menu = ContextMenu::build(window, cx, move |mut menu, _, cx| {
-        let available_providers = get_available_providers(cx);
+        let available_providers = supported_edit_prediction_providers();
         let fs = <dyn fs::Fs>::global(cx);
 
         for provider in available_providers {

@@ -1,5 +1,6 @@
 mod edit_prediction_button;
 mod edit_prediction_context_view;
+mod provider_policy;
 mod rate_prediction_modal;
 
 use command_palette_hooks::CommandPaletteFilter;
@@ -9,7 +10,6 @@ use editor::Editor;
 use feature_flags::FeatureFlagAppExt as _;
 use gpui::actions;
 use language::language_settings::AllLanguageSettings;
-use project::DisableAiSettings;
 use rate_prediction_modal::RatePredictionsModal;
 use settings::{Settings as _, SettingsStore};
 use std::any::{Any as _, TypeId};
@@ -18,6 +18,11 @@ use workspace::{SplitDirection, Workspace};
 
 pub use edit_prediction_button::{
     EditPredictionButton, ToggleMenu, get_available_providers, set_completion_provider,
+};
+pub use provider_policy::{
+    current_edit_prediction_provider, edit_prediction_provider_supported,
+    normalize_edit_prediction_provider, supported_edit_prediction_providers,
+    zed_hosted_provider_supported,
 };
 
 use crate::rate_prediction_modal::PredictEditsRatePredictionsFeatureFlag;
@@ -81,18 +86,6 @@ pub fn init(cx: &mut App) {
 fn feature_gate_predict_edits_actions(cx: &mut App) {
     let rate_completion_action_types = [TypeId::of::<RatePredictions>()];
     let reset_onboarding_action_types = [TypeId::of::<ResetOnboarding>()];
-    let all_action_types = [
-        TypeId::of::<RatePredictions>(),
-        TypeId::of::<CaptureExample>(),
-        TypeId::of::<edit_prediction::ResetOnboarding>(),
-        zed_actions::OpenZedPredictOnboarding.type_id(),
-        TypeId::of::<edit_prediction::ClearHistory>(),
-        TypeId::of::<rate_prediction_modal::ThumbsUpActivePrediction>(),
-        TypeId::of::<rate_prediction_modal::ThumbsDownActivePrediction>(),
-        TypeId::of::<rate_prediction_modal::NextEdit>(),
-        TypeId::of::<rate_prediction_modal::PreviousEdit>(),
-    ];
-
     CommandPaletteFilter::update_global(cx, |filter, _cx| {
         filter.hide_action_types(&rate_completion_action_types);
         filter.hide_action_types(&reset_onboarding_action_types);
@@ -100,13 +93,10 @@ fn feature_gate_predict_edits_actions(cx: &mut App) {
     });
 
     cx.observe_global::<SettingsStore>(move |cx| {
-        let is_ai_disabled = DisableAiSettings::get_global(cx).disable_ai;
         let has_feature_flag = cx.has_flag::<PredictEditsRatePredictionsFeatureFlag>();
 
         CommandPaletteFilter::update_global(cx, |filter, _cx| {
-            if is_ai_disabled {
-                filter.hide_action_types(&all_action_types);
-            } else if has_feature_flag {
+            if has_feature_flag {
                 filter.show_action_types(&rate_completion_action_types);
             } else {
                 filter.hide_action_types(&rate_completion_action_types);
@@ -116,16 +106,14 @@ fn feature_gate_predict_edits_actions(cx: &mut App) {
     .detach();
 
     cx.observe_flag::<PredictEditsRatePredictionsFeatureFlag, _>(move |is_enabled, cx| {
-        if !DisableAiSettings::get_global(cx).disable_ai {
-            if is_enabled {
-                CommandPaletteFilter::update_global(cx, |filter, _cx| {
-                    filter.show_action_types(&rate_completion_action_types);
-                });
-            } else {
-                CommandPaletteFilter::update_global(cx, |filter, _cx| {
-                    filter.hide_action_types(&rate_completion_action_types);
-                });
-            }
+        if is_enabled {
+            CommandPaletteFilter::update_global(cx, |filter, _cx| {
+                filter.show_action_types(&rate_completion_action_types);
+            });
+        } else {
+            CommandPaletteFilter::update_global(cx, |filter, _cx| {
+                filter.hide_action_types(&rate_completion_action_types);
+            });
         }
     })
     .detach();

@@ -12,6 +12,10 @@ workspace = true
 path = "src/edit_prediction_ui.rs"
 doctest = false
 
+[features]
+default = []
+zed-hosted-provider = []
+
 [dependencies]
 anyhow.workspace = true
 buffer_diff.workspace = true
@@ -57,5 +61,4 @@ indoc.workspace = true
 project = { workspace = true, features = ["test-support"] }
 theme = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
-
 

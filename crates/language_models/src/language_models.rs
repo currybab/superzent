@@ -220,5 +220,7 @@ fn register_language_model_providers(
         Arc::new(XAiLanguageModelProvider::new(client.http_client(), cx)),
         cx,
     );
-    registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
+    if copilot_chat::CopilotChat::global(cx).is_some() {
+        registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
+    }
 }

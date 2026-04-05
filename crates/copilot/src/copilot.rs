@@ -266,6 +266,10 @@ impl EventEmitter<Event> for Copilot {}
 #[derive(Clone)]
 pub struct GlobalCopilotAuth(pub Entity<Copilot>);
 
+fn next_edit_copilot_allowed(cx: &App) -> bool {
+    all_language_settings(None, cx).edit_predictions.provider == EditPredictionProvider::Copilot
+}
+
 impl GlobalCopilotAuth {
     pub fn set_global(
         server_id: LanguageServerId,
@@ -283,24 +287,15 @@ impl GlobalCopilotAuth {
     }
 
     pub fn try_get_or_init(app_state: Arc<AppState>, cx: &mut App) -> Option<GlobalCopilotAuth> {
-        let ai_enabled = !DisableAiSettings::get(None, cx).disable_ai;
-
         if let Some(copilot) = cx.try_global::<Self>().cloned() {
-            if ai_enabled {
-                Some(copilot)
-            } else {
-                cx.remove_global::<Self>();
-                None
-            }
-        } else if ai_enabled {
+            Some(copilot)
+        } else {
             Some(Self::set_global(
                 app_state.languages.next_language_server_id(),
                 app_state.fs.clone(),
                 app_state.node_runtime.clone(),
                 cx,
             ))
-        } else {
-            None
         }
     }
 }
@@ -394,8 +389,9 @@ impl Copilot {
         this.start_copilot(true, false, cx);
         cx.observe_global::<SettingsStore>(move |this, cx| {
             let ai_disabled = DisableAiSettings::get_global(cx).disable_ai;
+            let keep_copilot_for_next_edit = next_edit_copilot_allowed(cx);
 
-            if ai_disabled {
+            if ai_disabled && !keep_copilot_for_next_edit {
                 // Stop the server if AI is disabled
                 if !matches!(this.server, CopilotServer::Disabled) {
                     let shutdown = match mem::replace(&mut this.server, CopilotServer::Disabled) {
@@ -455,9 +451,6 @@ impl Copilot {
         awaiting_sign_in_after_start: bool,
         cx: &mut Context<Self>,
     ) {
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return;
-        }
         if !matches!(self.server, CopilotServer::Disabled) {
             return;
         }
@@ -1307,9 +1300,10 @@ impl Copilot {
         let status = self.status();
 
         let is_ai_disabled = DisableAiSettings::get_global(cx).disable_ai;
+        let keep_copilot_for_next_edit = next_edit_copilot_allowed(cx);
         let filter = CommandPaletteFilter::global_mut(cx);
 
-        if is_ai_disabled {
+        if is_ai_disabled && !keep_copilot_for_next_edit {
             filter.hide_action_types(&signed_in_actions);
             filter.hide_action_types(&auth_actions);
             filter.hide_action_types(&no_auth_actions);

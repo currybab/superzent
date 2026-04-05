@@ -3,7 +3,7 @@ mod audio_input_output_setup;
 #[cfg(test)]
 mod audio_test_window;
 #[allow(dead_code)]
-#[cfg(feature = "ai")]
+#[cfg(feature = "edit_prediction")]
 mod edit_prediction_provider_setup;
 mod superzent_agent_presets;
 #[allow(dead_code)]
@@ -13,6 +13,8 @@ mod tool_permissions_setup;
 pub(crate) use audio_input_output_setup::{
     render_input_audio_device_dropdown, render_output_audio_device_dropdown,
 };
+#[cfg(feature = "edit_prediction")]
+pub(crate) use edit_prediction_provider_setup::render_edit_prediction_setup_page;
 pub(crate) use superzent_agent_presets::render_superzent_agent_presets_page;
 
 #[cfg(feature = "ai")]

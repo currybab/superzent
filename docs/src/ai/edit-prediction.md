@@ -8,9 +8,13 @@ description: Set up AI code completions in Zed with Zeta (built-in), GitHub Copi
 Edit Prediction is how Zed's AI code completions work: an LLM predicts the code you want to write.
 Each keystroke sends a new request to the edit prediction provider, which returns individual or multi-line suggestions that can be quickly accepted by pressing `tab`.
 
-The default provider is [Zeta, a proprietary open source and open dataset model](https://huggingface.co/zed-industries/zeta), but you can also use [other providers](#other-providers) like GitHub Copilot, Sweep, Mercury Coder, and Codestral.
+In upstream Zed, the default provider is [Zeta, a proprietary open source and open dataset model](https://huggingface.co/zed-industries/zeta). In `superzent`'s default build, edit prediction is available in regular editor buffers through non-Zed-hosted providers only: GitHub Copilot, Codestral, Ollama, OpenAI-compatible API, Sweep, and Mercury. Zed-hosted Zeta remains out of the default build and is only available when you explicitly build the broader upstream-like surface with `--features full`.
+
+In the default `superzent` shell, the edit prediction control lives in the center-pane footer. When no provider is configured yet, clicking the footer icon opens provider setup directly. After a provider is configured, the same footer entry exposes the provider-specific menu and switching flow.
 
 ## Configuring Zeta
+
+`superzent` note: this section applies to `--features full` builds. The default `superzent` build hides the Zed-hosted provider and routes you through the non-Zed-hosted setup flow instead.
 
 To use Zeta, [sign in](../authentication.md#what-features-require-signing-in).
 Once signed in, predictions appear as you type.
@@ -311,7 +315,7 @@ To use GitHub Copilot as your provider, set this in your settings file ([how to 
 }
 ```
 
-To sign in to GitHub Copilot, click on the Copilot icon in the status bar. A popup window appears displaying a device code. Click the copy button to copy the code, then click "Connect to GitHub" to open the GitHub verification page in your browser. Paste the code when prompted. The popup window closes automatically after successful authorization.
+To sign in to GitHub Copilot in `superzent`, click the edit prediction icon in the center-pane footer, choose GitHub Copilot, then follow the device-code prompt. Click the copy button to copy the code, then click "Connect to GitHub" to open the GitHub verification page in your browser. Paste the code when prompted. The popup window closes automatically after successful authorization.
 
 #### Using GitHub Copilot Enterprise
 
@@ -330,7 +334,7 @@ If your organization uses GitHub Copilot Enterprise, you can configure Zed to us
 Replace `"https://your.enterprise.domain"` with the URL provided by your GitHub Enterprise administrator (e.g., `https://foo.ghe.com`).
 
 Once set, Zed will route Copilot requests through your enterprise endpoint.
-When you sign in by clicking the Copilot icon in the status bar, you will be redirected to your configured enterprise URL to complete authentication.
+When you sign in from the edit prediction footer entry, you will be redirected to your configured enterprise URL to complete authentication.
 All other Copilot features and usage remain the same.
 
 Copilot can provide multiple completion alternatives, and these can be navigated with the following actions:
@@ -347,10 +351,9 @@ To use [Sweep](https://sweep.dev/) as your provider:
 3. Find the Sweep section and enter your API key from the
    [Sweep dashboard](https://app.sweep.dev/)
 
-Alternatively, click the edit prediction icon in the status bar and select
-**Configure Providers** from the menu.
+Alternatively, if no provider is configured yet, click the edit prediction icon in the center-pane footer to open provider setup directly.
 
-After adding your API key, Sweep will appear in the provider dropdown in the status bar menu, where you can select it. You can also set it directly in your settings file:
+After adding your API key, Sweep will appear in the provider dropdown for the edit prediction footer entry, where you can select it. You can also set it directly in your settings file:
 
 ```json [settings]
 {
@@ -369,10 +372,9 @@ To use [Mercury Coder](https://www.inceptionlabs.ai/) by Inception Labs as your 
 3. Find the Mercury section and enter your API key from the
    [Inception Labs dashboard](https://platform.inceptionlabs.ai/dashboard/api-keys)
 
-Alternatively, click the edit prediction icon in the status bar and select
-**Configure Providers** from the menu.
+Alternatively, if no provider is configured yet, click the edit prediction icon in the center-pane footer to open provider setup directly.
 
-After adding your API key, Mercury Coder will appear in the provider dropdown in the status bar menu, where you can select it. You can also set it directly in your settings file:
+After adding your API key, Mercury Coder will appear in the provider dropdown for the edit prediction footer entry, where you can select it. You can also set it directly in your settings file:
 
 ```json [settings]
 {
@@ -391,10 +393,9 @@ To use Mistral's Codestral as your provider:
 3. Find the Codestral section and enter your API key from the
    [Codestral dashboard](https://console.mistral.ai/codestral)
 
-Alternatively, click the edit prediction icon in the status bar and select
-**Configure Providers** from the menu.
+Alternatively, if no provider is configured yet, click the edit prediction icon in the center-pane footer to open provider setup directly.
 
-After adding your API key, Codestral will appear in the provider dropdown in the status bar menu, where you can select it. You can also set it directly in your settings file:
+After adding your API key, Codestral will appear in the provider dropdown for the edit prediction footer entry, where you can select it. You can also set it directly in your settings file:
 
 ```json [settings]
 {

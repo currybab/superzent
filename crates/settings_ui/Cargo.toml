@@ -13,14 +13,17 @@ path = "src/settings_ui.rs"
 
 [features]
 default = []
-ai = [
-    "dep:agent",
-    "dep:agent_settings",
+edit_prediction = [
     "dep:codestral",
     "dep:copilot",
     "dep:copilot_ui",
     "dep:edit_prediction",
     "dep:edit_prediction_ui",
+]
+ai = [
+    "edit_prediction",
+    "dep:agent",
+    "dep:agent_settings",
 ]
 test-support = []
 

@@ -39,16 +39,18 @@ cargo check -p superzent --features full
 
 ## Release Flavors
 
-The default app build is `lite`.
+The default app build is `lite + acp_tabs + next_edit`.
 
 That excludes:
 
 - collab
 - calls / WebRTC
 - inherited agent panel and text-thread UI
-- hosted AI and edit prediction stacks
+- Zed-hosted AI surfaces
 
 `--features full` is still available for debugging inherited upstream behavior.
+
+The default build now includes next-edit in regular editor buffers, but only through the non-Zed-hosted provider paths that already exist in the repo: GitHub Copilot, Codestral, Ollama, OpenAI-compatible API, Sweep, and Mercury.
 
 ## Validation Paths
 

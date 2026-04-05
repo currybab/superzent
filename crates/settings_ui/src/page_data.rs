@@ -2867,6 +2867,24 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
         ]
     }
 
+    #[cfg(feature = "edit_prediction")]
+    fn edit_prediction_section() -> [SettingsPageItem; 2] {
+        [
+            SettingsPageItem::SectionHeader("Edit Predictions"),
+            SettingsPageItem::SubPageLink(SubPageLink {
+                title: "Configure Providers".into(),
+                r#type: crate::SubPageType::default(),
+                description: Some(
+                    "Choose and configure next-edit providers for regular editor buffers.".into(),
+                ),
+                json_path: Some("edit_predictions.providers"),
+                in_json: false,
+                files: USER,
+                render: crate::pages::render_edit_prediction_setup_page,
+            }),
+        ]
+    }
+
     fn languages_list_section(cx: &App) -> Box<[SettingsPageItem]> {
         // todo(settings_ui): Refresh on extension (un)/installed
         // Note that `crates/json_schema_store` solves the same problem, there is probably a way to unify the two
@@ -2901,15 +2919,19 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
     SettingsPage {
         title: "Languages & Tools",
         items: {
-            concat_sections!(
+            let mut items = concat_sections!(
+                @vec,
                 non_editor_language_settings_data(),
                 file_types_section(),
                 diagnostics_section(),
                 inline_diagnostics_section(),
                 lsp_pull_diagnostics_section(),
                 lsp_highlights_section(),
-                languages_list_section(cx),
-            )
+            );
+            #[cfg(feature = "edit_prediction")]
+            items.extend(edit_prediction_section());
+            items.extend(languages_list_section(cx));
+            items.into_boxed_slice()
         },
     }
 }

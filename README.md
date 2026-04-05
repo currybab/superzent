@@ -25,6 +25,7 @@ Current focus:
 - native editor, split panes, and diff views
 - terminal-first use of external coding agents
 - center-pane ACP tabs built from selected pieces of the existing ACP / `agent_ui` stack
+- default-build next-edit with non-Zed-hosted providers
 - public macOS Apple Silicon releases
 
 Deliberately out of scope for the default build:
@@ -46,7 +47,6 @@ Next:
 
 - remote project fix
 - session restore
-- next-edit integration
 - native alarm
 
 Later:
@@ -75,7 +75,7 @@ For day-to-day development, stay on the default lightweight shell:
 cargo check -p superzent
 ```
 
-The default build includes `acp_tabs`, so external ACP agents open in center-pane tabs without enabling the heavier upstream AI surface.
+The default build includes `acp_tabs` and next-edit, so external ACP agents open in center-pane tabs and regular editor buffers can use non-Zed-hosted edit prediction without enabling the heavier upstream AI surface.
 
 Before cutting a release, run the local maintainer preflight:
 
@@ -100,8 +100,9 @@ For a signed macOS bundle:
 - Extensions still use the upstream Zed marketplace.
 - Much of the editor and platform code still comes from upstream Zed and is intentionally kept close for easier maintenance.
 - This repository is regularly synced with upstream Zed, so GitHub contributor counts and graphs may include upstream contributors alongside superzent-specific work.
-- The default app build is `lite + acp_tabs`.
+- The default app build is `lite + acp_tabs + next_edit`.
 - `superzent` reuses selected ACP / `agent_ui` pieces to open external ACP chats in center-pane tabs.
+- The default build also restores an edit prediction footer entry for non-Zed-hosted providers in regular editor buffers.
 - That does not mean bringing back Zed's own docked agent panel, native text-thread surface, or hosted AI product flow in the default build.
 
 ## Project Docs

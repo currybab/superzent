@@ -1,5 +1,5 @@
 mod app_menus;
-#[cfg(feature = "ai")]
+#[cfg(feature = "next_edit")]
 pub mod edit_prediction_registry;
 #[cfg(target_os = "macos")]
 pub(crate) mod mac_only_instance;
@@ -474,9 +474,9 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             crashes::set_gpu_info(specs);
         }
 
-        #[cfg(feature = "ai")]
+        #[cfg(feature = "next_edit")]
         let edit_prediction_menu_handle = PopoverMenuHandle::default();
-        #[cfg(feature = "ai")]
+        #[cfg(feature = "next_edit")]
         let edit_prediction_ui = cx.new(|cx| {
             edit_prediction_ui::EditPredictionButton::new(
                 app_state.fs.clone(),
@@ -486,7 +486,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 cx,
             )
         });
-        #[cfg(feature = "ai")]
+        #[cfg(feature = "next_edit")]
         workspace.register_action({
             move |_, _: &edit_prediction_ui::ToggleMenu, window, cx| {
                 edit_prediction_menu_handle.toggle(window, cx);
@@ -527,6 +527,8 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         workspace
             .center_pane_footer()
             .update(cx, |center_pane_footer, cx| {
+                #[cfg(feature = "next_edit")]
+                center_pane_footer.add_left_item(edit_prediction_ui, window, cx);
                 center_pane_footer.add_left_item(lsp_button, window, cx);
                 center_pane_footer.add_left_item(diagnostic_summary, window, cx);
                 center_pane_footer.add_right_item(cursor_position, window, cx);
@@ -535,8 +537,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
-            #[cfg(feature = "ai")]
-            status_bar.add_right_item(edit_prediction_ui, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
             status_bar.add_right_item(line_ending_indicator, window, cx);
@@ -5173,6 +5173,8 @@ mod tests {
             repl::init(app_state.fs.clone(), cx);
             repl::notebook::init(cx);
             tasks_ui::init(cx);
+            #[cfg(feature = "next_edit")]
+            edit_prediction::init(cx);
             project::debugger::breakpoint_store::BreakpointStore::init(
                 &app_state.client.clone().into(),
             );
