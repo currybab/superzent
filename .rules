@@ -139,6 +139,10 @@ Other entities can then register a callback to handle these events by doing `cx.
 
 - Use `./script/clippy` instead of `cargo clippy`
 
+# Superzent window behavior
+
+* Superzent uses a single-window model. `workspace::CloseWindow` (Cmd+W) is intentionally intercepted so it never closes the OS window — users quit with Cmd+Q instead. When there are no tabs in the center pane, Cmd+W does nothing. When the right sidebar is focused, Cmd+W closes the active sidebar item rather than the window.
+
 # Pull request hygiene
 
 When an agent opens or updates a pull request, it must:

@@ -87,7 +87,7 @@ use workspace::{
 };
 #[cfg(feature = "acp_tabs")]
 use zed_actions::AcpRegistry;
-use zed_actions::{OpenRemote, OpenSettingsAt};
+use zed_actions::{OpenRecent, OpenRemote, OpenSettingsAt};
 
 actions!(
     superzent,
@@ -95,6 +95,7 @@ actions!(
         AddProject,
         NewWorkspace,
         RevealChanges,
+        CloseFromRightSidebar,
         OpenWorkspaceInNewWindow,
         CloseWorkspace,
         DeleteWorkspace,
@@ -824,8 +825,69 @@ pub fn init(cx: &mut App) {
                 .register_action(|workspace, _: &OpenWorkspaceInNewWindow, window, cx| {
                     run_open_workspace_in_new_window(workspace, window, cx);
                 })
+                .register_action(|workspace, _: &workspace::CloseWindow, window, cx| {
+                    let right_dock = workspace.right_dock().clone();
+                    if !right_dock.read(cx).is_open() {
+                        // When there are no tabs and the right dock is closed,
+                        // absorb Cmd+W so it does nothing instead of closing the window.
+                        if workspace.active_pane().read(cx).items_len() == 0 {
+                            return;
+                        }
+                        cx.propagate();
+                        return;
+                    }
+
+                    let Some(active_panel) = right_dock.read(cx).active_panel().cloned() else {
+                        cx.propagate();
+                        return;
+                    };
+                    if active_panel.panel_key() != SuperzentRightSidebar::panel_key() {
+                        cx.propagate();
+                        return;
+                    }
+
+                    let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) else {
+                        cx.propagate();
+                        return;
+                    };
+
+                    match panel.read(cx).tab {
+                        RightSidebarTab::Changes | RightSidebarTab::Files => {
+                            if workspace.active_pane().read(cx).items_len() > 0 {
+                                window.dispatch_action(Box::new(CloseFromRightSidebar), cx);
+                            }
+                        }
+                        RightSidebarTab::Panel(_) => {
+                            window.dispatch_action(Box::new(workspace::CloseActiveDock), cx);
+                        }
+                    }
+                })
                 .register_action(|workspace, _: &CloseWorkspace, window, cx| {
                     run_close_workspace(workspace, window, cx);
+                })
+                .register_action(|workspace, _: &CloseFromRightSidebar, window, cx| {
+                    let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) else {
+                        return;
+                    };
+
+                    match panel.read(cx).tab {
+                        RightSidebarTab::Changes | RightSidebarTab::Files => {
+                            let active_pane = workspace.active_pane().clone();
+                            if active_pane.read(cx).items_len() > 0 {
+                                active_pane.update(cx, |pane, cx| {
+                                    pane.close_active_item(
+                                        &workspace::CloseActiveItem::default(),
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                                });
+                            }
+                        }
+                        RightSidebarTab::Panel(_) => {
+                            window.dispatch_action(Box::new(workspace::CloseActiveDock), cx);
+                        }
+                    }
                 })
                 .register_action(|workspace, _: &DeleteWorkspace, window, cx| {
                     run_delete_workspace(workspace, window, cx);
@@ -3608,9 +3670,22 @@ impl SuperzentEmptyPaneView {
     fn mode(&self, cx: &App) -> EmptyPaneMode {
         let store = self.store.read(cx);
         if store.projects().is_empty() || store.workspaces().is_empty() {
-            EmptyPaneMode::Initial
-        } else {
+            return EmptyPaneMode::Initial;
+        }
+
+        let has_worktrees = self.current_workspace_entity(cx).is_some_and(|ws| {
+            ws.read(cx)
+                .project()
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .is_some()
+        });
+
+        if has_worktrees {
             EmptyPaneMode::Workspace
+        } else {
+            EmptyPaneMode::Initial
         }
     }
 
@@ -3661,18 +3736,30 @@ impl Render for SuperzentEmptyPaneView {
         };
 
         let buttons = match mode {
-            EmptyPaneMode::Initial => vec![self.action_button(
-                "superzent-empty-add-project",
-                "Add Project",
-                IconName::OpenFolder,
-                true,
-                |this, window, cx| {
-                    if let Some(current_workspace) = this.current_workspace_entity(cx) {
-                        run_add_project_from_store(current_workspace, window, cx);
-                    }
-                },
-                cx,
-            )],
+            EmptyPaneMode::Initial => vec![
+                self.action_button(
+                    "superzent-empty-add-project",
+                    "Add Project",
+                    IconName::OpenFolder,
+                    true,
+                    |this, window, cx| {
+                        if let Some(current_workspace) = this.current_workspace_entity(cx) {
+                            run_add_project_from_store(current_workspace, window, cx);
+                        }
+                    },
+                    cx,
+                ),
+                self.action_button(
+                    "superzent-empty-open-recent",
+                    "Open Recent",
+                    IconName::HistoryRerun,
+                    false,
+                    |_this, window, cx| {
+                        window.dispatch_action(Box::new(OpenRecent::default()), cx);
+                    },
+                    cx,
+                ),
+            ],
             EmptyPaneMode::Workspace => vec![
                 self.action_button(
                     "superzent-empty-new-terminal",
@@ -3930,9 +4017,10 @@ impl SuperzentRightSidebar {
     ) -> Self {
         let store = SuperzentStore::global(cx);
         let mut subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let workspace_for_restore = workspace;
         subscriptions.push(cx.observe_in(&right_dock, window, {
             move |this, dock, window, cx| {
-                this.restore_active_sidebar(workspace.clone(), dock, window, cx);
+                this.restore_active_sidebar(workspace_for_restore.clone(), dock, window, cx);
             }
         }));
 
