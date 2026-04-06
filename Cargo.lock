@@ -10285,6 +10285,7 @@ dependencies = [
  "language",
  "log",
  "markdown",
+ "project",
  "settings",
  "tempfile",
  "theme",

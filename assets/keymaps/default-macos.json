@@ -1376,6 +1376,8 @@
       "down": "markdown::ScrollDown",
       "alt-up": "markdown::ScrollUpByItem",
       "alt-down": "markdown::ScrollDownByItem",
+      "cmd-up": "markdown::ScrollToTop",
+      "cmd-down": "markdown::ScrollToBottom",
       "cmd-f": "buffer_search::Deploy",
     },
   },

@@ -694,6 +694,7 @@ impl SearchQuery {
         }
 
         let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
         let mut matches = Vec::new();
         match self {
             Self::Text {
@@ -703,8 +704,8 @@ impl SearchQuery {
                     if *whole_word {
                         let prev_char = text[..mat.start()].chars().last();
                         let next_char = text[mat.end()..].chars().next();
-                        if prev_char.is_some_and(is_word_char)
-                            || next_char.is_some_and(is_word_char)
+                        if prev_char.is_some_and(&is_word_char)
+                            || next_char.is_some_and(&is_word_char)
                         {
                             continue;
                         }
