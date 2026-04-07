@@ -14,7 +14,17 @@ resolution_type: code_fix
 severity: high
 related_components:
   - development_workflow
-tags: [zsh, zdotdir, shell-startup, zsh-bootstrap, codex-wrapper, claude-wrapper, agent-hooks, settings-merge]
+tags:
+  [
+    zsh,
+    zdotdir,
+    shell-startup,
+    zsh-bootstrap,
+    codex-wrapper,
+    claude-wrapper,
+    agent-hooks,
+    settings-merge,
+  ]
 ---
 
 # Managed zsh terminals can lose Codex and Claude wrapper resolution after shell startup
