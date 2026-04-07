@@ -18,11 +18,11 @@ pub const AGENT_HOOK_URL_ENV_VAR: &str = "SUPERZENT_AGENT_HOOK_URL";
 pub const AGENT_HOOK_VERSION_ENV_VAR: &str = "SUPERZENT_HOOK_VERSION";
 pub const AGENT_REAL_CLAUDE_BIN_ENV_VAR: &str = "SUPERZENT_REAL_CLAUDE_BIN";
 pub const AGENT_REAL_CODEX_BIN_ENV_VAR: &str = "SUPERZENT_REAL_CODEX_BIN";
+pub const AGENT_HOOK_BIN_DIR_ENV_VAR: &str = "SUPERZENT_AGENT_HOOK_BIN_DIR";
 pub const AGENT_TERMINAL_ID_ENV_VAR: &str = "SUPERZENT_TERMINAL_ID";
 pub const AGENT_WORKSPACE_ID_ENV_VAR: &str = "SUPERZENT_WORKSPACE_ID";
 pub const AGENT_DEBUG_HOOKS_ENV_VAR: &str = "SUPERZENT_DEBUG_HOOKS";
 
-const CLAUDE_SETTINGS_FILE_NAME: &str = "claude-settings.json";
 const HOOK_ENDPOINT_PATH: &str = "/agent-hook";
 const NOTIFY_SCRIPT_FILE_NAME: &str = "notify.sh";
 const WRAPPER_MARKER: &str = "# Superzent agent wrapper v1";
@@ -86,6 +86,10 @@ pub fn inject_terminal_environment(environment: &mut HashMap<String, String>) ->
     environment.insert(
         AGENT_HOOK_VERSION_ENV_VAR.to_string(),
         AGENT_HOOK_VERSION.to_string(),
+    );
+    environment.insert(
+        AGENT_HOOK_BIN_DIR_ENV_VAR.to_string(),
+        runtime.paths.bin_dir.to_string_lossy().to_string(),
     );
     environment.insert(AGENT_TERMINAL_ID_ENV_VAR.to_string(), terminal_id.clone());
     if let Ok(debug_hooks) = std::env::var(AGENT_DEBUG_HOOKS_ENV_VAR) {
@@ -189,28 +193,7 @@ struct AgentHookRuntime {
 
 impl AgentHookRuntime {
     fn new() -> Result<Self> {
-        let root_dir = paths::data_dir().join("agent-hooks");
-        let bin_dir = root_dir.join("bin");
-        let hooks_dir = root_dir.join("hooks");
-        fs::create_dir_all(&bin_dir)?;
-        fs::create_dir_all(&hooks_dir)?;
-
-        let notify_script_path = hooks_dir.join(NOTIFY_SCRIPT_FILE_NAME);
-        let claude_settings_path = hooks_dir.join(CLAUDE_SETTINGS_FILE_NAME);
-
-        write_executable_file(&notify_script_path, notify_script_content())?;
-        write_file(
-            &claude_settings_path,
-            claude_settings_content(&notify_script_path)?,
-        )?;
-        write_executable_file(
-            &bin_dir.join("claude"),
-            claude_wrapper_content(&bin_dir, &claude_settings_path),
-        )?;
-        write_executable_file(
-            &bin_dir.join("codex"),
-            codex_wrapper_content(&bin_dir, &notify_script_path),
-        )?;
+        let bin_dir = ensure_agent_hook_wrapper_files()?;
 
         let server = Server::http("127.0.0.1:0")
             .map_err(|error| anyhow!(error).context("bind hook port"))?;
@@ -228,6 +211,28 @@ impl AgentHookRuntime {
             subscribers,
         })
     }
+}
+
+fn ensure_agent_hook_wrapper_files() -> Result<PathBuf> {
+    let root_dir = paths::data_dir().join("agent-hooks");
+    let bin_dir = root_dir.join("bin");
+    let hooks_dir = root_dir.join("hooks");
+    fs::create_dir_all(&bin_dir)?;
+    fs::create_dir_all(&hooks_dir)?;
+
+    let notify_script_path = hooks_dir.join(NOTIFY_SCRIPT_FILE_NAME);
+
+    write_executable_file(&notify_script_path, notify_script_content())?;
+    write_executable_file(
+        &bin_dir.join("claude"),
+        claude_wrapper_content(&bin_dir, &notify_script_path)?,
+    )?;
+    write_executable_file(
+        &bin_dir.join("codex"),
+        codex_wrapper_content(&bin_dir, &notify_script_path),
+    )?;
+
+    Ok(bin_dir)
 }
 
 fn spawn_hook_server(
@@ -429,11 +434,6 @@ fn prepend_path_entry(environment: &mut HashMap<String, String>, path: &Path) {
     }
 }
 
-fn write_file(path: &Path, contents: String) -> Result<()> {
-    fs::write(path, contents)?;
-    Ok(())
-}
-
 fn write_executable_file(path: &Path, contents: String) -> Result<()> {
     fs::write(path, contents)?;
 
@@ -553,9 +553,9 @@ fn wrapper_resolver_content(binary_name: &str, override_env_var: &str, bin_dir: 
     )
 }
 
-fn claude_wrapper_content(bin_dir: &Path, claude_settings_path: &Path) -> String {
-    let claude_settings_path = shell_single_quote(&claude_settings_path.to_string_lossy());
-    format!(
+fn claude_wrapper_content(bin_dir: &Path, notify_script_path: &Path) -> Result<String> {
+    let claude_settings_json = shell_single_quote(&claude_settings_content(notify_script_path)?);
+    Ok(format!(
         r#"#!/bin/bash
 {WRAPPER_MARKER}
 _superzent_debug_enabled=0
@@ -564,7 +564,7 @@ case "${{{AGENT_DEBUG_HOOKS_ENV_VAR}:-}}" in
 esac
 _superzent_debug_log="${{TMPDIR:-/tmp}}/superzent-notify-debug.log"
 if [ "$_superzent_debug_enabled" = "1" ]; then
-  echo "$(date '+%H:%M:%S') claude wrapper invoked settings={claude_settings_path} hook_url=$SUPERZENT_AGENT_HOOK_URL terminal_id=$SUPERZENT_TERMINAL_ID" >> "$_superzent_debug_log"
+  echo "$(date '+%H:%M:%S') claude wrapper invoked hook_url=$SUPERZENT_AGENT_HOOK_URL terminal_id=$SUPERZENT_TERMINAL_ID" >> "$_superzent_debug_log"
 fi
 {resolver}
 REAL_BIN="$(find_real_binary)"
@@ -577,10 +577,10 @@ fi
 if [ "$_superzent_debug_enabled" = "1" ]; then
   echo "$(date '+%H:%M:%S') claude wrapper exec REAL_BIN=$REAL_BIN" >> "$_superzent_debug_log"
 fi
-exec "$REAL_BIN" --settings {claude_settings_path} "$@"
+exec "$REAL_BIN" --settings {claude_settings_json} "$@"
 "#,
         resolver = wrapper_resolver_content("claude", AGENT_REAL_CLAUDE_BIN_ENV_VAR, bin_dir),
-    )
+    ))
 }
 
 fn codex_wrapper_content(bin_dir: &Path, notify_script_path: &Path) -> String {
@@ -750,11 +750,28 @@ mod tests {
 
     #[test]
     fn wrapper_prefers_override_binary_paths() {
-        let wrapper = claude_wrapper_content(
-            Path::new("/tmp/bin"),
-            Path::new("/tmp/hooks/claude-settings.json"),
-        );
+        let wrapper =
+            claude_wrapper_content(Path::new("/tmp/bin"), Path::new("/tmp/hooks/notify.sh"))
+                .expect("Claude wrapper should render");
         assert!(wrapper.contains(AGENT_REAL_CLAUDE_BIN_ENV_VAR));
+        let settings_arg_prefix = "--settings '";
+        let settings_start = wrapper
+            .find(settings_arg_prefix)
+            .expect("Claude wrapper should include inline settings")
+            + settings_arg_prefix.len();
+        let settings_end = wrapper[settings_start..]
+            .find("' \"$@\"")
+            .expect("Claude wrapper should terminate inline settings")
+            + settings_start;
+        let encoded_settings = &wrapper[settings_start..settings_end];
+        let decoded_settings = encoded_settings.replace("'\"'\"'", "'");
+        let settings: serde_json::Value =
+            serde_json::from_str(&decoded_settings).expect("inline settings should be valid JSON");
+        assert!(settings.get("hooks").is_some());
+        assert_eq!(
+            settings["hooks"]["SessionStart"][0]["hooks"][0]["type"],
+            "command"
+        );
 
         let wrapper =
             codex_wrapper_content(Path::new("/tmp/bin"), Path::new("/tmp/hooks/notify.sh"));
@@ -840,5 +857,52 @@ mod tests {
             error.to_string(),
             "ACP presets cannot be launched in a terminal"
         );
+    }
+
+    #[test]
+    fn prepare_workspace_launch_uses_managed_command_name_for_managed_commands() {
+        let workspace = WorkspaceEntry {
+            id: "workspace-1".to_string(),
+            project_id: "project-1".to_string(),
+            kind: WorkspaceKind::Worktree,
+            name: "feature-branch".to_string(),
+            display_name: None,
+            branch: "feature-branch".to_string(),
+            location: WorkspaceLocation::Local {
+                worktree_path: PathBuf::from("/tmp/feature-branch"),
+            },
+            agent_preset_id: "codex".to_string(),
+            managed: true,
+            git_status: WorkspaceGitStatus::Available,
+            git_summary: None,
+            attention_status: WorkspaceAttentionStatus::Idle,
+            review_pending: false,
+            last_attention_reason: None,
+            created_at: Default::default(),
+            last_opened_at: Default::default(),
+        };
+        let preset = AgentPreset {
+            id: "codex".to_string(),
+            label: "Codex".to_string(),
+            launch_mode: PresetLaunchMode::Terminal,
+            command: "codex".to_string(),
+            args: vec!["--help".to_string()],
+            env: Default::default(),
+            acp_agent_name: Some("codex-acp".to_string()),
+            attention_patterns: Vec::new(),
+        };
+
+        let launch = prepare_workspace_launch(&workspace, &preset)
+            .expect("managed terminal launch should succeed");
+
+        assert_eq!(launch.command, "codex");
+        assert_eq!(
+            launch
+                .environment
+                .get(AGENT_REAL_CODEX_BIN_ENV_VAR)
+                .map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(launch.args, vec!["--help".to_string()]);
     }
 }
