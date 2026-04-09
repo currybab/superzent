@@ -13,6 +13,8 @@ description: Get started with superzent, the local-first workspace shell for cod
 
 The main window is built around multiple local workspaces. Use the welcome page or sidebar controls to open an existing repository, then create or switch worktrees from there.
 
+If your repo needs per-workspace setup or cleanup, add a repo-root `.superzent/config.json`. See [Managed Workspace Lifecycle](./managed-workspace-lifecycle.md).
+
 ### 2. Learn the core shortcuts
 
 | Action                      | macOS          |
@@ -40,6 +42,7 @@ Good first settings:
 - startup workspace behavior
 - keybindings
 - project-specific tasks
+- repo-level managed workspace setup and teardown
 
 See [Running & Testing](./running-testing.md), [Terminal](./terminal.md), and [All Settings](./reference/all-settings.md).
 

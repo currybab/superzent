@@ -66,7 +66,7 @@ use std::{
 use sum_tree::{Bias, Dimensions, Edit, KeyedItem, SeekTarget, SumTree, Summary, TreeMap, TreeSet};
 use text::{LineEnding, Rope};
 use util::{
-    ResultExt, debug_panic, maybe,
+    ResultExt, maybe,
     paths::{PathMatcher, PathStyle, SanitizedPath, home_dir},
     rel_path::RelPath,
 };
@@ -5115,10 +5115,12 @@ impl BackgroundScanner {
             match existing_repository_entry {
                 None => {
                     let Ok(relative) = dot_git_dir.strip_prefix(state.snapshot.abs_path()) else {
-                        debug_panic!(
-                            "update_git_repositories called with .git directory outside the worktree root"
+                        log::warn!(
+                            "ignoring git directory outside the worktree root during repository refresh: {} (worktree root: {})",
+                            dot_git_dir.display(),
+                            state.snapshot.abs_path().display()
                         );
-                        return Vec::new();
+                        continue;
                     };
                     affected_repo_roots.push(dot_git_dir.parent().unwrap().into());
                     state

@@ -9,7 +9,7 @@ use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use agent_ui::{
     AgentNotification, AgentNotificationEvent, open_external_acp_tab, pane_has_external_acp_item,
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::Utc;
 #[cfg(target_os = "macos")]
 use cocoa::base::{id, nil};
@@ -19,10 +19,11 @@ use git_ui::git_panel::GitPanel;
 use gpui::{
     Action, Animation, AnimationExt, App, AsyncWindowContext, ClickEvent, DismissEvent, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, PathPromptOptions,
-    Point, PromptLevel, SharedString, Subscription, Task, WeakEntity, WindowHandle, actions,
-    anchored, deferred, px,
+    Point, PromptLevel, ScrollHandle, SharedString, Subscription, Task, WeakEntity, WindowHandle,
+    actions, anchored, deferred, px,
 };
 use menu;
+use notifications::status_toast::{StatusToast, ToastIcon};
 #[cfg(target_os = "macos")]
 use objc::{
     class,
@@ -73,8 +74,9 @@ use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 #[cfg(feature = "acp_tabs")]
 use ui::ContextMenuEntry;
 use ui::{
-    ButtonLike, Chip, CommonAnimationExt, ContextMenu, DropdownMenu, DropdownStyle, Icon,
-    Indicator, ListItem, Tab, Tooltip, prelude::*,
+    ButtonLike, Checkbox, Chip, CommonAnimationExt, ContextMenu, CopyButton, Disclosure,
+    DropdownMenu, DropdownStyle, ElevationIndex, Icon, Indicator, ListItem, Modal, ModalFooter,
+    ModalHeader, Section, Tab, ToggleState, Tooltip, prelude::*,
 };
 use uuid::Uuid;
 use workspace::{
@@ -1769,6 +1771,81 @@ fn show_workspace_toast_async(
     }
 }
 
+fn show_workspace_status_toast(
+    workspace_handle: &Entity<Workspace>,
+    message: impl Into<SharedString>,
+    icon: ToastIcon,
+    cx: &mut App,
+) {
+    let message: SharedString = message.into();
+    let status_toast = StatusToast::new(message, cx, move |this: StatusToast, _cx| {
+        this.icon(icon).dismiss_button(true)
+    });
+    workspace_handle.update(cx, |workspace, cx| {
+        workspace.toggle_status_toast(status_toast, cx);
+    });
+}
+
+fn clear_workspace_setup_attention(
+    store: &mut SuperzentStore,
+    workspace_id: &str,
+    cx: &mut Context<SuperzentStore>,
+) {
+    let should_clear = store
+        .workspace(workspace_id)
+        .and_then(|workspace| workspace.last_attention_reason.as_deref())
+        == Some(WORKSPACE_SETUP_IN_PROGRESS_REASON);
+
+    if should_clear {
+        store.set_workspace_attention(
+            workspace_id,
+            WorkspaceAttentionStatus::Idle,
+            false,
+            None,
+            cx,
+        );
+    }
+}
+
+fn can_mark_workspace_setup_attention(workspace: &WorkspaceEntry) -> bool {
+    workspace.attention_status == WorkspaceAttentionStatus::Idle && !workspace.review_pending
+}
+
+fn mark_workspace_setup_attention(
+    store: &mut SuperzentStore,
+    workspace_id: &str,
+    cx: &mut Context<SuperzentStore>,
+) {
+    let should_mark = store
+        .workspace(workspace_id)
+        .is_some_and(can_mark_workspace_setup_attention);
+
+    if should_mark {
+        store.set_workspace_attention(
+            workspace_id,
+            WorkspaceAttentionStatus::Working,
+            false,
+            Some(WORKSPACE_SETUP_IN_PROGRESS_REASON.to_string()),
+            cx,
+        );
+    }
+}
+
+fn show_current_window_status_toast(
+    message: impl Into<SharedString>,
+    icon: ToastIcon,
+    cx: &mut AsyncWindowContext,
+) {
+    if let Err(error) = cx.update(|window, cx| {
+        let Some(workspace) = workspace_from_window(window, cx) else {
+            return;
+        };
+        show_workspace_status_toast(&workspace, message, icon, cx);
+    }) {
+        log::error!("failed to show current window status toast: {error:#}");
+    }
+}
+
 fn update_store_async<R>(
     store: &Entity<SuperzentStore>,
     cx: &mut AsyncWindowContext,
@@ -1785,7 +1862,42 @@ fn update_store_async<R>(
 
 struct WorkspaceCreationResult {
     workspace: WorkspaceEntry,
-    warning: Option<String>,
+    notice: Option<String>,
+}
+
+fn workspace_lifecycle_failure_prompt_detail(
+    workspace_entry: &WorkspaceEntry,
+    failure: &superzent_git::WorkspaceLifecycleFailure,
+    notice: Option<&str>,
+    force_delete: bool,
+) -> String {
+    let mut sections = vec![format!(
+        "Workspace `{}` at {} hit a {} failure.",
+        workspace_entry.name,
+        workspace_entry.display_path(),
+        failure.phase.label().to_lowercase()
+    )];
+
+    if let Some(notice) = notice.filter(|notice| !notice.trim().is_empty()) {
+        sections.push(notice.trim().to_string());
+    }
+
+    if force_delete {
+        sections.push(
+            "Choose `Delete Anyway` to retry deletion without running teardown again.".to_string(),
+        );
+    }
+
+    sections.push(failure.details());
+    sections.join("\n\n")
+}
+
+const WORKSPACE_SETUP_IN_PROGRESS_REASON: &str = "Setting up workspace…";
+fn workspace_setup_row_state(workspace: &WorkspaceEntry) -> Option<WorkspaceSetupRowState> {
+    match workspace.last_attention_reason.as_deref() {
+        Some(WORKSPACE_SETUP_IN_PROGRESS_REASON) => Some(WorkspaceSetupRowState::InProgress),
+        _ => None,
+    }
 }
 
 async fn resolve_remote_project_workspace(
@@ -1922,6 +2034,9 @@ async fn create_remote_workspace(
             last_attention_reason: existing_workspace
                 .as_ref()
                 .and_then(|workspace| workspace.last_attention_reason.clone()),
+            lifecycle_teardown_script: existing_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
             created_at: existing_workspace
                 .as_ref()
                 .map(|workspace| workspace.created_at)
@@ -1932,8 +2047,124 @@ async fn create_remote_workspace(
 
     Ok(WorkspaceCreationResult {
         workspace,
-        warning: None,
+        notice: None,
     })
+}
+
+async fn resolve_opened_workspace(
+    workspace_entry: &WorkspaceEntry,
+    _window_handle: gpui::AnyWindowHandle,
+    cx: &mut AsyncWindowContext,
+) -> Option<Entity<Workspace>> {
+    for _ in 0..20 {
+        let resolved = cx
+            .update(|window, cx| workspace_for_entry_in_window(window, cx, workspace_entry))
+            .ok()
+            .flatten();
+
+        if resolved.is_some() {
+            return resolved;
+        }
+
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+
+    cx.update(|window, cx| workspace_from_window(window, cx))
+        .ok()
+        .flatten()
+}
+
+async fn create_local_workspace(
+    project: ProjectEntry,
+    preset_id: String,
+    branch_name: String,
+    base_branch_override: Option<String>,
+    base_workspace_path: Option<PathBuf>,
+    setup_script: Option<String>,
+    teardown_script: Option<String>,
+    persist_lifecycle_scripts: bool,
+    allow_dirty: bool,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<WorkspaceCreationResult> {
+    cx.background_spawn(async move {
+        superzent_git::create_workspace_without_setup(
+            &project,
+            &preset_id,
+            superzent_git::CreateWorkspaceOptions {
+                branch_name,
+                base_branch_override,
+                base_workspace_path,
+                setup_script,
+                teardown_script,
+                persist_lifecycle_scripts,
+                allow_dirty,
+            },
+        )
+        .map(|outcome| WorkspaceCreationResult {
+            workspace: outcome.workspace,
+            notice: outcome.notice,
+        })
+    })
+    .await
+}
+
+fn local_base_workspace_path_for_create_request(
+    workspace_handle: &Entity<Workspace>,
+    project: &ProjectEntry,
+    store: &SuperzentStore,
+    cx: &App,
+) -> Option<PathBuf> {
+    single_workspace_location_snapshot(workspace_handle, cx)
+        .and_then(|location| match location {
+            WorkspaceLocation::Local { worktree_path } => Some(worktree_path),
+            WorkspaceLocation::Ssh { .. } => None,
+        })
+        .or_else(|| {
+            store
+                .active_workspace()
+                .filter(|workspace_entry| workspace_entry.project_id == project.id)
+                .and_then(|workspace_entry| workspace_entry.local_worktree_path())
+                .map(Path::to_path_buf)
+        })
+        .or_else(|| {
+            workspace_handle
+                .read(cx)
+                .project()
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .and_then(|worktree| {
+                    worktree
+                        .read(cx)
+                        .as_local()
+                        .map(|local| local.abs_path().to_path_buf())
+                })
+        })
+}
+
+fn move_changes_source_path(
+    base_workspace_path: Option<&Path>,
+    project: &ProjectEntry,
+) -> Option<PathBuf> {
+    base_workspace_path
+        .map(Path::to_path_buf)
+        .or_else(|| project.local_repo_root().map(Path::to_path_buf))
+}
+
+fn is_dirty_workspace_create_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains("commit or stash local changes before creating a managed workspace")
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirtyWorkspaceCreateChoice {
+    CreateOnly,
+    CreateAndMoveChanges,
 }
 
 fn spawn_new_workspace_request(
@@ -1941,32 +2172,107 @@ fn spawn_new_workspace_request(
     app_state: Arc<WorkspaceAppState>,
     project: ProjectEntry,
     branch_name: String,
+    base_branch_override: Option<String>,
+    setup_script: Option<String>,
+    teardown_script: Option<String>,
+    persist_lifecycle_scripts: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
     let store = SuperzentStore::global(cx);
     let preset_id = store.read(cx).default_preset().id.clone();
+    let base_workspace_path = {
+        let store = store.read(cx);
+        local_base_workspace_path_for_create_request(&workspace_handle, &project, &store, cx)
+    };
     window
         .spawn(cx, async move |cx| {
+            let mut move_changes_failure: Option<String> = None;
             let outcome = match &project.location {
                 ProjectLocation::Local { .. } => {
-                    cx.background_spawn({
-                        let project = project.clone();
-                        let branch_name = branch_name.clone();
-                        let preset_id = preset_id.clone();
-                        async move {
-                            superzent_git::create_workspace(
-                                &project,
-                                &preset_id,
-                                superzent_git::CreateWorkspaceOptions { branch_name },
-                            )
-                            .map(|outcome| WorkspaceCreationResult {
-                                workspace: outcome.workspace,
-                                warning: outcome.warning,
-                            })
-                        }
-                    })
+                    match create_local_workspace(
+                        project.clone(),
+                        preset_id.clone(),
+                        branch_name.clone(),
+                        base_branch_override.clone(),
+                        base_workspace_path.clone(),
+                        setup_script.clone(),
+                        teardown_script.clone(),
+                        persist_lifecycle_scripts,
+                        false,
+                        cx,
+                    )
                     .await
+                    {
+                        Ok(outcome) => Ok(outcome),
+                        Err(error) if is_dirty_workspace_create_error(&error) => {
+                            let prompt = cx.update(|window, cx| {
+                                window.prompt(
+                                    PromptLevel::Warning,
+                                    "Create workspace with local changes?",
+                                    Some(
+                                        "The current workspace has uncommitted changes.\n\n`Create Only` makes the new workspace from the selected base branch and leaves your current changes where they are.\n\n`Create And Move Changes` makes the new workspace and then moves your tracked and untracked local changes into it.",
+                                    ),
+                                    &["Cancel", "Create Only", "Create And Move Changes"],
+                                    cx,
+                                )
+                            })?;
+
+                            let dirty_choice = match prompt.await {
+                                Ok(1) => Some(DirtyWorkspaceCreateChoice::CreateOnly),
+                                Ok(2) => Some(DirtyWorkspaceCreateChoice::CreateAndMoveChanges),
+                                _ => None,
+                            };
+
+                            let Some(dirty_choice) = dirty_choice else {
+                                return Ok::<(), anyhow::Error>(());
+                            };
+
+                            let outcome = create_local_workspace(
+                                project.clone(),
+                                preset_id.clone(),
+                                branch_name.clone(),
+                                base_branch_override.clone(),
+                                base_workspace_path.clone(),
+                                setup_script.clone(),
+                                teardown_script.clone(),
+                                persist_lifecycle_scripts,
+                                true,
+                                cx,
+                            )
+                            .await?;
+
+                            if dirty_choice == DirtyWorkspaceCreateChoice::CreateAndMoveChanges {
+                                let source_workspace_path = move_changes_source_path(
+                                    base_workspace_path.as_deref(),
+                                    &project,
+                                );
+                                let target_worktree_path = outcome
+                                    .workspace
+                                    .local_worktree_path()
+                                    .map(Path::to_path_buf);
+
+                                if let (Some(source_workspace_path), Some(target_worktree_path)) =
+                                    (source_workspace_path, target_worktree_path)
+                                {
+                                    if let Err(error) = cx
+                                        .background_spawn(async move {
+                                            superzent_git::move_changes_to_workspace(
+                                                &source_workspace_path,
+                                                &target_worktree_path,
+                                            )
+                                        })
+                                        .await
+                                    {
+                                        move_changes_failure = Some(error.to_string());
+                                    }
+                                }
+                            }
+
+                            Ok(outcome)
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 ProjectLocation::Ssh { .. } => {
                     create_remote_workspace(
@@ -2016,28 +2322,195 @@ fn spawn_new_workspace_request(
                 return Ok::<(), anyhow::Error>(());
             }
 
-            if let Some(target_workspace) =
-                cx.update(|window, cx| workspace_for_entry_in_window(window, cx, &workspace_entry))?
+            let current_window_handle = cx.update(|window, _| window.window_handle())?;
+            let visible_workspace =
+                resolve_opened_workspace(&workspace_entry, current_window_handle, cx).await;
+
+            if let (Some(visible_workspace), Some(notice)) =
+                (visible_workspace.as_ref(), outcome.notice.clone())
             {
-                cx.update(|window, cx| {
-                    launch_workspace_preset(
-                        target_workspace,
-                        workspace_entry.clone(),
-                        preset_id.clone(),
-                        None,
-                        window,
-                        cx,
-                    );
-                    if let Some(warning) = outcome.warning.clone() {
-                        show_workspace_toast(&workspace_handle, warning, cx);
-                    }
+                cx.update(|_, cx| {
+                    show_workspace_toast(&visible_workspace, notice, cx);
                 })?;
+            }
+
+            let should_launch_preset = if matches!(project.location, ProjectLocation::Local { .. }) {
+                let project = project.clone();
+                let workspace_entry_for_setup = workspace_entry.clone();
+                let base_workspace_path = base_workspace_path.clone();
+                let setup_script = setup_script.clone();
+                if setup_script
+                    .as_ref()
+                    .map(|script| !script.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    let _ = update_store_async(&store, cx, |store, cx| {
+                        mark_workspace_setup_attention(store, &workspace_entry.id, cx);
+                    });
+                    let setup_result = cx
+                        .background_spawn(async move {
+                            superzent_git::run_workspace_setup(
+                                &project,
+                                &workspace_entry_for_setup,
+                                base_workspace_path.as_deref(),
+                                setup_script.as_deref(),
+                            )
+                        })
+                        .await;
+                    // Always resolve the currently *active* workspace at completion
+                    // time: the handle captured before setup may now point to a
+                    // hidden tab if the user navigated away, and toasts attached
+                    // to a hidden tab are never drawn. When nothing is active for
+                    // this entry we fall back to the current window so the user
+                    // still sees the result.
+                    //
+                    // The current window must be checked via `workspace_from_window`
+                    // (using the `Window` arg) because it's already on the stack
+                    // inside `cx.update`, so any `read_window`-based lookup
+                    // (including `WindowHandle::read_with`) would panic. The
+                    // iteration helper uses `WindowHandle::read` which skips the
+                    // stack-locked current window gracefully.
+                    let setup_visible_workspace = cx
+                        .update(|window, cx| {
+                            workspace_from_window(window, cx)
+                                .filter(|active| {
+                                    workspace_matches_entry(active, &workspace_entry, cx)
+                                })
+                                .or_else(|| {
+                                    currently_active_workspace_for_entry(&workspace_entry, cx)
+                                })
+                        })
+                        .ok()
+                        .flatten();
+
+                    match setup_result {
+                        Ok(()) => {
+                            let _ = update_store_async(&store, cx, |store, cx| {
+                                clear_workspace_setup_attention(store, &workspace_entry.id, cx);
+                            });
+                            if let Some(visible_workspace) = setup_visible_workspace.as_ref() {
+                                if let Err(error) = cx.update(|_, cx| {
+                                    show_workspace_status_toast(
+                                        visible_workspace,
+                                        format!("Setup finished for `{}`.", workspace_entry.name),
+                                        ToastIcon::new(IconName::Check).color(Color::Success),
+                                        cx,
+                                    );
+                                }) {
+                                    log::error!("failed to show workspace setup success toast: {error:#}");
+                                }
+                            } else {
+                                show_current_window_status_toast(
+                                    format!("Setup finished for `{}`.", workspace_entry.name),
+                                    ToastIcon::new(IconName::Check).color(Color::Success),
+                                    cx,
+                                );
+                            }
+                            true
+                        }
+                        Err(setup_failure) => {
+                            let _ = update_store_async(&store, cx, |store, cx| {
+                                clear_workspace_setup_attention(store, &workspace_entry.id, cx);
+                            });
+                            let prompt_detail = workspace_lifecycle_failure_prompt_detail(
+                                &workspace_entry,
+                                &setup_failure,
+                                outcome.notice.as_deref(),
+                                false,
+                            );
+                            let setup_prompt = cx.update(|window, cx| {
+                                // Prefer toasting the workspace where setup ran
+                                // when it's still the active tab; otherwise pop
+                                // the notice on the current window so the user
+                                // sees the failure regardless of navigation.
+                                if let Some(visible_workspace) =
+                                    setup_visible_workspace.as_ref()
+                                {
+                                    show_workspace_toast(
+                                        visible_workspace,
+                                        setup_failure.summary(),
+                                        cx,
+                                    );
+                                } else if let Some(current_workspace) =
+                                    workspace_from_window(window, cx)
+                                {
+                                    show_workspace_toast(
+                                        &current_workspace,
+                                        setup_failure.summary(),
+                                        cx,
+                                    );
+                                } else {
+                                    log::warn!(
+                                        "workspace setup failed and no window is available to show the error: {}",
+                                        setup_failure.summary()
+                                    );
+                                }
+                                window.prompt(
+                                    PromptLevel::Warning,
+                                    "Workspace created, but setup failed",
+                                    Some(&prompt_detail),
+                                    &["OK"],
+                                    cx,
+                                )
+                            })?;
+                            let _ = setup_prompt.await;
+                            false
+                        }
+                    }
+                } else {
+                    true
+                }
             } else {
-                show_workspace_toast_async(
-                    &workspace_handle,
-                    "Workspace opened, but its window could not be resolved.",
-                    cx,
-                );
+                true
+            };
+
+            if should_launch_preset {
+                let target_workspace = if let Some(visible_workspace) = visible_workspace.clone() {
+                    Some(visible_workspace)
+                } else {
+                    resolve_opened_workspace(&workspace_entry, current_window_handle, cx).await
+                };
+
+                if let Some(target_workspace) = target_workspace {
+                    cx.update(|window, cx| {
+                        launch_workspace_preset(
+                            target_workspace,
+                            workspace_entry.clone(),
+                            preset_id.clone(),
+                            None,
+                            window,
+                            cx,
+                        );
+                    })?;
+                } else {
+                    log::warn!(
+                        "workspace opened, but the new workspace view could not be resolved for preset launch"
+                    );
+                }
+            }
+
+            if let Some(move_changes_failure) = move_changes_failure.clone() {
+                if let Some(visible_workspace) = visible_workspace.as_ref() {
+                    let move_prompt = cx.update(|window, cx| {
+                        show_workspace_toast(
+                            visible_workspace,
+                            "Workspace created, but moving changes failed.",
+                            cx,
+                        );
+                        window.prompt(
+                            PromptLevel::Warning,
+                            "Workspace created, but moving changes failed",
+                            Some(&move_changes_failure),
+                            &["OK"],
+                            cx,
+                        )
+                    })?;
+                    let _ = move_prompt.await;
+                } else {
+                    log::warn!(
+                        "workspace change move failed before the new workspace view could be resolved: {move_changes_failure}"
+                    );
+                }
             }
 
             Ok::<(), anyhow::Error>(())
@@ -2203,7 +2676,23 @@ struct NewWorkspaceModal {
     workspace: WeakEntity<Workspace>,
     project: ProjectEntry,
     branch_name_editor: Entity<Editor>,
+    base_branch_editor: Entity<Editor>,
+    setup_script_editor: Entity<Editor>,
+    teardown_script_editor: Entity<Editor>,
+    show_more_options: bool,
+    save_lifecycle_scripts: bool,
+    active_script_target: Option<ScriptEditorTarget>,
+    scroll_handle: ScrollHandle,
+    base_branch_notice: Option<SharedString>,
+    base_branch_error: Option<SharedString>,
+    _subscriptions: Vec<Subscription>,
     last_error: Option<SharedString>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScriptEditorTarget {
+    Setup,
+    Teardown,
 }
 
 impl EventEmitter<DismissEvent> for NewWorkspaceModal {}
@@ -2219,6 +2708,7 @@ impl NewWorkspaceModal {
     fn new(
         workspace: WeakEntity<Workspace>,
         project: ProjectEntry,
+        initial_base_workspace_path: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -2227,13 +2717,220 @@ impl NewWorkspaceModal {
             editor.set_placeholder_text("feature/my-branch", window, cx);
             editor
         });
+        let base_branch_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("main", window, cx);
+            editor
+        });
+        let setup_script_editor = cx.new(|cx| {
+            let mut editor = Editor::auto_height(2, 6, window, cx);
+            editor.set_placeholder_text("cp \"$SUPERZENT_BASE_PATH\"/.env .env", window, cx);
+            editor
+        });
+        let teardown_script_editor = cx.new(|cx| {
+            let mut editor = Editor::auto_height(2, 6, window, cx);
+            editor.set_placeholder_text("cargo clean", window, cx);
+            editor
+        });
+
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe(
+            &branch_name_editor,
+            |this, _, event: &EditorEvent, cx| {
+                let EditorEvent::Edited { .. } = event else {
+                    return;
+                };
+                if this.last_error.take().is_some() {
+                    cx.notify();
+                }
+            },
+        ));
+        subscriptions.push(cx.subscribe(
+            &base_branch_editor,
+            |this, _, event: &EditorEvent, cx| {
+                let EditorEvent::Edited { .. } = event else {
+                    return;
+                };
+                if this.last_error.take().is_some() {
+                    cx.notify();
+                }
+                if this.base_branch_notice.take().is_some()
+                    || this.base_branch_error.take().is_some()
+                {
+                    cx.notify();
+                }
+            },
+        ));
+        subscriptions.push(cx.subscribe(
+            &setup_script_editor,
+            |this, _, event: &EditorEvent, cx| match event {
+                EditorEvent::Edited { .. } => {
+                    if this.last_error.take().is_some() {
+                        cx.notify();
+                    }
+                }
+                EditorEvent::Focused | EditorEvent::FocusedIn => {
+                    this.active_script_target = Some(ScriptEditorTarget::Setup);
+                    cx.notify();
+                }
+                EditorEvent::Blurred => {
+                    if this.active_script_target == Some(ScriptEditorTarget::Setup) {
+                        this.active_script_target = None;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            },
+        ));
+        subscriptions.push(cx.subscribe(
+            &teardown_script_editor,
+            |this, _, event: &EditorEvent, cx| match event {
+                EditorEvent::Edited { .. } => {
+                    if this.last_error.take().is_some() {
+                        cx.notify();
+                    }
+                }
+                EditorEvent::Focused | EditorEvent::FocusedIn => {
+                    this.active_script_target = Some(ScriptEditorTarget::Teardown);
+                    cx.notify();
+                }
+                EditorEvent::Blurred => {
+                    if this.active_script_target == Some(ScriptEditorTarget::Teardown) {
+                        this.active_script_target = None;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            },
+        ));
+
+        let mut base_branch_notice = None;
+        let mut base_branch_error = None;
+        if matches!(project.location, ProjectLocation::Local { .. }) {
+            match superzent_git::resolve_workspace_base_branch_from_workspace(
+                &project,
+                initial_base_workspace_path.as_deref(),
+                None,
+            ) {
+                Ok(resolution) => {
+                    base_branch_editor.update(cx, |editor, cx| {
+                        editor.set_text(resolution.effective_base_branch.as_str(), window, cx);
+                    });
+                    base_branch_notice = resolution.notice.map(Into::into);
+                }
+                Err(error) => {
+                    base_branch_error = Some(error.to_string().into());
+                }
+            }
+            if let Ok(defaults) = superzent_git::workspace_lifecycle_defaults(&project) {
+                if let Some(setup_script) = defaults.setup_script {
+                    setup_script_editor.update(cx, |editor, cx| {
+                        editor.set_text(setup_script.as_str(), window, cx);
+                    });
+                }
+                if let Some(teardown_script) = defaults.teardown_script {
+                    teardown_script_editor.update(cx, |editor, cx| {
+                        editor.set_text(teardown_script.as_str(), window, cx);
+                    });
+                }
+            }
+        }
 
         Self {
             workspace,
             project,
             branch_name_editor,
+            base_branch_editor,
+            setup_script_editor,
+            teardown_script_editor,
+            show_more_options: false,
+            save_lifecycle_scripts: true,
+            active_script_target: None,
+            scroll_handle: ScrollHandle::new(),
+            base_branch_notice,
+            base_branch_error,
+            _subscriptions: subscriptions,
             last_error: None,
         }
+    }
+
+    fn base_branch(&self, cx: &App) -> Option<String> {
+        let base_branch = self.base_branch_editor.read(cx).text(cx);
+        let base_branch = base_branch.trim();
+        if base_branch.is_empty() {
+            None
+        } else {
+            Some(base_branch.to_string())
+        }
+    }
+
+    fn setup_script(&self, cx: &App) -> Option<String> {
+        let setup_script = self.setup_script_editor.read(cx).text(cx);
+        let setup_script = setup_script.trim();
+        if setup_script.is_empty() {
+            None
+        } else {
+            Some(setup_script.to_string())
+        }
+    }
+
+    fn teardown_script(&self, cx: &App) -> Option<String> {
+        let teardown_script = self.teardown_script_editor.read(cx).text(cx);
+        let teardown_script = teardown_script.trim();
+        if teardown_script.is_empty() {
+            None
+        } else {
+            Some(teardown_script.to_string())
+        }
+    }
+
+    fn insert_variable(&mut self, variable: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self
+            .active_script_target
+            .unwrap_or(ScriptEditorTarget::Setup);
+        let editor = match target {
+            ScriptEditorTarget::Setup => self.setup_script_editor.clone(),
+            ScriptEditorTarget::Teardown => self.teardown_script_editor.clone(),
+        };
+
+        editor.update(cx, |editor, cx| {
+            let existing_text = editor.text(cx);
+            let separator = if existing_text.is_empty()
+                || existing_text.ends_with(' ')
+                || existing_text.ends_with('\n')
+            {
+                ""
+            } else {
+                " "
+            };
+            let next_text = format!("{existing_text}{separator}{variable}");
+            editor.set_text(next_text.as_str(), window, cx);
+            editor.focus_handle(cx).focus(window, cx);
+        });
+    }
+
+    fn render_variable_helper(
+        &self,
+        id: &'static str,
+        variable: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                ButtonLike::new(format!("{id}-insert"))
+                    .style(ButtonStyle::Subtle)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.insert_variable(variable, window, cx);
+                    }))
+                    .child(Chip::new(variable).label_color(Color::Accent)),
+            )
+            .child(
+                CopyButton::new(format!("{id}-copy"), variable)
+                    .tooltip_label("Copy variable")
+                    .icon_size(IconSize::XSmall),
+            )
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -2255,6 +2952,12 @@ impl NewWorkspaceModal {
             return;
         }
 
+        if let Some(base_branch_error) = self.base_branch_error.clone() {
+            self.last_error = Some(base_branch_error);
+            cx.notify();
+            return;
+        }
+
         let app_state = workspace_handle.read(cx).app_state().clone();
 
         spawn_new_workspace_request(
@@ -2262,6 +2965,10 @@ impl NewWorkspaceModal {
             app_state,
             self.project.clone(),
             branch_name,
+            self.base_branch(cx),
+            self.setup_script(cx),
+            self.teardown_script(cx),
+            self.save_lifecycle_scripts,
             window,
             cx,
         );
@@ -2271,64 +2978,193 @@ impl NewWorkspaceModal {
 }
 
 impl Render for NewWorkspaceModal {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("SuperzentNewWorkspaceModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .elevation_3(cx)
             .w(px(480.))
+            .max_h(vh(0.8, window))
             .overflow_hidden()
-            .bg(cx.theme().colors().editor_background)
-            .border_1()
-            .border_color(cx.theme().colors().border)
-            .rounded_lg()
             .child(
-                v_flex()
-                    .gap_3()
-                    .p_4()
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(Label::new("Create Workspace").size(LabelSize::Large))
-                            .child(
-                                Label::new(format!(
-                                    "Create a managed workspace for {}.",
-                                    self.project.name
-                                ))
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                            ),
+                Modal::new("superzent-new-workspace-modal", Some(self.scroll_handle.clone()))
+                    .header(
+                        ModalHeader::new()
+                            .headline("Create Workspace")
+                            .description(format!(
+                                "Create a managed workspace for {}.",
+                                self.project.name
+                            )),
                     )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(Label::new("Branch Name").size(LabelSize::Small))
-                            .child(self.branch_name_editor.clone()),
+                    .section(
+                        Section::new().child(
+                            v_flex()
+                                .gap_3()
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(Label::new("Branch Name").size(LabelSize::Small))
+                                        .child(self.branch_name_editor.clone()),
+                                )
+                                .when(
+                                    matches!(self.project.location, ProjectLocation::Local { .. }),
+                                    |this| {
+                                        this.child(
+                                            v_flex()
+                                                .gap_1()
+                                                .child(Label::new("Base Branch").size(LabelSize::Small))
+                                                .child(self.base_branch_editor.clone())
+                                                .when_some(self.base_branch_notice.clone(), |this, notice| {
+                                                    this.child(
+                                                        Label::new(notice)
+                                                            .size(LabelSize::Small)
+                                                            .color(Color::Warning),
+                                                    )
+                                                })
+                                                .when_some(self.base_branch_error.clone(), |this, error| {
+                                                    this.child(
+                                                        Label::new(error)
+                                                            .size(LabelSize::Small)
+                                                            .color(Color::Error),
+                                                    )
+                                                })
+                                                .child(
+                                                    div()
+                                                        .w_full()
+                                                        .my_2()
+                                                        .border_t_1()
+                                                        .border_color(
+                                                            cx.theme().colors().border_variant,
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_1()
+                                                        .items_center()
+                                                        .child(
+                                                            Disclosure::new(
+                                                                "superzent-new-workspace-more",
+                                                                self.show_more_options,
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _: &ClickEvent, _, cx| {
+                                                                    this.show_more_options =
+                                                                        !this.show_more_options;
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Label::new("More")
+                                                                .size(LabelSize::Small)
+                                                                .color(Color::Muted),
+                                                        ),
+                                                )
+                                                .when(self.show_more_options, |this| {
+                                                    this.child(
+                                                        v_flex()
+                                                            .gap_2()
+                                                            .pt_2()
+                                                            .child(
+                                                                v_flex()
+                                                                    .gap_1()
+                                                                    .child(
+                                                                        Label::new("Setup Script")
+                                                                            .size(LabelSize::Small),
+                                                                    )
+                                                                    .child(self.setup_script_editor.clone()),
+                                                            )
+                                                            .child(
+                                                                v_flex()
+                                                                    .gap_1()
+                                                                    .child(
+                                                                        Label::new("Teardown Script")
+                                                                            .size(LabelSize::Small),
+                                                                    )
+                                                                    .child(self.teardown_script_editor.clone()),
+                                                            )
+                                                            .child(
+                                                                v_flex()
+                                                                    .gap_1()
+                                                                    .child(
+                                                                        Label::new("Available Variables")
+                                                                            .size(LabelSize::Small)
+                                                                            .color(Color::Muted),
+                                                                    )
+                                                                    .child(
+                                                                        h_flex()
+                                                                            .gap_2()
+                                                                            .flex_wrap()
+                                                                            .child(self.render_variable_helper(
+                                                                                "superzent-base-path",
+                                                                                "$SUPERZENT_BASE_PATH",
+                                                                                cx,
+                                                                            ))
+                                                                            .child(self.render_variable_helper(
+                                                                                "superzent-worktree-path",
+                                                                                "$SUPERZENT_WORKTREE_PATH",
+                                                                                cx,
+                                                                            ))
+                                                                            .child(self.render_variable_helper(
+                                                                                "superzent-root-path",
+                                                                                "$SUPERZENT_ROOT_PATH",
+                                                                                cx,
+                                                                            )),
+                                                                    ),
+                                                            )
+                                                            .child(
+                                                                Checkbox::new(
+                                                                    "superzent-new-workspace-save-lifecycle",
+                                                                    self.save_lifecycle_scripts.into(),
+                                                                )
+                                                                .label(
+                                                                    "Save these script commands as the default for this repository",
+                                                                )
+                                                                .fill()
+                                                                .elevation(ElevationIndex::Surface)
+                                                                .label_size(LabelSize::Small)
+                                                                .on_click(cx.listener(
+                                                                    |this, selection, _, cx| {
+                                                                        this.save_lifecycle_scripts =
+                                                                            *selection == ToggleState::Selected;
+                                                                        cx.notify();
+                                                                    },
+                                                                )),
+                                                            ),
+                                                    )
+                                                }),
+                                        )
+                                    },
+                                )
+                                .when_some(self.last_error.clone(), |this, error| {
+                                    this.child(
+                                        Label::new(error)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Error),
+                                    )
+                                }),
+                        ),
                     )
-                    .when_some(self.last_error.clone(), |this, error| {
-                        this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
-                    }),
-            )
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .px_4()
-                    .pb_4()
-                    .child(
-                        Button::new("superzent-new-workspace-cancel", "Cancel")
-                            .style(ButtonStyle::Subtle)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.cancel(&menu::Cancel, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("superzent-new-workspace-create", "Create")
-                            .style(ButtonStyle::Filled)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.confirm(&menu::Confirm, window, cx);
-                            })),
+                    .footer(
+                        ModalFooter::new().end_slot(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("superzent-new-workspace-cancel", "Cancel")
+                                        .style(ButtonStyle::Subtle)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                            this.cancel(&menu::Cancel, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("superzent-new-workspace-create", "Create")
+                                        .style(ButtonStyle::Filled)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                            this.confirm(&menu::Confirm, window, cx);
+                                        })),
+                                ),
+                        ),
                     ),
             )
     }
@@ -3295,6 +4131,15 @@ impl SuperzentSidebar {
         let row_status_pill = match workspace_row_status_kind(workspace, is_open_in_current_window)
         {
             WorkspaceRowStatusKind::Hidden => None,
+            WorkspaceRowStatusKind::SetupInProgress => Some(render_workspace_setup_status_pill(
+                "Setting up…",
+                Color::Warning,
+                workspace
+                    .last_attention_reason
+                    .clone()
+                    .unwrap_or_else(|| WORKSPACE_SETUP_IN_PROGRESS_REASON.to_string()),
+                cx,
+            )),
             WorkspaceRowStatusKind::Open => Some(render_workspace_open_pill(cx)),
             WorkspaceRowStatusKind::GitChanges => render_workspace_git_status_pill(workspace, cx),
         };
@@ -4615,8 +5460,20 @@ fn open_new_workspace_modal(
     cx: &mut Context<Workspace>,
 ) {
     let workspace_handle = cx.entity().downgrade();
+    let initial_base_workspace_path = SuperzentStore::global(cx)
+        .read(cx)
+        .active_workspace()
+        .filter(|workspace_entry| workspace_entry.project_id == project.id)
+        .and_then(|workspace_entry| workspace_entry.local_worktree_path())
+        .map(Path::to_path_buf);
     workspace.toggle_modal(window, cx, move |window, cx| {
-        NewWorkspaceModal::new(workspace_handle.clone(), project, window, cx)
+        NewWorkspaceModal::new(
+            workspace_handle.clone(),
+            project,
+            initial_base_workspace_path,
+            window,
+            cx,
+        )
     });
 }
 
@@ -4845,7 +5702,21 @@ fn run_delete_workspace_entry(
     );
     let app_state = workspace.app_state().clone();
 
+    // Block any new opens of this workspace for the duration of the delete
+    // flow — including while the confirmation prompt is showing. Without this
+    // guard, a late open during the prompt (or while the background delete
+    // is running) would leave a stale tab behind: once the worktree files
+    // are gone the post-delete re-scan can't rediscover that instance
+    // because it matches by path via `visible_worktrees()`.
+    let delete_location = workspace_entry.location.clone();
+    register_in_flight_workspace_delete(delete_location.clone(), cx);
+
     cx.spawn_in(window, async move |this, cx| {
+        enum DeleteWorkspaceResult {
+            Deleted { cleanup_error: Option<String> },
+            BlockedByTeardown(superzent_git::WorkspaceLifecycleFailure),
+        }
+
         if prompt.await != Ok(1) {
             if let Some(sidebar) = deleting_sidebar.as_ref() {
                 sidebar
@@ -4854,20 +5725,39 @@ fn run_delete_workspace_entry(
                     })
                     .ok();
             }
+            cx.update(|_, cx| {
+                unregister_in_flight_workspace_delete(&delete_location, cx);
+            })
+            .ok();
             return anyhow::Ok(());
         }
 
-        let delete_result: anyhow::Result<()> = async {
+        let removal_targets =
+            cx.update(|_, cx| workspace_removal_targets_for_entry(&workspace_entry, cx))?;
+
+        let delete_result: anyhow::Result<DeleteWorkspaceResult> = async {
             let workspace_to_delete = workspace_entry.clone();
             match &project.location {
                 ProjectLocation::Local { repo_root } => {
-                    cx.background_spawn({
-                        let repo_root = repo_root.clone();
-                        async move {
-                            superzent_git::delete_workspace(&workspace_to_delete, &repo_root, false)
+                    let delete_outcome = cx
+                        .background_spawn({
+                            let repo_root = repo_root.clone();
+                            async move {
+                                superzent_git::delete_workspace(
+                                    &workspace_to_delete,
+                                    &repo_root,
+                                    false,
+                                )
+                            }
+                        })
+                        .await?;
+
+                    match delete_outcome {
+                        superzent_git::WorkspaceDeleteOutcome::Deleted => {}
+                        superzent_git::WorkspaceDeleteOutcome::BlockedByTeardown(failure) => {
+                            return Ok(DeleteWorkspaceResult::BlockedByTeardown(failure));
                         }
-                    })
-                    .await?;
+                    }
                 }
                 ProjectLocation::Ssh { .. } => {
                     let (project_workspace, _) = resolve_remote_project_workspace(
@@ -4895,31 +5785,122 @@ fn run_delete_workspace_entry(
                 }
             }
 
-            close_workspace_in_all_windows(
+            let cleanup_error = close_workspace_in_all_windows(
                 workspace_entry.clone(),
                 fallback_workspace.clone(),
                 app_state.clone(),
+                Some(removal_targets.clone()),
                 cx,
             )
-            .await?;
+            .await
+            .err()
+            .map(|error| error.to_string());
 
-            Ok(())
+            Ok(DeleteWorkspaceResult::Deleted { cleanup_error })
         }
         .await;
 
-        this.update_in(cx, |workspace, _window, cx| match delete_result {
-            Ok(()) => {
-                store.update(cx, |store, cx| {
-                    store.remove_workspace(&workspace_entry.id, cx);
-                });
+        let mut force_delete_result: Option<anyhow::Result<DeleteWorkspaceResult>> = None;
+        if let Ok(DeleteWorkspaceResult::BlockedByTeardown(failure)) = &delete_result {
+            let prompt_detail =
+                workspace_lifecycle_failure_prompt_detail(&workspace_entry, failure, None, true);
+            let retry_prompt = this.update_in(cx, |workspace, window, cx| {
                 workspace.show_toast(
                     Toast::new(
                         NotificationId::unique::<SuperzentSidebar>(),
-                        format!("Deleted {}", workspace_entry.name),
+                        failure.summary(),
                     ),
                     cx,
                 );
+                window.prompt(
+                    PromptLevel::Warning,
+                    "Workspace teardown failed",
+                    Some(&prompt_detail),
+                    &["Cancel", "Delete Anyway"],
+                    cx,
+                )
+            })?;
+
+            if retry_prompt.await == Ok(1) {
+                force_delete_result = Some(
+                    async {
+                        let workspace_to_delete = workspace_entry.clone();
+                        match &project.location {
+                            ProjectLocation::Local { repo_root } => {
+                                let delete_outcome = cx
+                                    .background_spawn({
+                                        let repo_root = repo_root.clone();
+                                        async move {
+                                            superzent_git::delete_workspace(
+                                                &workspace_to_delete,
+                                                &repo_root,
+                                                true,
+                                            )
+                                        }
+                                    })
+                                    .await?;
+                                match delete_outcome {
+                                    superzent_git::WorkspaceDeleteOutcome::Deleted => {}
+                                    superzent_git::WorkspaceDeleteOutcome::BlockedByTeardown(_) => {
+                                        bail!("force delete unexpectedly retried teardown")
+                                    }
+                                }
+                            }
+                            ProjectLocation::Ssh { .. } => {
+                                bail!("force delete is only supported for local workspaces")
+                            }
+                        }
+
+                        let cleanup_error = close_workspace_in_all_windows(
+                            workspace_entry.clone(),
+                            fallback_workspace.clone(),
+                            app_state.clone(),
+                            Some(removal_targets.clone()),
+                            cx,
+                        )
+                        .await
+                        .err()
+                        .map(|error| error.to_string());
+
+                        Ok(DeleteWorkspaceResult::Deleted { cleanup_error })
+                    }
+                    .await,
+                );
             }
+        }
+
+        let delete_result = force_delete_result.unwrap_or(delete_result);
+
+        this.update_in(cx, |workspace, _window, cx| match delete_result {
+            Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
+                store.update(cx, |store, cx| {
+                    store.remove_workspace(&workspace_entry.id, cx);
+                });
+                if let Some(cleanup_error) = cleanup_error {
+                    log::error!(
+                        "workspace delete succeeded on disk but cleanup failed: {cleanup_error}"
+                    );
+                    workspace.show_toast(
+                        Toast::new(
+                            NotificationId::unique::<SuperzentSidebar>(),
+                            format!(
+                                "Deleted {}, but some open windows may need manual cleanup.",
+                                workspace_entry.name
+                            ),
+                        ),
+                        cx,
+                    );
+                } else {
+                    workspace.show_toast(
+                        Toast::new(
+                            NotificationId::unique::<SuperzentSidebar>(),
+                            format!("Deleted {}", workspace_entry.name),
+                        ),
+                        cx,
+                    );
+                }
+            }
+            Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
             Err(error) => {
                 workspace.show_toast(
                     Toast::new(
@@ -4939,6 +5920,11 @@ fn run_delete_workspace_entry(
                 })
                 .ok();
         }
+
+        cx.update(|_, cx| {
+            unregister_in_flight_workspace_delete(&delete_location, cx);
+        })
+        .ok();
 
         anyhow::Ok(())
     })
@@ -5034,6 +6020,7 @@ fn run_sync_project_worktrees(
                     removed_workspace.clone(),
                     fallback_workspace.clone(),
                     app_state.clone(),
+                    None,
                     cx,
                 )
                 .await?;
@@ -5253,18 +6240,24 @@ async fn close_workspace_in_all_windows(
     workspace_entry: WorkspaceEntry,
     fallback_workspace: Option<WorkspaceEntry>,
     app_state: Arc<WorkspaceAppState>,
+    removal_targets: Option<Vec<WorkspaceWindowRemovalTarget>>,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<()> {
-    let Some(serialized_location) = serialized_workspace_location_for_workspace(&workspace_entry)
-    else {
-        return Ok(());
-    };
-    let workspace_windows =
-        cx.update(|cx| workspace_windows_for_location(&serialized_location, cx));
+    let mut removal_targets = removal_targets.unwrap_or_default();
+    let current_removal_targets =
+        cx.update(|cx| workspace_removal_targets_for_entry(&workspace_entry, cx));
+    if removal_targets.is_empty() {
+        removal_targets = current_removal_targets;
+    } else {
+        removal_targets.extend(current_removal_targets);
+    }
 
-    for workspace_window in workspace_windows {
-        let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, cx| {
-            matching_workspace_indexes(multi_workspace, std::slice::from_ref(&workspace_entry), cx)
+    for removal_target in removal_targets {
+        let workspace_window = removal_target.window;
+        let workspace_ids = removal_target.workspace_ids;
+
+        let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, _| {
+            matching_workspace_indexes_for_ids(multi_workspace, &workspace_ids)
         }) {
             Ok(matching_indexes) => matching_indexes,
             Err(_) => continue,
@@ -5291,8 +6284,8 @@ async fn close_workspace_in_all_windows(
             .await?;
         }
 
-        let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, cx| {
-            matching_workspace_indexes(multi_workspace, std::slice::from_ref(&workspace_entry), cx)
+        let matching_indexes = match workspace_window.update(cx, |multi_workspace, _, _| {
+            matching_workspace_indexes_for_ids(multi_workspace, &workspace_ids)
         }) {
             Ok(matching_indexes) => matching_indexes,
             Err(_) => continue,
@@ -5372,6 +6365,60 @@ fn matching_workspace_indexes(
                 .any(|workspace_entry| {
                     workspace_matches_entry(workspace_handle, workspace_entry, cx)
                 })
+                .then_some(index)
+        })
+        .collect()
+}
+
+#[derive(Clone)]
+struct WorkspaceWindowRemovalTarget {
+    window: WindowHandle<MultiWorkspace>,
+    workspace_ids: Vec<EntityId>,
+}
+
+fn workspace_removal_targets_for_entry(
+    workspace_entry: &WorkspaceEntry,
+    cx: &App,
+) -> Vec<WorkspaceWindowRemovalTarget> {
+    let Some(serialized_location) = serialized_workspace_location_for_workspace(workspace_entry)
+    else {
+        return Vec::new();
+    };
+
+    workspace_windows_for_location(&serialized_location, cx)
+        .into_iter()
+        .filter_map(|window| {
+            // `WindowHandle::read` returns Err for a stack-locked current
+            // window instead of panicking (unlike `read_with`), so this
+            // iteration is safe even when called from inside `cx.update`.
+            let multi_workspace = window.read(cx).ok()?;
+            let workspace_ids: Vec<_> = multi_workspace
+                .workspaces()
+                .iter()
+                .filter(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
+                .map(|workspace| workspace.entity_id())
+                .collect();
+
+            (!workspace_ids.is_empty()).then_some(WorkspaceWindowRemovalTarget {
+                window,
+                workspace_ids,
+            })
+        })
+        .collect()
+}
+
+fn matching_workspace_indexes_for_ids(
+    multi_workspace: &MultiWorkspace,
+    workspace_ids: &[EntityId],
+) -> Vec<usize> {
+    multi_workspace
+        .workspaces()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, workspace_handle)| {
+            workspace_ids
+                .iter()
+                .any(|workspace_id| *workspace_id == workspace_handle.entity_id())
                 .then_some(index)
         })
         .collect()
@@ -5529,6 +6576,20 @@ fn open_workspace_entry(
     window: &mut gpui::Window,
     cx: &mut App,
 ) -> Task<anyhow::Result<()>> {
+    if is_workspace_location_being_deleted(&workspace_entry.location, cx) {
+        if let Some(current_workspace) = workspace_from_window(window, cx) {
+            show_workspace_toast(
+                &current_workspace,
+                format!("Workspace `{}` is being deleted.", workspace_entry.name),
+                cx,
+            );
+        }
+        return Task::ready(Err(anyhow::anyhow!(
+            "workspace `{}` is being deleted",
+            workspace_entry.name
+        )));
+    }
+
     match &workspace_entry.location {
         WorkspaceLocation::Local { worktree_path } => {
             open_local_workspace_path(worktree_path.clone(), app_state, window, cx)
@@ -5802,19 +6863,45 @@ fn workspace_for_entry_in_any_window(
     workspace_entry: &WorkspaceEntry,
     cx: &App,
 ) -> Option<Entity<Workspace>> {
+    // Uses `WindowHandle::read` (graceful Err on stack-lock) so this helper
+    // is safe to call from inside `cx.update(|_, cx| ...)` — the current
+    // window is skipped rather than panicking. Callers that must also match
+    // the current window should check it first via `workspace_for_entry_in_window`.
     ordered_multi_workspace_windows(cx)
         .into_iter()
-        .find_map(|window| {
-            window
-                .read_with(cx, |multi_workspace, cx| {
-                    multi_workspace
-                        .workspaces()
-                        .iter()
-                        .find(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
-                        .cloned()
-                })
-                .ok()
-                .flatten()
+        .find_map(|handle| {
+            let multi_workspace = handle.read(cx).ok()?;
+            multi_workspace
+                .workspaces()
+                .iter()
+                .find(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
+                .cloned()
+        })
+}
+
+/// Returns the workspace entity only if it's the *currently visible* (active)
+/// tab inside some MultiWorkspace window **other than the current one**.
+/// Toasts attached to a workspace are only rendered by the bottom-right
+/// status layer when that workspace is the active tab, so callers that need
+/// to guarantee visibility must use this helper (combined with a separate
+/// current-window check) instead of `workspace_for_entry_in_any_window`,
+/// which would also match hidden tabs.
+///
+/// Uses `WindowHandle::read` (which returns `Err` for stack-locked windows)
+/// rather than `read_with` (which panics via `cx.read_window`). This means
+/// the current window is automatically skipped when called from inside
+/// `cx.update(|_, cx| ...)` — callers must check the current window
+/// separately.
+fn currently_active_workspace_for_entry(
+    workspace_entry: &WorkspaceEntry,
+    cx: &App,
+) -> Option<Entity<Workspace>> {
+    ordered_multi_workspace_windows(cx)
+        .into_iter()
+        .find_map(|handle| {
+            let multi_workspace = handle.read(cx).ok()?;
+            let active = multi_workspace.workspace().clone();
+            workspace_matches_entry(&active, workspace_entry, cx).then_some(active)
         })
 }
 
@@ -5829,23 +6916,20 @@ fn workspace_for_project_in_any_window(
         .cloned()
         .collect::<Vec<_>>();
 
+    // Uses `WindowHandle::read` (graceful Err on stack-lock) so this helper
+    // is safe to call from inside `cx.update(|_, cx| ...)` — the current
+    // window is skipped rather than panicking.
     ordered_multi_workspace_windows(cx)
         .into_iter()
-        .find_map(|window| {
-            window
-                .read_with(cx, |multi_workspace, cx| {
-                    project_workspaces.iter().find_map(|workspace_entry| {
-                        multi_workspace
-                            .workspaces()
-                            .iter()
-                            .find(|workspace| {
-                                workspace_matches_entry(workspace, workspace_entry, cx)
-                            })
-                            .cloned()
-                    })
-                })
-                .ok()
-                .flatten()
+        .find_map(|handle| {
+            let multi_workspace = handle.read(cx).ok()?;
+            project_workspaces.iter().find_map(|workspace_entry| {
+                multi_workspace
+                    .workspaces()
+                    .iter()
+                    .find(|workspace| workspace_matches_entry(workspace, workspace_entry, cx))
+                    .cloned()
+            })
         })
 }
 
@@ -5855,6 +6939,46 @@ fn ordered_multi_workspace_windows(cx: &App) -> Vec<WindowHandle<MultiWorkspace>
         .into_iter()
         .filter_map(|window| window.downcast::<MultiWorkspace>())
         .collect()
+}
+
+/// Locations of workspaces that are currently in the middle of a delete flow
+/// (from the moment the confirmation prompt is shown until cleanup finishes).
+///
+/// We track these so that `open_workspace_entry` can refuse to open a workspace
+/// whose worktree is about to be (or has just been) removed. Without this
+/// guard, a late open during the delete prompt could leave a stale tab behind:
+/// the post-delete re-scan in `close_workspace_in_all_windows` depends on
+/// `visible_worktrees()`, which no longer contains the deleted path, so late
+/// instances would escape cleanup.
+#[derive(Default)]
+struct InFlightWorkspaceDeletes {
+    locations: Vec<WorkspaceLocation>,
+}
+
+impl gpui::Global for InFlightWorkspaceDeletes {}
+
+fn register_in_flight_workspace_delete(location: WorkspaceLocation, cx: &mut App) {
+    cx.default_global::<InFlightWorkspaceDeletes>()
+        .locations
+        .push(location);
+}
+
+fn unregister_in_flight_workspace_delete(location: &WorkspaceLocation, cx: &mut App) {
+    if cx.has_global::<InFlightWorkspaceDeletes>() {
+        cx.global_mut::<InFlightWorkspaceDeletes>()
+            .locations
+            .retain(|existing| existing != location);
+    }
+}
+
+fn is_workspace_location_being_deleted(location: &WorkspaceLocation, cx: &App) -> bool {
+    cx.try_global::<InFlightWorkspaceDeletes>()
+        .is_some_and(|in_flight| {
+            in_flight
+                .locations
+                .iter()
+                .any(|existing| existing == location)
+        })
 }
 
 fn fallback_notification_window(cx: &App) -> Option<WindowHandle<MultiWorkspace>> {
@@ -6136,6 +7260,9 @@ fn build_synced_local_workspace_entry(
         last_attention_reason: existing_workspace
             .as_ref()
             .and_then(|workspace| workspace.last_attention_reason.clone()),
+        lifecycle_teardown_script: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
         created_at: existing_workspace
             .as_ref()
             .map(|workspace| workspace.created_at)
@@ -6187,6 +7314,9 @@ fn build_local_workspace_bundle(
     let WorkspaceLocation::Local { worktree_path } = &workspace_location else {
         return None;
     };
+    if !worktree_path.exists() {
+        return None;
+    }
 
     let project_handle = workspace.read(cx).project();
     let project = project_handle.read(cx);
@@ -6305,6 +7435,9 @@ fn build_local_workspace_bundle(
         last_attention_reason: existing_workspace
             .as_ref()
             .and_then(|workspace| workspace.last_attention_reason.clone()),
+        lifecycle_teardown_script: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
         created_at: existing_workspace
             .as_ref()
             .map(|workspace| workspace.created_at)
@@ -6452,6 +7585,9 @@ fn build_remote_workspace_bundle(
         last_attention_reason: existing_workspace
             .as_ref()
             .and_then(|workspace| workspace.last_attention_reason.clone()),
+        lifecycle_teardown_script: existing_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
         created_at: existing_workspace
             .as_ref()
             .map(|workspace| workspace.created_at)
@@ -6521,6 +7657,12 @@ fn workspace_row_status_kind(
         return WorkspaceRowStatusKind::Hidden;
     }
 
+    if let Some(setup_state) = workspace_setup_row_state(workspace) {
+        return match setup_state {
+            WorkspaceSetupRowState::InProgress => WorkspaceRowStatusKind::SetupInProgress,
+        };
+    }
+
     if workspace_git_status_visual_summary(workspace).is_some() {
         WorkspaceRowStatusKind::GitChanges
     } else {
@@ -6531,8 +7673,14 @@ fn workspace_row_status_kind(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceRowStatusKind {
     Hidden,
+    SetupInProgress,
     Open,
     GitChanges,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceSetupRowState {
+    InProgress,
 }
 
 fn render_workspace_open_pill(cx: &mut Context<SuperzentSidebar>) -> gpui::AnyElement {
@@ -6540,6 +7688,20 @@ fn render_workspace_open_pill(cx: &mut Context<SuperzentSidebar>) -> gpui::AnyEl
         .label_color(Color::Muted)
         .bg_color(cx.theme().colors().element_background)
         .border_color(cx.theme().colors().border_variant)
+        .into_any_element()
+}
+
+fn render_workspace_setup_status_pill(
+    label: &'static str,
+    color: Color,
+    tooltip: String,
+    cx: &mut Context<SuperzentSidebar>,
+) -> gpui::AnyElement {
+    Chip::new(label)
+        .label_color(color)
+        .bg_color(cx.theme().colors().element_background)
+        .border_color(cx.theme().colors().border_variant)
+        .tooltip(move |window, cx| ui::Tooltip::text(tooltip.clone())(window, cx))
         .into_any_element()
 }
 
@@ -7008,6 +8170,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            lifecycle_teardown_script: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -7031,6 +8194,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            lifecycle_teardown_script: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -7068,9 +8232,60 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            lifecycle_teardown_script: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
+    }
+
+    fn lifecycle_failure(
+        phase: superzent_git::WorkspaceLifecyclePhase,
+    ) -> superzent_git::WorkspaceLifecycleFailure {
+        superzent_git::WorkspaceLifecycleFailure {
+            phase,
+            command: "echo failure".to_string(),
+            exit_code: Some(1),
+            stdout: "stdout".to_string(),
+            stderr: "stderr".to_string(),
+        }
+    }
+
+    #[test]
+    fn move_changes_source_path_prefers_base_workspace_path() {
+        let project = ProjectEntry {
+            id: "project".to_string(),
+            name: "project".to_string(),
+            location: ProjectLocation::Local {
+                repo_root: PathBuf::from("/tmp/repo"),
+            },
+            collapsed: false,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        };
+
+        assert_eq!(
+            move_changes_source_path(Some(Path::new("/tmp/repo/worktrees/feature")), &project),
+            Some(PathBuf::from("/tmp/repo/worktrees/feature"))
+        );
+    }
+
+    #[test]
+    fn move_changes_source_path_falls_back_to_project_root() {
+        let project = ProjectEntry {
+            id: "project".to_string(),
+            name: "project".to_string(),
+            location: ProjectLocation::Local {
+                repo_root: PathBuf::from("/tmp/repo"),
+            },
+            collapsed: false,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        };
+
+        assert_eq!(
+            move_changes_source_path(None, &project),
+            Some(PathBuf::from("/tmp/repo"))
+        );
     }
 
     #[test]
@@ -7080,6 +8295,36 @@ mod tests {
             next_terminal_input_attention_status(Some(&WorkspaceAttentionStatus::Working)),
             Some(WorkspaceAttentionStatus::Working)
         );
+    }
+
+    #[test]
+    fn workspace_lifecycle_failure_prompt_detail_includes_notice_and_logs() {
+        let workspace = local_workspace_entry("workspace", "project", "/tmp/workspace");
+        let detail = workspace_lifecycle_failure_prompt_detail(
+            &workspace,
+            &lifecycle_failure(superzent_git::WorkspaceLifecyclePhase::Setup),
+            Some("Configured base branch `missing` was not found."),
+            false,
+        );
+
+        assert!(detail.contains("workspace"));
+        assert!(detail.contains("Configured base branch `missing` was not found."));
+        assert!(detail.contains("Stdout:\nstdout"));
+        assert!(detail.contains("Stderr:\nstderr"));
+    }
+
+    #[test]
+    fn workspace_lifecycle_failure_prompt_detail_mentions_force_delete_when_requested() {
+        let workspace = local_workspace_entry("workspace", "project", "/tmp/workspace");
+        let detail = workspace_lifecycle_failure_prompt_detail(
+            &workspace,
+            &lifecycle_failure(superzent_git::WorkspaceLifecyclePhase::Teardown),
+            None,
+            true,
+        );
+
+        assert!(detail.contains("Delete Anyway"));
+        assert!(detail.contains("teardown failure"));
     }
 
     #[test]
@@ -7353,6 +8598,32 @@ mod tests {
             workspace_row_status_kind(&workspace, true),
             WorkspaceRowStatusKind::GitChanges
         );
+    }
+
+    #[test]
+    fn workspace_row_status_kind_shows_setup_in_progress_before_open_pill() {
+        let mut workspace = workspace_entry(WorkspaceKind::Primary);
+        workspace.attention_status = WorkspaceAttentionStatus::Working;
+        workspace.last_attention_reason = Some(WORKSPACE_SETUP_IN_PROGRESS_REASON.to_string());
+
+        assert_eq!(
+            workspace_row_status_kind(&workspace, true),
+            WorkspaceRowStatusKind::SetupInProgress
+        );
+    }
+
+    #[test]
+    fn can_mark_workspace_setup_attention_only_when_idle_without_review_pending() {
+        let workspace = workspace_entry(WorkspaceKind::Primary);
+        assert!(can_mark_workspace_setup_attention(&workspace));
+
+        let mut permission_workspace = workspace_entry(WorkspaceKind::Primary);
+        permission_workspace.attention_status = WorkspaceAttentionStatus::Permission;
+        assert!(!can_mark_workspace_setup_attention(&permission_workspace));
+
+        let mut review_workspace = workspace_entry(WorkspaceKind::Primary);
+        review_workspace.review_pending = true;
+        assert!(!can_mark_workspace_setup_attention(&review_workspace));
     }
 
     #[test]

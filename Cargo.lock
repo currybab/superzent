@@ -16934,6 +16934,7 @@ dependencies = [
  "gpui",
  "log",
  "menu",
+ "notifications",
  "objc",
  "project",
  "project_panel",

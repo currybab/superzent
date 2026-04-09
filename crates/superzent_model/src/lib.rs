@@ -321,6 +321,8 @@ pub struct WorkspaceEntry {
     pub review_pending: bool,
     #[serde(default)]
     pub last_attention_reason: Option<String>,
+    #[serde(default)]
+    pub lifecycle_teardown_script: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_opened_at: DateTime<Utc>,
 }
@@ -1614,6 +1616,8 @@ struct LegacyWorkspaceEntry {
     review_pending: bool,
     #[serde(default)]
     last_attention_reason: Option<String>,
+    #[serde(default)]
+    lifecycle_teardown_script: Option<String>,
     created_at: DateTime<Utc>,
     last_opened_at: DateTime<Utc>,
 }
@@ -1657,6 +1661,7 @@ impl From<LegacySuperzentState> for SuperzentState {
                     attention_status: workspace.attention_status,
                     review_pending: workspace.review_pending,
                     last_attention_reason: workspace.last_attention_reason,
+                    lifecycle_teardown_script: workspace.lifecycle_teardown_script,
                     created_at: workspace.created_at,
                     last_opened_at: workspace.last_opened_at,
                 })
@@ -1773,6 +1778,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
                 attention_status: WorkspaceAttentionStatus::Idle,
                 review_pending: false,
                 last_attention_reason: None,
+                lifecycle_teardown_script: None,
                 created_at: task.created_at,
                 last_opened_at: task.last_event_at,
             });
@@ -1803,6 +1809,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
                 TaskStatus::Completed | TaskStatus::Failed | TaskStatus::NeedsAttention
             ),
             last_attention_reason: task.last_attention_reason.clone(),
+            lifecycle_teardown_script: None,
             created_at: task.created_at,
             last_opened_at: task.last_event_at,
         });

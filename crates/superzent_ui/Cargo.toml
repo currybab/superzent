@@ -25,6 +25,7 @@ git_ui.workspace = true
 gpui.workspace = true
 log.workspace = true
 menu.workspace = true
+notifications.workspace = true
 project.workspace = true
 project_panel.workspace = true
 recent_projects.workspace = true
