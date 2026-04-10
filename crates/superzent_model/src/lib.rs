@@ -321,8 +321,8 @@ pub struct WorkspaceEntry {
     pub review_pending: bool,
     #[serde(default)]
     pub last_attention_reason: Option<String>,
-    #[serde(default)]
-    pub lifecycle_teardown_script: Option<String>,
+    #[serde(default, alias = "lifecycle_teardown_script")]
+    pub teardown_script_override: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_opened_at: DateTime<Utc>,
 }
@@ -1616,8 +1616,8 @@ struct LegacyWorkspaceEntry {
     review_pending: bool,
     #[serde(default)]
     last_attention_reason: Option<String>,
-    #[serde(default)]
-    lifecycle_teardown_script: Option<String>,
+    #[serde(default, alias = "lifecycle_teardown_script")]
+    teardown_script_override: Option<String>,
     created_at: DateTime<Utc>,
     last_opened_at: DateTime<Utc>,
 }
@@ -1661,7 +1661,7 @@ impl From<LegacySuperzentState> for SuperzentState {
                     attention_status: workspace.attention_status,
                     review_pending: workspace.review_pending,
                     last_attention_reason: workspace.last_attention_reason,
-                    lifecycle_teardown_script: workspace.lifecycle_teardown_script,
+                    teardown_script_override: workspace.teardown_script_override,
                     created_at: workspace.created_at,
                     last_opened_at: workspace.last_opened_at,
                 })
@@ -1778,7 +1778,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
                 attention_status: WorkspaceAttentionStatus::Idle,
                 review_pending: false,
                 last_attention_reason: None,
-                lifecycle_teardown_script: None,
+                teardown_script_override: None,
                 created_at: task.created_at,
                 last_opened_at: task.last_event_at,
             });
@@ -1809,7 +1809,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
                 TaskStatus::Completed | TaskStatus::Failed | TaskStatus::NeedsAttention
             ),
             last_attention_reason: task.last_attention_reason.clone(),
-            lifecycle_teardown_script: None,
+            teardown_script_override: None,
             created_at: task.created_at,
             last_opened_at: task.last_event_at,
         });
@@ -2040,6 +2040,7 @@ pub fn aggregate_workspace_attention_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn project_entry(id: &str, repo_root: &str) -> ProjectEntry {
         ProjectEntry {
@@ -2077,6 +2078,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            teardown_script_override: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -2125,6 +2127,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            teardown_script_override: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -2175,6 +2178,51 @@ mod tests {
         ));
         assert_eq!(workspace.branch, "feature/fast");
         assert_eq!(workspace.git_summary, Some(summary));
+    }
+
+    #[test]
+    fn workspace_entry_deserializes_legacy_lifecycle_teardown_field_into_override() {
+        let workspace: WorkspaceEntry = serde_json::from_value(json!({
+            "id": "workspace",
+            "project_id": "project",
+            "kind": "worktree",
+            "name": "workspace",
+            "branch": "main",
+            "location": {
+                "transport": "local",
+                "worktree_path": "/tmp/workspace"
+            },
+            "agent_preset_id": "codex",
+            "managed": true,
+            "created_at": "2026-04-10T00:00:00Z",
+            "last_opened_at": "2026-04-10T00:00:00Z",
+            "lifecycle_teardown_script": "echo teardown"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            workspace.teardown_script_override,
+            Some("echo teardown".to_string())
+        );
+    }
+
+    #[test]
+    fn workspace_entry_serializes_override_under_narrow_field_name() {
+        let mut workspace = workspace_entry(
+            "workspace",
+            "project",
+            WorkspaceKind::Worktree,
+            "/tmp/workspace",
+        );
+        workspace.teardown_script_override = Some("echo teardown".to_string());
+
+        let value = serde_json::to_value(&workspace).unwrap();
+
+        assert_eq!(
+            value.get("teardown_script_override"),
+            Some(&json!("echo teardown"))
+        );
+        assert_eq!(value.get("lifecycle_teardown_script"), None);
     }
 
     #[test]
@@ -2483,6 +2531,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            teardown_script_override: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         };

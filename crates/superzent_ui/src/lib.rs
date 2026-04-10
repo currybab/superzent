@@ -9,7 +9,7 @@ use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use agent_ui::{
     AgentNotification, AgentNotificationEvent, open_external_acp_tab, pane_has_external_acp_item,
 };
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chrono::Utc;
 #[cfg(target_os = "macos")]
 use cocoa::base::{id, nil};
@@ -42,9 +42,7 @@ use project_panel::ProjectPanel;
 use recent_projects::open_remote_project;
 use remote::{RemoteConnectionOptions, SshConnectionOptions};
 use settings::Settings;
-use smol::channel::Receiver as SmolReceiver;
-#[cfg(target_os = "macos")]
-use smol::channel::Sender as SmolSender;
+use smol::channel::{Receiver as SmolReceiver, Sender as SmolSender};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -1865,6 +1863,77 @@ struct WorkspaceCreationResult {
     notice: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct NewWorkspaceModalBootstrap {
+    base_branch: Option<String>,
+    base_branch_notice: Option<String>,
+    base_branch_error: Option<String>,
+    setup_script: Option<String>,
+    teardown_script: Option<String>,
+}
+
+fn new_workspace_create_options(
+    branch_name: String,
+    base_branch_override: Option<String>,
+    base_workspace_path: Option<PathBuf>,
+    setup_script: Option<String>,
+    teardown_script: Option<String>,
+    save_teardown_script_as_repo_default: bool,
+    allow_dirty: bool,
+) -> superzent_git::CreateWorkspaceOptions {
+    superzent_git::CreateWorkspaceOptions {
+        branch_name,
+        base_branch_override,
+        base_workspace_path,
+        setup_script,
+        teardown_script,
+        save_teardown_script_as_repo_default,
+        allow_dirty,
+    }
+}
+
+fn new_workspace_modal_bootstrap(
+    base_branch_resolution: Result<superzent_git::WorkspaceBaseBranchResolution>,
+    lifecycle_defaults: superzent_git::WorkspaceLifecycleDefaults,
+) -> NewWorkspaceModalBootstrap {
+    let mut bootstrap = NewWorkspaceModalBootstrap {
+        setup_script: lifecycle_defaults.setup_script,
+        teardown_script: lifecycle_defaults.teardown_script,
+        ..Default::default()
+    };
+
+    match base_branch_resolution {
+        Ok(resolution) => {
+            bootstrap.base_branch = Some(resolution.effective_base_branch);
+            bootstrap.base_branch_notice = resolution.notice;
+        }
+        Err(error) => {
+            bootstrap.base_branch_error = Some(error.to_string());
+        }
+    }
+
+    bootstrap
+}
+
+fn build_new_workspace_modal_bootstrap(
+    project: &ProjectEntry,
+    initial_base_workspace_path: Option<&Path>,
+) -> NewWorkspaceModalBootstrap {
+    if !matches!(project.location, ProjectLocation::Local { .. }) {
+        return NewWorkspaceModalBootstrap::default();
+    }
+
+    let lifecycle_defaults =
+        superzent_git::workspace_lifecycle_defaults(project).unwrap_or_default();
+    let base_branch_resolution = superzent_git::resolve_workspace_base_branch_from_workspace(
+        project,
+        initial_base_workspace_path,
+        None,
+    );
+
+    new_workspace_modal_bootstrap(base_branch_resolution, lifecycle_defaults)
+}
+
 fn workspace_lifecycle_failure_prompt_detail(
     workspace_entry: &WorkspaceEntry,
     failure: &superzent_git::WorkspaceLifecycleFailure,
@@ -1890,6 +1959,64 @@ fn workspace_lifecycle_failure_prompt_detail(
 
     sections.push(failure.details());
     sections.join("\n\n")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeleteWorkspacePromptDetails {
+    title: &'static str,
+    confirm_label: &'static str,
+    confirm_decision: DeleteWorkspaceModalDecision,
+    prompt_message: String,
+    teardown_message: String,
+    teardown_script: Option<String>,
+    failure_details: Option<String>,
+}
+
+fn delete_workspace_prompt_details(
+    workspace_entry: &WorkspaceEntry,
+    delete_resolution: &superzent_git::WorkspaceDeleteResolution,
+) -> DeleteWorkspacePromptDetails {
+    let prompt_message = format!(
+        "Delete `{}` and remove its worktree at {}?",
+        workspace_entry.name,
+        workspace_entry.display_path()
+    );
+
+    match delete_resolution {
+        superzent_git::WorkspaceDeleteResolution::RunTeardownScript { script } => {
+            DeleteWorkspacePromptDetails {
+                title: "Delete workspace?",
+                confirm_label: "Delete",
+                confirm_decision: DeleteWorkspaceModalDecision::Delete,
+                prompt_message,
+                teardown_message: "This teardown script will run before deletion.".to_string(),
+                teardown_script: Some(script.clone()),
+                failure_details: None,
+            }
+        }
+        superzent_git::WorkspaceDeleteResolution::SkipTeardown => DeleteWorkspacePromptDetails {
+            title: "Delete workspace?",
+            confirm_label: "Delete",
+            confirm_decision: DeleteWorkspaceModalDecision::Delete,
+            prompt_message,
+            teardown_message: "No teardown script will run before deletion.".to_string(),
+            teardown_script: None,
+            failure_details: None,
+        },
+        superzent_git::WorkspaceDeleteResolution::BlockedByConfig(failure) => {
+            DeleteWorkspacePromptDetails {
+                title: "Delete blocked",
+                confirm_label: "Delete Anyway",
+                confirm_decision: DeleteWorkspaceModalDecision::DeleteAnyway,
+                prompt_message,
+                teardown_message:
+                    "Superzent could not read `.superzent/config.json`, so normal delete is blocked. If you continue, teardown will be skipped."
+                        .to_string(),
+                teardown_script: None,
+                failure_details: Some(failure.details()),
+            }
+        }
+    }
 }
 
 const WORKSPACE_SETUP_IN_PROGRESS_REASON: &str = "Setting up workspace…";
@@ -2034,9 +2161,9 @@ async fn create_remote_workspace(
             last_attention_reason: existing_workspace
                 .as_ref()
                 .and_then(|workspace| workspace.last_attention_reason.clone()),
-            lifecycle_teardown_script: existing_workspace
+            teardown_script_override: existing_workspace
                 .as_ref()
-                .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
+                .and_then(|workspace| workspace.teardown_script_override.clone()),
             created_at: existing_workspace
                 .as_ref()
                 .map(|workspace| workspace.created_at)
@@ -2079,33 +2206,16 @@ async fn resolve_opened_workspace(
 async fn create_local_workspace(
     project: ProjectEntry,
     preset_id: String,
-    branch_name: String,
-    base_branch_override: Option<String>,
-    base_workspace_path: Option<PathBuf>,
-    setup_script: Option<String>,
-    teardown_script: Option<String>,
-    persist_lifecycle_scripts: bool,
-    allow_dirty: bool,
+    create_options: superzent_git::CreateWorkspaceOptions,
     cx: &mut AsyncWindowContext,
 ) -> anyhow::Result<WorkspaceCreationResult> {
     cx.background_spawn(async move {
-        superzent_git::create_workspace_without_setup(
-            &project,
-            &preset_id,
-            superzent_git::CreateWorkspaceOptions {
-                branch_name,
-                base_branch_override,
-                base_workspace_path,
-                setup_script,
-                teardown_script,
-                persist_lifecycle_scripts,
-                allow_dirty,
+        superzent_git::create_workspace_without_setup(&project, &preset_id, create_options).map(
+            |outcome| WorkspaceCreationResult {
+                workspace: outcome.workspace,
+                notice: outcome.notice,
             },
         )
-        .map(|outcome| WorkspaceCreationResult {
-            workspace: outcome.workspace,
-            notice: outcome.notice,
-        })
     })
     .await
 }
@@ -2175,7 +2285,7 @@ fn spawn_new_workspace_request(
     base_branch_override: Option<String>,
     setup_script: Option<String>,
     teardown_script: Option<String>,
-    persist_lifecycle_scripts: bool,
+    save_teardown_script_as_repo_default: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -2193,13 +2303,15 @@ fn spawn_new_workspace_request(
                     match create_local_workspace(
                         project.clone(),
                         preset_id.clone(),
-                        branch_name.clone(),
-                        base_branch_override.clone(),
-                        base_workspace_path.clone(),
-                        setup_script.clone(),
-                        teardown_script.clone(),
-                        persist_lifecycle_scripts,
-                        false,
+                        new_workspace_create_options(
+                            branch_name.clone(),
+                            base_branch_override.clone(),
+                            base_workspace_path.clone(),
+                            setup_script.clone(),
+                            teardown_script.clone(),
+                            save_teardown_script_as_repo_default,
+                            false,
+                        ),
                         cx,
                     )
                     .await
@@ -2231,13 +2343,15 @@ fn spawn_new_workspace_request(
                             let outcome = create_local_workspace(
                                 project.clone(),
                                 preset_id.clone(),
-                                branch_name.clone(),
-                                base_branch_override.clone(),
-                                base_workspace_path.clone(),
-                                setup_script.clone(),
-                                teardown_script.clone(),
-                                persist_lifecycle_scripts,
-                                true,
+                                new_workspace_create_options(
+                                    branch_name.clone(),
+                                    base_branch_override.clone(),
+                                    base_workspace_path.clone(),
+                                    setup_script.clone(),
+                                    teardown_script.clone(),
+                                    save_teardown_script_as_repo_default,
+                                    true,
+                                ),
                                 cx,
                             )
                             .await?;
@@ -2680,7 +2794,7 @@ struct NewWorkspaceModal {
     setup_script_editor: Entity<Editor>,
     teardown_script_editor: Entity<Editor>,
     show_more_options: bool,
-    save_lifecycle_scripts: bool,
+    save_teardown_script_as_repo_default: bool,
     active_script_target: Option<ScriptEditorTarget>,
     scroll_handle: ScrollHandle,
     base_branch_notice: Option<SharedString>,
@@ -2708,7 +2822,7 @@ impl NewWorkspaceModal {
     fn new(
         workspace: WeakEntity<Workspace>,
         project: ProjectEntry,
-        initial_base_workspace_path: Option<PathBuf>,
+        bootstrap: NewWorkspaceModalBootstrap,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -2804,36 +2918,20 @@ impl NewWorkspaceModal {
             },
         ));
 
-        let mut base_branch_notice = None;
-        let mut base_branch_error = None;
-        if matches!(project.location, ProjectLocation::Local { .. }) {
-            match superzent_git::resolve_workspace_base_branch_from_workspace(
-                &project,
-                initial_base_workspace_path.as_deref(),
-                None,
-            ) {
-                Ok(resolution) => {
-                    base_branch_editor.update(cx, |editor, cx| {
-                        editor.set_text(resolution.effective_base_branch.as_str(), window, cx);
-                    });
-                    base_branch_notice = resolution.notice.map(Into::into);
-                }
-                Err(error) => {
-                    base_branch_error = Some(error.to_string().into());
-                }
-            }
-            if let Ok(defaults) = superzent_git::workspace_lifecycle_defaults(&project) {
-                if let Some(setup_script) = defaults.setup_script {
-                    setup_script_editor.update(cx, |editor, cx| {
-                        editor.set_text(setup_script.as_str(), window, cx);
-                    });
-                }
-                if let Some(teardown_script) = defaults.teardown_script {
-                    teardown_script_editor.update(cx, |editor, cx| {
-                        editor.set_text(teardown_script.as_str(), window, cx);
-                    });
-                }
-            }
+        if let Some(base_branch) = bootstrap.base_branch.as_deref() {
+            base_branch_editor.update(cx, |editor, cx| {
+                editor.set_text(base_branch, window, cx);
+            });
+        }
+        if let Some(setup_script) = bootstrap.setup_script.as_deref() {
+            setup_script_editor.update(cx, |editor, cx| {
+                editor.set_text(setup_script, window, cx);
+            });
+        }
+        if let Some(teardown_script) = bootstrap.teardown_script.as_deref() {
+            teardown_script_editor.update(cx, |editor, cx| {
+                editor.set_text(teardown_script, window, cx);
+            });
         }
 
         Self {
@@ -2844,11 +2942,11 @@ impl NewWorkspaceModal {
             setup_script_editor,
             teardown_script_editor,
             show_more_options: false,
-            save_lifecycle_scripts: true,
+            save_teardown_script_as_repo_default: true,
             active_script_target: None,
             scroll_handle: ScrollHandle::new(),
-            base_branch_notice,
-            base_branch_error,
+            base_branch_notice: bootstrap.base_branch_notice.map(Into::into),
+            base_branch_error: bootstrap.base_branch_error.map(Into::into),
             _subscriptions: subscriptions,
             last_error: None,
         }
@@ -2968,7 +3066,7 @@ impl NewWorkspaceModal {
             self.base_branch(cx),
             self.setup_script(cx),
             self.teardown_script(cx),
-            self.save_lifecycle_scripts,
+            self.save_teardown_script_as_repo_default,
             window,
             cx,
         );
@@ -3073,6 +3171,13 @@ impl Render for NewWorkspaceModal {
                                                                         Label::new("Setup Script")
                                                                             .size(LabelSize::Small),
                                                                     )
+                                                                    .child(
+                                                                        Label::new(
+                                                                            "Runs once after creation for this workspace. Changes here are never saved as repo defaults.",
+                                                                        )
+                                                                        .size(LabelSize::Small)
+                                                                        .color(Color::Muted),
+                                                                    )
                                                                     .child(self.setup_script_editor.clone()),
                                                             )
                                                             .child(
@@ -3116,17 +3221,17 @@ impl Render for NewWorkspaceModal {
                                                             .child(
                                                                 Checkbox::new(
                                                                     "superzent-new-workspace-save-lifecycle",
-                                                                    self.save_lifecycle_scripts.into(),
+                                                                    self.save_teardown_script_as_repo_default.into(),
                                                                 )
                                                                 .label(
-                                                                    "Save these script commands as the default for this repository",
+                                                                    "Save teardown script as the default for this repository",
                                                                 )
                                                                 .fill()
                                                                 .elevation(ElevationIndex::Surface)
                                                                 .label_size(LabelSize::Small)
                                                                 .on_click(cx.listener(
                                                                     |this, selection, _, cx| {
-                                                                        this.save_lifecycle_scripts =
+                                                                        this.save_teardown_script_as_repo_default =
                                                                             *selection == ToggleState::Selected;
                                                                         cx.notify();
                                                                     },
@@ -3166,6 +3271,168 @@ impl Render for NewWorkspaceModal {
                                 ),
                         ),
                     ),
+            )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeleteWorkspaceModalDecision {
+    Cancel,
+    Delete,
+    DeleteAnyway,
+}
+
+struct DeleteWorkspaceModal {
+    prompt_details: DeleteWorkspacePromptDetails,
+    sender: SmolSender<DeleteWorkspaceModalDecision>,
+    scroll_handle: ScrollHandle,
+    focus_handle: FocusHandle,
+}
+
+impl EventEmitter<DismissEvent> for DeleteWorkspaceModal {}
+impl ModalView for DeleteWorkspaceModal {}
+
+impl Focusable for DeleteWorkspaceModal {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl DeleteWorkspaceModal {
+    fn new(
+        prompt_details: DeleteWorkspacePromptDetails,
+        sender: SmolSender<DeleteWorkspaceModalDecision>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            prompt_details,
+            sender,
+            scroll_handle: ScrollHandle::new(),
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    fn send_decision(&mut self, decision: DeleteWorkspaceModalDecision, cx: &mut Context<Self>) {
+        let _ = self.sender.try_send(decision);
+        cx.emit(DismissEvent);
+    }
+
+    fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        self.send_decision(DeleteWorkspaceModalDecision::Cancel, cx);
+    }
+
+    fn confirm(&mut self, _: &menu::Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        self.send_decision(self.prompt_details.confirm_decision, cx);
+    }
+
+    fn render_code_block(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        text: SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .child(Label::new(label).size(LabelSize::Small).color(Color::Muted))
+            .child(
+                div()
+                    .id(id)
+                    .max_h(px(180.))
+                    .overflow_y_scroll()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().colors().border_variant)
+                    .bg(cx.theme().colors().editor_background)
+                    .p_2()
+                    .child(
+                        Label::new(text)
+                            .size(LabelSize::Small)
+                            .buffer_font(cx)
+                            .color(Color::Default),
+                    ),
+            )
+    }
+}
+
+impl Render for DeleteWorkspaceModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("SuperzentDeleteWorkspaceModal")
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .elevation_3(cx)
+            .w(px(560.))
+            .max_h(px(576.))
+            .overflow_hidden()
+            .child(
+                Modal::new(
+                    "superzent-delete-workspace-modal",
+                    Some(self.scroll_handle.clone()),
+                )
+                .header(ModalHeader::new().headline(self.prompt_details.title))
+                .section(
+                    Section::new().child(
+                        v_flex()
+                            .gap_3()
+                            .child(
+                                Label::new(self.prompt_details.prompt_message.clone())
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new(self.prompt_details.teardown_message.clone())
+                                    .size(LabelSize::Small),
+                            )
+                            .when_some(
+                                self.prompt_details.teardown_script.clone(),
+                                |this, teardown_script| {
+                                    this.child(self.render_code_block(
+                                        "superzent-delete-workspace-teardown-preview",
+                                        "Teardown Script",
+                                        teardown_script.into(),
+                                        cx,
+                                    ))
+                                },
+                            )
+                            .when_some(
+                                self.prompt_details.failure_details.clone(),
+                                |this, failure_details| {
+                                    this.child(self.render_code_block(
+                                        "superzent-delete-workspace-blocked-detail",
+                                        "Config Read Failure",
+                                        failure_details.into(),
+                                        cx,
+                                    ))
+                                },
+                            ),
+                    ),
+                )
+                .footer(
+                    ModalFooter::new().end_slot(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("superzent-delete-workspace-cancel", "Cancel")
+                                    .style(ButtonStyle::Subtle)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.cancel(&menu::Cancel, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(
+                                    "superzent-delete-workspace-confirm",
+                                    self.prompt_details.confirm_label,
+                                )
+                                .style(ButtonStyle::Filled)
+                                .on_click(cx.listener(
+                                    |this, _: &ClickEvent, window, cx| {
+                                        this.confirm(&menu::Confirm, window, cx);
+                                    },
+                                )),
+                            ),
+                    ),
+                ),
             )
     }
 }
@@ -5466,14 +5733,10 @@ fn open_new_workspace_modal(
         .filter(|workspace_entry| workspace_entry.project_id == project.id)
         .and_then(|workspace_entry| workspace_entry.local_worktree_path())
         .map(Path::to_path_buf);
+    let bootstrap =
+        build_new_workspace_modal_bootstrap(&project, initial_base_workspace_path.as_deref());
     workspace.toggle_modal(window, cx, move |window, cx| {
-        NewWorkspaceModal::new(
-            workspace_handle.clone(),
-            project,
-            initial_base_workspace_path,
-            window,
-            cx,
-        )
+        NewWorkspaceModal::new(workspace_handle.clone(), project, bootstrap, window, cx)
     });
 }
 
@@ -5641,6 +5904,184 @@ fn run_close_workspace(
     }
 }
 
+#[derive(Clone)]
+struct DeleteWorkspaceSession {
+    project: ProjectEntry,
+    workspace_entry: WorkspaceEntry,
+    fallback_workspace: Option<WorkspaceEntry>,
+    deleting_sidebar: Option<WeakEntity<SuperzentSidebar>>,
+    delete_location: WorkspaceLocation,
+    removal_targets: Vec<WorkspaceWindowRemovalTarget>,
+    app_state: Arc<WorkspaceAppState>,
+}
+
+enum DeleteWorkspaceResult {
+    Deleted { cleanup_error: Option<String> },
+    BlockedByTeardown(superzent_git::WorkspaceLifecycleFailure),
+}
+
+impl DeleteWorkspaceSession {
+    fn set_sidebar_deleting(&self, deleting: bool, cx: &mut App) {
+        if let Some(sidebar) = self.deleting_sidebar.as_ref() {
+            sidebar
+                .update(cx, |sidebar, cx| {
+                    sidebar.mark_workspace_deleting(&self.workspace_entry.id, deleting, cx);
+                })
+                .ok();
+        }
+    }
+
+    fn register_in_flight(&self, cx: &mut App) {
+        register_in_flight_workspace_delete(self.delete_location.clone(), cx);
+    }
+
+    fn finish_interaction(&self, cx: &mut AsyncWindowContext) {
+        cx.update(|_, cx| {
+            self.set_sidebar_deleting(false, cx);
+            unregister_in_flight_workspace_delete(&self.delete_location, cx);
+        })
+        .ok();
+    }
+
+    async fn close_open_windows(&self, cx: &mut AsyncWindowContext) -> Option<String> {
+        close_workspace_in_all_windows(
+            self.workspace_entry.clone(),
+            self.fallback_workspace.clone(),
+            self.app_state.clone(),
+            Some(self.removal_targets.clone()),
+            cx,
+        )
+        .await
+        .err()
+        .map(|error| error.to_string())
+    }
+
+    fn finalize_deleted(
+        &self,
+        store: &Entity<SuperzentStore>,
+        workspace: &mut Workspace,
+        cleanup_error: Option<String>,
+        cx: &mut Context<Workspace>,
+    ) {
+        store.update(cx, |store, cx| {
+            store.remove_workspace(&self.workspace_entry.id, cx);
+        });
+        if let Some(cleanup_error) = cleanup_error {
+            log::error!("workspace delete succeeded on disk but cleanup failed: {cleanup_error}");
+            workspace.show_toast(
+                Toast::new(
+                    NotificationId::unique::<SuperzentSidebar>(),
+                    format!(
+                        "Deleted {}, but some open windows may need manual cleanup.",
+                        self.workspace_entry.name
+                    ),
+                ),
+                cx,
+            );
+        } else {
+            workspace.show_toast(
+                Toast::new(
+                    NotificationId::unique::<SuperzentSidebar>(),
+                    format!("Deleted {}", self.workspace_entry.name),
+                ),
+                cx,
+            );
+        }
+    }
+}
+
+fn show_delete_workspace_modal(
+    workspace: &mut Workspace,
+    workspace_entry: WorkspaceEntry,
+    delete_resolution: superzent_git::WorkspaceDeleteResolution,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> SmolReceiver<DeleteWorkspaceModalDecision> {
+    let prompt_details = delete_workspace_prompt_details(&workspace_entry, &delete_resolution);
+    let (sender, receiver) = smol::channel::bounded(1);
+    let dismiss_sender = sender;
+    let modal_sender = dismiss_sender.clone();
+
+    workspace.toggle_modal(window, cx, move |_window, cx| {
+        DeleteWorkspaceModal::new(prompt_details.clone(), modal_sender, cx)
+    });
+
+    if let Some(modal) = workspace.active_modal::<DeleteWorkspaceModal>(cx) {
+        cx.subscribe_in(&modal, window, move |_, _, _: &DismissEvent, _, _| {
+            let _ = dismiss_sender.try_send(DeleteWorkspaceModalDecision::Cancel);
+        })
+        .detach();
+    } else {
+        let _ = dismiss_sender.try_send(DeleteWorkspaceModalDecision::Cancel);
+    }
+
+    receiver
+}
+
+async fn perform_workspace_delete(
+    session: &DeleteWorkspaceSession,
+    store: &Entity<SuperzentStore>,
+    delete_resolution: Option<&superzent_git::WorkspaceDeleteResolution>,
+    force: bool,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<DeleteWorkspaceResult> {
+    match &session.project.location {
+        ProjectLocation::Local { repo_root } => {
+            let workspace_to_delete = session.workspace_entry.clone();
+            let delete_resolution = delete_resolution.cloned();
+            let delete_outcome = cx
+                .background_spawn({
+                    let repo_root = repo_root.clone();
+                    async move {
+                        superzent_git::delete_workspace_with_resolution(
+                            &workspace_to_delete,
+                            &repo_root,
+                            force,
+                            delete_resolution.as_ref(),
+                        )
+                    }
+                })
+                .await?;
+
+            match delete_outcome {
+                superzent_git::WorkspaceDeleteOutcome::Deleted => {}
+                superzent_git::WorkspaceDeleteOutcome::BlockedByTeardown(failure) => {
+                    return Ok(DeleteWorkspaceResult::BlockedByTeardown(failure));
+                }
+            }
+        }
+        ProjectLocation::Ssh { .. } => {
+            let (project_workspace, _) = resolve_remote_project_workspace(
+                &session.project,
+                store,
+                session.app_state.clone(),
+                false,
+                cx,
+            )
+            .await?;
+
+            let repository = cx.update(|_, cx| {
+                active_repository_for_workspace(&project_workspace, cx)
+                    .ok_or_else(|| anyhow::anyhow!("no active repository found"))
+            })??;
+            let target_path = PathBuf::from(
+                session
+                    .workspace_entry
+                    .ssh_worktree_path()
+                    .ok_or_else(|| anyhow::anyhow!("missing remote worktree path"))?,
+            );
+            let receiver = repository.update(cx, |repository, _| {
+                repository.remove_worktree(target_path, false)
+            });
+            receiver.await??;
+        }
+    }
+
+    Ok(DeleteWorkspaceResult::Deleted {
+        cleanup_error: session.close_open_windows(cx).await,
+    })
+}
+
 fn run_delete_workspace_entry(
     workspace: &mut Workspace,
     workspace_entry: WorkspaceEntry,
@@ -5649,6 +6090,16 @@ fn run_delete_workspace_entry(
     cx: &mut Context<Workspace>,
 ) {
     let store = SuperzentStore::global(cx);
+    let clear_sidebar_deleting = |cx: &mut App| {
+        if let Some(sidebar) = deleting_sidebar.as_ref() {
+            sidebar
+                .update(cx, |sidebar, cx| {
+                    sidebar.mark_workspace_deleting(&workspace_entry.id, false, cx);
+                })
+                .ok();
+        }
+    };
+
     if workspace_entry.kind == WorkspaceKind::Primary || !workspace_entry.managed {
         workspace.show_toast(
             Toast::new(
@@ -5657,13 +6108,7 @@ fn run_delete_workspace_entry(
             ),
             cx,
         );
-        if let Some(sidebar) = deleting_sidebar.as_ref() {
-            sidebar
-                .update(cx, |sidebar, cx| {
-                    sidebar.mark_workspace_deleting(&workspace_entry.id, false, cx);
-                })
-                .ok();
-        }
+        clear_sidebar_deleting(cx);
         return;
     }
     let Some(project) = store.read(cx).project(&workspace_entry.project_id).cloned() else {
@@ -5674,261 +6119,180 @@ fn run_delete_workspace_entry(
             ),
             cx,
         );
-        if let Some(sidebar) = deleting_sidebar.as_ref() {
-            sidebar
-                .update(cx, |sidebar, cx| {
-                    sidebar.mark_workspace_deleting(&workspace_entry.id, false, cx);
-                })
-                .ok();
-        }
+        clear_sidebar_deleting(cx);
         return;
     };
-    let fallback_workspace = store
-        .read(cx)
-        .primary_workspace_for_project(&project.id)
-        .filter(|fallback_workspace| fallback_workspace.id != workspace_entry.id)
-        .cloned();
+    let session = DeleteWorkspaceSession {
+        project,
+        workspace_entry: workspace_entry.clone(),
+        fallback_workspace: store
+            .read(cx)
+            .primary_workspace_for_project(&workspace_entry.project_id)
+            .filter(|fallback_workspace| fallback_workspace.id != workspace_entry.id)
+            .cloned(),
+        deleting_sidebar: deleting_sidebar.clone(),
+        delete_location: workspace_entry.location.clone(),
+        removal_targets: workspace_removal_targets_for_entry(&workspace_entry, cx),
+        app_state: workspace.app_state().clone(),
+    };
 
-    let prompt = window.prompt(
-        PromptLevel::Warning,
-        "Delete workspace?",
-        Some(&format!(
-            "Delete `{}` and remove its worktree at {}?",
-            workspace_entry.name,
-            workspace_entry.display_path()
-        )),
-        &["Cancel", "Delete"],
-        cx,
-    );
-    let app_state = workspace.app_state().clone();
-
-    // Block any new opens of this workspace for the duration of the delete
-    // flow — including while the confirmation prompt is showing. Without this
-    // guard, a late open during the prompt (or while the background delete
-    // is running) would leave a stale tab behind: once the worktree files
-    // are gone the post-delete re-scan can't rediscover that instance
-    // because it matches by path via `visible_worktrees()`.
-    let delete_location = workspace_entry.location.clone();
-    register_in_flight_workspace_delete(delete_location.clone(), cx);
-
-    cx.spawn_in(window, async move |this, cx| {
-        enum DeleteWorkspaceResult {
-            Deleted { cleanup_error: Option<String> },
-            BlockedByTeardown(superzent_git::WorkspaceLifecycleFailure),
-        }
-
-        if prompt.await != Ok(1) {
-            if let Some(sidebar) = deleting_sidebar.as_ref() {
-                sidebar
-                    .update(cx, |sidebar, cx| {
-                        sidebar.mark_workspace_deleting(&workspace_entry.id, false, cx);
-                    })
-                    .ok();
-            }
-            cx.update(|_, cx| {
-                unregister_in_flight_workspace_delete(&delete_location, cx);
-            })
-            .ok();
-            return anyhow::Ok(());
-        }
-
-        let removal_targets =
-            cx.update(|_, cx| workspace_removal_targets_for_entry(&workspace_entry, cx))?;
-
-        let delete_result: anyhow::Result<DeleteWorkspaceResult> = async {
-            let workspace_to_delete = workspace_entry.clone();
-            match &project.location {
-                ProjectLocation::Local { repo_root } => {
-                    let delete_outcome = cx
-                        .background_spawn({
-                            let repo_root = repo_root.clone();
-                            async move {
-                                superzent_git::delete_workspace(
-                                    &workspace_to_delete,
-                                    &repo_root,
-                                    false,
-                                )
-                            }
-                        })
-                        .await?;
-
-                    match delete_outcome {
-                        superzent_git::WorkspaceDeleteOutcome::Deleted => {}
-                        superzent_git::WorkspaceDeleteOutcome::BlockedByTeardown(failure) => {
-                            return Ok(DeleteWorkspaceResult::BlockedByTeardown(failure));
-                        }
-                    }
-                }
-                ProjectLocation::Ssh { .. } => {
-                    let (project_workspace, _) = resolve_remote_project_workspace(
-                        &project,
-                        &store,
-                        app_state.clone(),
-                        false,
+    match &session.project.location {
+        ProjectLocation::Local { repo_root } => {
+            let delete_resolution = match superzent_git::resolve_workspace_delete_resolution(
+                &session.workspace_entry,
+                repo_root,
+            ) {
+                Ok(delete_resolution) => delete_resolution,
+                Err(error) => {
+                    workspace.show_toast(
+                        Toast::new(
+                            NotificationId::unique::<SuperzentSidebar>(),
+                            format!("Failed to prepare workspace delete: {error}"),
+                        ),
                         cx,
-                    )
-                    .await?;
-
-                    let repository = cx.update(|_, cx| {
-                        active_repository_for_workspace(&project_workspace, cx)
-                            .ok_or_else(|| anyhow::anyhow!("no active repository found"))
-                    })??;
-                    let target_path = PathBuf::from(
-                        workspace_to_delete
-                            .ssh_worktree_path()
-                            .ok_or_else(|| anyhow::anyhow!("missing remote worktree path"))?,
                     );
-                    let receiver = repository.update(cx, |repository, _| {
-                        repository.remove_worktree(target_path, false)
-                    });
-                    receiver.await??;
+                    clear_sidebar_deleting(cx);
+                    return;
                 }
-            }
-
-            let cleanup_error = close_workspace_in_all_windows(
-                workspace_entry.clone(),
-                fallback_workspace.clone(),
-                app_state.clone(),
-                Some(removal_targets.clone()),
+            };
+            session.register_in_flight(cx);
+            let prompt_receiver = show_delete_workspace_modal(
+                workspace,
+                session.workspace_entry.clone(),
+                delete_resolution.clone(),
+                window,
                 cx,
-            )
-            .await
-            .err()
-            .map(|error| error.to_string());
+            );
 
-            Ok(DeleteWorkspaceResult::Deleted { cleanup_error })
-        }
-        .await;
+            cx.spawn_in(window, async move |this, cx| {
+                let delete_decision = prompt_receiver
+                    .recv()
+                    .await
+                    .unwrap_or(DeleteWorkspaceModalDecision::Cancel);
+                if delete_decision == DeleteWorkspaceModalDecision::Cancel {
+                    session.finish_interaction(cx);
+                    return anyhow::Ok(());
+                }
 
-        let mut force_delete_result: Option<anyhow::Result<DeleteWorkspaceResult>> = None;
-        if let Ok(DeleteWorkspaceResult::BlockedByTeardown(failure)) = &delete_result {
-            let prompt_detail =
-                workspace_lifecycle_failure_prompt_detail(&workspace_entry, failure, None, true);
-            let retry_prompt = this.update_in(cx, |workspace, window, cx| {
-                workspace.show_toast(
-                    Toast::new(
-                        NotificationId::unique::<SuperzentSidebar>(),
-                        failure.summary(),
-                    ),
-                    cx,
-                );
-                window.prompt(
-                    PromptLevel::Warning,
-                    "Workspace teardown failed",
-                    Some(&prompt_detail),
-                    &["Cancel", "Delete Anyway"],
+                let mut delete_result = perform_workspace_delete(
+                    &session,
+                    &store,
+                    Some(&delete_resolution),
+                    delete_decision == DeleteWorkspaceModalDecision::DeleteAnyway,
                     cx,
                 )
-            })?;
+                .await;
 
-            if retry_prompt.await == Ok(1) {
-                force_delete_result = Some(
-                    async {
-                        let workspace_to_delete = workspace_entry.clone();
-                        match &project.location {
-                            ProjectLocation::Local { repo_root } => {
-                                let delete_outcome = cx
-                                    .background_spawn({
-                                        let repo_root = repo_root.clone();
-                                        async move {
-                                            superzent_git::delete_workspace(
-                                                &workspace_to_delete,
-                                                &repo_root,
-                                                true,
-                                            )
-                                        }
-                                    })
-                                    .await?;
-                                match delete_outcome {
-                                    superzent_git::WorkspaceDeleteOutcome::Deleted => {}
-                                    superzent_git::WorkspaceDeleteOutcome::BlockedByTeardown(_) => {
-                                        bail!("force delete unexpectedly retried teardown")
-                                    }
-                                }
-                            }
-                            ProjectLocation::Ssh { .. } => {
-                                bail!("force delete is only supported for local workspaces")
-                            }
-                        }
-
-                        let cleanup_error = close_workspace_in_all_windows(
-                            workspace_entry.clone(),
-                            fallback_workspace.clone(),
-                            app_state.clone(),
-                            Some(removal_targets.clone()),
+                if let Ok(DeleteWorkspaceResult::BlockedByTeardown(failure)) = &delete_result {
+                    let prompt_detail = workspace_lifecycle_failure_prompt_detail(
+                        &session.workspace_entry,
+                        failure,
+                        None,
+                        true,
+                    );
+                    let retry_prompt = this.update_in(cx, |workspace, window, cx| {
+                        workspace.show_toast(
+                            Toast::new(
+                                NotificationId::unique::<SuperzentSidebar>(),
+                                failure.summary(),
+                            ),
+                            cx,
+                        );
+                        window.prompt(
+                            PromptLevel::Warning,
+                            "Workspace teardown failed",
+                            Some(&prompt_detail),
+                            &["Cancel", "Delete Anyway"],
                             cx,
                         )
-                        .await
-                        .err()
-                        .map(|error| error.to_string());
+                    })?;
 
-                        Ok(DeleteWorkspaceResult::Deleted { cleanup_error })
+                    if retry_prompt.await == Ok(1) {
+                        delete_result = perform_workspace_delete(
+                            &session,
+                            &store,
+                            Some(&delete_resolution),
+                            true,
+                            cx,
+                        )
+                        .await;
+                        if matches!(
+                            delete_result,
+                            Ok(DeleteWorkspaceResult::BlockedByTeardown(_))
+                        ) {
+                            delete_result = Err(anyhow::anyhow!(
+                                "force delete unexpectedly retried teardown"
+                            ));
+                        }
                     }
-                    .await,
-                );
-            }
-        }
-
-        let delete_result = force_delete_result.unwrap_or(delete_result);
-
-        this.update_in(cx, |workspace, _window, cx| match delete_result {
-            Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
-                store.update(cx, |store, cx| {
-                    store.remove_workspace(&workspace_entry.id, cx);
-                });
-                if let Some(cleanup_error) = cleanup_error {
-                    log::error!(
-                        "workspace delete succeeded on disk but cleanup failed: {cleanup_error}"
-                    );
-                    workspace.show_toast(
-                        Toast::new(
-                            NotificationId::unique::<SuperzentSidebar>(),
-                            format!(
-                                "Deleted {}, but some open windows may need manual cleanup.",
-                                workspace_entry.name
-                            ),
-                        ),
-                        cx,
-                    );
-                } else {
-                    workspace.show_toast(
-                        Toast::new(
-                            NotificationId::unique::<SuperzentSidebar>(),
-                            format!("Deleted {}", workspace_entry.name),
-                        ),
-                        cx,
-                    );
                 }
-            }
-            Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
-            Err(error) => {
-                workspace.show_toast(
-                    Toast::new(
-                        NotificationId::unique::<SuperzentSidebar>(),
-                        format!("Failed to remove workspace: {error}"),
-                    ),
-                    cx,
-                );
-            }
-        })
-        .ok();
 
-        if let Some(sidebar) = deleting_sidebar.as_ref() {
-            sidebar
-                .update(cx, |sidebar, cx| {
-                    sidebar.mark_workspace_deleting(&workspace_entry.id, false, cx);
-                })
-                .ok();
+                let _ = this.update_in(cx, |workspace, _window, cx| match delete_result {
+                    Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
+                        session.finalize_deleted(&store, workspace, cleanup_error, cx);
+                    }
+                    Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
+                    Err(error) => {
+                        workspace.show_toast(
+                            Toast::new(
+                                NotificationId::unique::<SuperzentSidebar>(),
+                                format!("Failed to remove workspace: {error}"),
+                            ),
+                            cx,
+                        );
+                    }
+                });
+
+                session.finish_interaction(cx);
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
         }
+        ProjectLocation::Ssh { .. } => {
+            session.register_in_flight(cx);
+            let prompt = window.prompt(
+                PromptLevel::Warning,
+                "Delete workspace?",
+                Some(&format!(
+                    "Delete `{}` and remove its worktree at {}?",
+                    session.workspace_entry.name,
+                    session.workspace_entry.display_path()
+                )),
+                &["Cancel", "Delete"],
+                cx,
+            );
 
-        cx.update(|_, cx| {
-            unregister_in_flight_workspace_delete(&delete_location, cx);
-        })
-        .ok();
+            cx.spawn_in(window, async move |this, cx| {
+                if prompt.await != Ok(1) {
+                    session.finish_interaction(cx);
+                    return anyhow::Ok(());
+                }
 
-        anyhow::Ok(())
-    })
-    .detach_and_log_err(cx);
+                let delete_result =
+                    perform_workspace_delete(&session, &store, None, false, cx).await;
+
+                let _ = this.update_in(cx, |workspace, _window, cx| match delete_result {
+                    Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
+                        session.finalize_deleted(&store, workspace, cleanup_error, cx);
+                    }
+                    Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
+                    Err(error) => {
+                        workspace.show_toast(
+                            Toast::new(
+                                NotificationId::unique::<SuperzentSidebar>(),
+                                format!("Failed to remove workspace: {error}"),
+                            ),
+                            cx,
+                        );
+                    }
+                });
+
+                session.finish_interaction(cx);
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
+        }
+    }
 }
 
 fn run_sync_project_worktrees(
@@ -7260,9 +7624,9 @@ fn build_synced_local_workspace_entry(
         last_attention_reason: existing_workspace
             .as_ref()
             .and_then(|workspace| workspace.last_attention_reason.clone()),
-        lifecycle_teardown_script: existing_workspace
+        teardown_script_override: existing_workspace
             .as_ref()
-            .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
+            .and_then(|workspace| workspace.teardown_script_override.clone()),
         created_at: existing_workspace
             .as_ref()
             .map(|workspace| workspace.created_at)
@@ -7435,9 +7799,9 @@ fn build_local_workspace_bundle(
         last_attention_reason: existing_workspace
             .as_ref()
             .and_then(|workspace| workspace.last_attention_reason.clone()),
-        lifecycle_teardown_script: existing_workspace
+        teardown_script_override: existing_workspace
             .as_ref()
-            .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
+            .and_then(|workspace| workspace.teardown_script_override.clone()),
         created_at: existing_workspace
             .as_ref()
             .map(|workspace| workspace.created_at)
@@ -7585,9 +7949,9 @@ fn build_remote_workspace_bundle(
         last_attention_reason: existing_workspace
             .as_ref()
             .and_then(|workspace| workspace.last_attention_reason.clone()),
-        lifecycle_teardown_script: existing_workspace
+        teardown_script_override: existing_workspace
             .as_ref()
-            .and_then(|workspace| workspace.lifecycle_teardown_script.clone()),
+            .and_then(|workspace| workspace.teardown_script_override.clone()),
         created_at: existing_workspace
             .as_ref()
             .map(|workspace| workspace.created_at)
@@ -8170,7 +8534,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
-            lifecycle_teardown_script: None,
+            teardown_script_override: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -8194,7 +8558,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
-            lifecycle_teardown_script: None,
+            teardown_script_override: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -8232,7 +8596,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
-            lifecycle_teardown_script: None,
+            teardown_script_override: None,
             created_at: Utc::now(),
             last_opened_at: Utc::now(),
         }
@@ -8286,6 +8650,91 @@ mod tests {
             move_changes_source_path(None, &project),
             Some(PathBuf::from("/tmp/repo"))
         );
+    }
+
+    #[test]
+    fn new_workspace_modal_bootstrap_applies_base_branch_resolution_and_defaults() {
+        let bootstrap = new_workspace_modal_bootstrap(
+            Ok(superzent_git::WorkspaceBaseBranchResolution {
+                effective_base_branch: "develop".to_string(),
+                notice: Some("Using the current base workspace branch.".to_string()),
+            }),
+            superzent_git::WorkspaceLifecycleDefaults {
+                setup_script: Some("echo setup".to_string()),
+                teardown_script: Some("echo teardown".to_string()),
+            },
+        );
+
+        assert_eq!(bootstrap.base_branch, Some("develop".to_string()));
+        assert_eq!(
+            bootstrap.base_branch_notice,
+            Some("Using the current base workspace branch.".to_string())
+        );
+        assert_eq!(bootstrap.base_branch_error, None);
+        assert_eq!(bootstrap.setup_script, Some("echo setup".to_string()));
+        assert_eq!(bootstrap.teardown_script, Some("echo teardown".to_string()));
+    }
+
+    #[test]
+    fn new_workspace_create_options_marks_only_teardown_for_repo_default_persistence() {
+        let options = new_workspace_create_options(
+            "feature/bootstrap".to_string(),
+            Some("main".to_string()),
+            Some(PathBuf::from("/tmp/repo")),
+            Some("echo setup".to_string()),
+            Some("echo teardown".to_string()),
+            true,
+            false,
+        );
+
+        assert_eq!(options.setup_script, Some("echo setup".to_string()));
+        assert_eq!(options.teardown_script, Some("echo teardown".to_string()));
+        assert!(options.save_teardown_script_as_repo_default);
+        assert_eq!(options.base_branch_override, Some("main".to_string()));
+    }
+
+    #[test]
+    fn delete_workspace_prompt_details_show_script_preview_when_teardown_will_run() {
+        let workspace = local_workspace_entry("workspace", "project", "/tmp/workspace");
+        let prompt_details = delete_workspace_prompt_details(
+            &workspace,
+            &superzent_git::WorkspaceDeleteResolution::RunTeardownScript {
+                script: "echo teardown".to_string(),
+            },
+        );
+
+        assert_eq!(prompt_details.title, "Delete workspace?");
+        assert_eq!(prompt_details.confirm_label, "Delete");
+        assert_eq!(
+            prompt_details.confirm_decision,
+            DeleteWorkspaceModalDecision::Delete
+        );
+        assert_eq!(
+            prompt_details.teardown_script,
+            Some("echo teardown".to_string())
+        );
+        assert!(prompt_details.failure_details.is_none());
+    }
+
+    #[test]
+    fn delete_workspace_prompt_details_blocked_config_path_skips_teardown() {
+        let workspace = local_workspace_entry("workspace", "project", "/tmp/workspace");
+        let prompt_details = delete_workspace_prompt_details(
+            &workspace,
+            &superzent_git::WorkspaceDeleteResolution::BlockedByConfig(lifecycle_failure(
+                superzent_git::WorkspaceLifecyclePhase::Teardown,
+            )),
+        );
+
+        assert_eq!(prompt_details.title, "Delete blocked");
+        assert_eq!(prompt_details.confirm_label, "Delete Anyway");
+        assert_eq!(
+            prompt_details.confirm_decision,
+            DeleteWorkspaceModalDecision::DeleteAnyway
+        );
+        assert!(prompt_details.teardown_script.is_none());
+        assert!(prompt_details.teardown_message.contains("skip"));
+        assert!(prompt_details.failure_details.is_some());
     }
 
     #[test]
