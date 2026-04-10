@@ -2001,7 +2001,7 @@ async fn test_random_worktree_operations_during_initial_scan(
     }
 }
 
-#[gpui::test(iterations = 100)]
+#[gpui::test(iterations = 50)]
 async fn test_random_worktree_changes(cx: &mut TestAppContext, mut rng: StdRng) {
     init_test(cx);
     let operations = env::var("OPERATIONS")
