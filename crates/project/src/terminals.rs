@@ -696,19 +696,33 @@ fn maybe_apply_superzent_shell_override(shell: Shell, env: &mut HashMap<String, 
     shell
 }
 
+fn superzent_zsh_override_dir() -> PathBuf {
+    paths::data_dir().join("agent-hooks").join("shell").join("zsh")
+}
+
+fn is_superzent_zsh_override_dir(path: &str) -> bool {
+    let candidate = Path::new(path);
+    let override_dir = superzent_zsh_override_dir();
+
+    candidate == override_dir
+        || candidate.canonicalize().ok().as_deref() == Some(override_dir.as_path())
+        || candidate.canonicalize().ok().as_deref() == override_dir.canonicalize().ok().as_deref()
+}
+
 fn resolve_original_zdotdir(env: &HashMap<String, String>) -> Option<String> {
-    env.get("ZDOTDIR")
+    env.get("SUPERZENT_ORIGINAL_ZDOTDIR")
         .cloned()
-        .or_else(|| std::env::var("ZDOTDIR").ok())
+        .or_else(|| {
+            env.get("ZDOTDIR")
+                .cloned()
+                .filter(|path| !is_superzent_zsh_override_dir(path))
+        })
         .or_else(|| env.get("HOME").cloned())
         .or_else(|| std::env::var("HOME").ok())
 }
 
 fn ensure_superzent_zsh_override_dir() -> Result<PathBuf> {
-    let override_dir = paths::data_dir()
-        .join("agent-hooks")
-        .join("shell")
-        .join("zsh");
+    let override_dir = superzent_zsh_override_dir();
     fs::create_dir_all(&override_dir)?;
     fs::write(override_dir.join(".zshenv"), superzent_zshenv_content())?;
     fs::write(override_dir.join(".zprofile"), superzent_zprofile_content())?;
@@ -718,7 +732,12 @@ fn ensure_superzent_zsh_override_dir() -> Result<PathBuf> {
 }
 
 fn superzent_zshenv_content() -> &'static str {
-    r#"if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
+    r#"if [ -n "$SUPERZENT_ZSHENV_GUARD" ]; then
+  return 0 2>/dev/null || true
+fi
+export SUPERZENT_ZSHENV_GUARD=1
+
+if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
   _superzent_original_zdotdir="$SUPERZENT_ORIGINAL_ZDOTDIR"
 else
   _superzent_original_zdotdir="$HOME"
@@ -732,11 +751,17 @@ if [ -f "$_superzent_original_zdotdir/.zshenv" ]; then
 fi
 
 export ZDOTDIR="$_superzent_override_zdotdir"
+unset SUPERZENT_ZSHENV_GUARD
 "#
 }
 
 fn superzent_zshrc_content() -> &'static str {
-    r#"if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
+    r#"if [ -n "$SUPERZENT_ZSHRC_GUARD" ]; then
+  return 0 2>/dev/null || true
+fi
+export SUPERZENT_ZSHRC_GUARD=1
+
+if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
   _superzent_original_zdotdir="$SUPERZENT_ORIGINAL_ZDOTDIR"
 else
   _superzent_original_zdotdir="$HOME"
@@ -756,11 +781,17 @@ if [ -n "$SUPERZENT_AGENT_HOOK_BIN_DIR" ]; then
   path=("$SUPERZENT_AGENT_HOOK_BIN_DIR" $path)
   rehash >/dev/null 2>&1 || true
 fi
+unset SUPERZENT_ZSHRC_GUARD
 "#
 }
 
 fn superzent_zprofile_content() -> &'static str {
-    r#"if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
+    r#"if [ -n "$SUPERZENT_ZPROFILE_GUARD" ]; then
+  return 0 2>/dev/null || true
+fi
+export SUPERZENT_ZPROFILE_GUARD=1
+
+if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
   _superzent_original_zdotdir="$SUPERZENT_ORIGINAL_ZDOTDIR"
 else
   _superzent_original_zdotdir="$HOME"
@@ -780,11 +811,17 @@ if [ -f "$_superzent_original_zdotdir/.zprofile" ]; then
 fi
 
 export ZDOTDIR="$_superzent_override_zdotdir"
+unset SUPERZENT_ZPROFILE_GUARD
 "#
 }
 
 fn superzent_zlogin_content() -> &'static str {
-    r#"if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
+    r#"if [ -n "$SUPERZENT_ZLOGIN_GUARD" ]; then
+  return 0 2>/dev/null || true
+fi
+export SUPERZENT_ZLOGIN_GUARD=1
+
+if [ -n "$SUPERZENT_ORIGINAL_ZDOTDIR" ]; then
   _superzent_original_zdotdir="$SUPERZENT_ORIGINAL_ZDOTDIR"
 else
   _superzent_original_zdotdir="$HOME"
@@ -804,6 +841,7 @@ if [ -n "$SUPERZENT_AGENT_HOOK_BIN_DIR" ]; then
   path=("$SUPERZENT_AGENT_HOOK_BIN_DIR" $path)
   rehash >/dev/null 2>&1 || true
 fi
+unset SUPERZENT_ZLOGIN_GUARD
 "#
 }
 
@@ -885,6 +923,54 @@ mod tests {
             resolve_original_zdotdir(&env).as_deref(),
             Some("/tmp/custom-home")
         );
+    }
+
+    #[test]
+    fn shell_override_prefers_original_zdotdir_env() {
+        let mut env = HashMap::default();
+        env.insert(
+            "SUPERZENT_ORIGINAL_ZDOTDIR".to_string(),
+            "/tmp/original-zdotdir".to_string(),
+        );
+        env.insert(
+            "ZDOTDIR".to_string(),
+            superzent_zsh_override_dir().to_string_lossy().to_string(),
+        );
+        env.insert("HOME".to_string(), "/tmp/custom-home".to_string());
+
+        assert_eq!(
+            resolve_original_zdotdir(&env).as_deref(),
+            Some("/tmp/original-zdotdir")
+        );
+    }
+
+    #[test]
+    fn shell_override_ignores_superzent_override_dir_when_resolving_original_zdotdir() {
+        let mut env = HashMap::default();
+        env.insert(
+            "ZDOTDIR".to_string(),
+            superzent_zsh_override_dir().to_string_lossy().to_string(),
+        );
+        env.insert("HOME".to_string(), "/tmp/custom-home".to_string());
+
+        assert_eq!(
+            resolve_original_zdotdir(&env).as_deref(),
+            Some("/tmp/custom-home")
+        );
+    }
+
+    #[test]
+    fn zsh_startup_scripts_include_reentry_guards() {
+        for (guard, script) in [
+            ("SUPERZENT_ZSHENV_GUARD", superzent_zshenv_content()),
+            ("SUPERZENT_ZPROFILE_GUARD", superzent_zprofile_content()),
+            ("SUPERZENT_ZSHRC_GUARD", superzent_zshrc_content()),
+            ("SUPERZENT_ZLOGIN_GUARD", superzent_zlogin_content()),
+        ] {
+            assert!(script.contains(guard));
+            assert!(script.contains("return 0 2>/dev/null || true"));
+            assert!(script.contains(&format!("unset {guard}")));
+        }
     }
 }
 
