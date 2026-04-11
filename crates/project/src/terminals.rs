@@ -697,7 +697,10 @@ fn maybe_apply_superzent_shell_override(shell: Shell, env: &mut HashMap<String, 
 }
 
 fn superzent_zsh_override_dir() -> PathBuf {
-    paths::data_dir().join("agent-hooks").join("shell").join("zsh")
+    paths::data_dir()
+        .join("agent-hooks")
+        .join("shell")
+        .join("zsh")
 }
 
 fn is_superzent_zsh_override_dir(path: &str) -> bool {

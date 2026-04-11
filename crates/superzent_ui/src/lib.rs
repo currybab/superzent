@@ -2226,19 +2226,26 @@ fn local_base_workspace_path_for_create_request(
     store: &SuperzentStore,
     cx: &App,
 ) -> Option<PathBuf> {
-    single_workspace_location_snapshot(workspace_handle, cx)
-        .and_then(|location| match location {
-            WorkspaceLocation::Local { worktree_path } => Some(worktree_path),
-            WorkspaceLocation::Ssh { .. } => None,
+    let live_workspace_matches_project =
+        inferred_project_id_for_live_workspace(workspace_handle, store, cx).as_deref()
+            == Some(project.id.as_str());
+
+    store
+        .active_workspace()
+        .filter(|workspace_entry| workspace_entry.project_id == project.id)
+        .and_then(|workspace_entry| workspace_entry.local_worktree_path())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            local_workspace_path_from_location_if_project_matches(
+                single_workspace_location_snapshot(workspace_handle, cx),
+                live_workspace_matches_project,
+            )
         })
         .or_else(|| {
-            store
-                .active_workspace()
-                .filter(|workspace_entry| workspace_entry.project_id == project.id)
-                .and_then(|workspace_entry| workspace_entry.local_worktree_path())
-                .map(Path::to_path_buf)
-        })
-        .or_else(|| {
+            if !live_workspace_matches_project {
+                return None;
+            }
+
             workspace_handle
                 .read(cx)
                 .project()
@@ -2252,6 +2259,20 @@ fn local_base_workspace_path_for_create_request(
                         .map(|local| local.abs_path().to_path_buf())
                 })
         })
+}
+
+fn local_workspace_path_from_location_if_project_matches(
+    location: Option<WorkspaceLocation>,
+    project_matches_live_workspace: bool,
+) -> Option<PathBuf> {
+    if !project_matches_live_workspace {
+        return None;
+    }
+
+    match location? {
+        WorkspaceLocation::Local { worktree_path } => Some(worktree_path),
+        WorkspaceLocation::Ssh { .. } => None,
+    }
 }
 
 fn move_changes_source_path(
@@ -6165,86 +6186,89 @@ fn run_delete_workspace_entry(
             );
 
             cx.spawn_in(window, async move |this, cx| {
-                let delete_decision = prompt_receiver
-                    .recv()
-                    .await
-                    .unwrap_or(DeleteWorkspaceModalDecision::Cancel);
-                if delete_decision == DeleteWorkspaceModalDecision::Cancel {
-                    session.finish_interaction(cx);
-                    return anyhow::Ok(());
-                }
+                let task_result = async {
+                    let delete_decision = prompt_receiver
+                        .recv()
+                        .await
+                        .unwrap_or(DeleteWorkspaceModalDecision::Cancel);
+                    if delete_decision == DeleteWorkspaceModalDecision::Cancel {
+                        return anyhow::Ok(());
+                    }
 
-                let mut delete_result = perform_workspace_delete(
-                    &session,
-                    &store,
-                    Some(&delete_resolution),
-                    delete_decision == DeleteWorkspaceModalDecision::DeleteAnyway,
-                    cx,
-                )
-                .await;
+                    let mut delete_result = perform_workspace_delete(
+                        &session,
+                        &store,
+                        Some(&delete_resolution),
+                        delete_decision == DeleteWorkspaceModalDecision::DeleteAnyway,
+                        cx,
+                    )
+                    .await;
 
-                if let Ok(DeleteWorkspaceResult::BlockedByTeardown(failure)) = &delete_result {
-                    let prompt_detail = workspace_lifecycle_failure_prompt_detail(
-                        &session.workspace_entry,
-                        failure,
-                        None,
-                        true,
-                    );
-                    let retry_prompt = this.update_in(cx, |workspace, window, cx| {
-                        workspace.show_toast(
-                            Toast::new(
-                                NotificationId::unique::<SuperzentSidebar>(),
-                                failure.summary(),
-                            ),
-                            cx,
-                        );
-                        window.prompt(
-                            PromptLevel::Warning,
-                            "Workspace teardown failed",
-                            Some(&prompt_detail),
-                            &["Cancel", "Delete Anyway"],
-                            cx,
-                        )
-                    })?;
-
-                    if retry_prompt.await == Ok(1) {
-                        delete_result = perform_workspace_delete(
-                            &session,
-                            &store,
-                            Some(&delete_resolution),
+                    if let Ok(DeleteWorkspaceResult::BlockedByTeardown(failure)) = &delete_result {
+                        let prompt_detail = workspace_lifecycle_failure_prompt_detail(
+                            &session.workspace_entry,
+                            failure,
+                            None,
                             true,
-                            cx,
-                        )
-                        .await;
-                        if matches!(
-                            delete_result,
-                            Ok(DeleteWorkspaceResult::BlockedByTeardown(_))
-                        ) {
-                            delete_result = Err(anyhow::anyhow!(
-                                "force delete unexpectedly retried teardown"
-                            ));
+                        );
+                        let retry_prompt = this.update_in(cx, |workspace, window, cx| {
+                            workspace.show_toast(
+                                Toast::new(
+                                    NotificationId::unique::<SuperzentSidebar>(),
+                                    failure.summary(),
+                                ),
+                                cx,
+                            );
+                            window.prompt(
+                                PromptLevel::Warning,
+                                "Workspace teardown failed",
+                                Some(&prompt_detail),
+                                &["Cancel", "Delete Anyway"],
+                                cx,
+                            )
+                        })?;
+
+                        if retry_prompt.await == Ok(1) {
+                            delete_result = perform_workspace_delete(
+                                &session,
+                                &store,
+                                Some(&delete_resolution),
+                                true,
+                                cx,
+                            )
+                            .await;
+                            if matches!(
+                                delete_result,
+                                Ok(DeleteWorkspaceResult::BlockedByTeardown(_))
+                            ) {
+                                delete_result = Err(anyhow::anyhow!(
+                                    "force delete unexpectedly retried teardown"
+                                ));
+                            }
                         }
                     }
+
+                    let _ = this.update_in(cx, |workspace, _window, cx| match delete_result {
+                        Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
+                            session.finalize_deleted(&store, workspace, cleanup_error, cx);
+                        }
+                        Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
+                        Err(error) => {
+                            workspace.show_toast(
+                                Toast::new(
+                                    NotificationId::unique::<SuperzentSidebar>(),
+                                    format!("Failed to remove workspace: {error}"),
+                                ),
+                                cx,
+                            );
+                        }
+                    });
+
+                    anyhow::Ok(())
                 }
-
-                let _ = this.update_in(cx, |workspace, _window, cx| match delete_result {
-                    Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
-                        session.finalize_deleted(&store, workspace, cleanup_error, cx);
-                    }
-                    Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
-                    Err(error) => {
-                        workspace.show_toast(
-                            Toast::new(
-                                NotificationId::unique::<SuperzentSidebar>(),
-                                format!("Failed to remove workspace: {error}"),
-                            ),
-                            cx,
-                        );
-                    }
-                });
-
+                .await;
                 session.finish_interaction(cx);
-                anyhow::Ok(())
+                task_result
             })
             .detach_and_log_err(cx);
         }
@@ -6263,32 +6287,35 @@ fn run_delete_workspace_entry(
             );
 
             cx.spawn_in(window, async move |this, cx| {
-                if prompt.await != Ok(1) {
-                    session.finish_interaction(cx);
-                    return anyhow::Ok(());
+                let task_result = async {
+                    if prompt.await != Ok(1) {
+                        return anyhow::Ok(());
+                    }
+
+                    let delete_result =
+                        perform_workspace_delete(&session, &store, None, false, cx).await;
+
+                    let _ = this.update_in(cx, |workspace, _window, cx| match delete_result {
+                        Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
+                            session.finalize_deleted(&store, workspace, cleanup_error, cx);
+                        }
+                        Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
+                        Err(error) => {
+                            workspace.show_toast(
+                                Toast::new(
+                                    NotificationId::unique::<SuperzentSidebar>(),
+                                    format!("Failed to remove workspace: {error}"),
+                                ),
+                                cx,
+                            );
+                        }
+                    });
+
+                    anyhow::Ok(())
                 }
-
-                let delete_result =
-                    perform_workspace_delete(&session, &store, None, false, cx).await;
-
-                let _ = this.update_in(cx, |workspace, _window, cx| match delete_result {
-                    Ok(DeleteWorkspaceResult::Deleted { cleanup_error }) => {
-                        session.finalize_deleted(&store, workspace, cleanup_error, cx);
-                    }
-                    Ok(DeleteWorkspaceResult::BlockedByTeardown(_)) => {}
-                    Err(error) => {
-                        workspace.show_toast(
-                            Toast::new(
-                                NotificationId::unique::<SuperzentSidebar>(),
-                                format!("Failed to remove workspace: {error}"),
-                            ),
-                            cx,
-                        );
-                    }
-                });
-
+                .await;
                 session.finish_interaction(cx);
-                anyhow::Ok(())
+                task_result
             })
             .detach_and_log_err(cx);
         }
@@ -8649,6 +8676,33 @@ mod tests {
         assert_eq!(
             move_changes_source_path(None, &project),
             Some(PathBuf::from("/tmp/repo"))
+        );
+    }
+
+    #[test]
+    fn local_workspace_path_from_location_if_project_matches_returns_path_for_matching_local_workspace()
+     {
+        assert_eq!(
+            local_workspace_path_from_location_if_project_matches(
+                Some(WorkspaceLocation::Local {
+                    worktree_path: PathBuf::from("/tmp/project-b/worktrees/feature"),
+                }),
+                true,
+            ),
+            Some(PathBuf::from("/tmp/project-b/worktrees/feature"))
+        );
+    }
+
+    #[test]
+    fn local_workspace_path_from_location_if_project_matches_ignores_mismatched_live_workspace() {
+        assert_eq!(
+            local_workspace_path_from_location_if_project_matches(
+                Some(WorkspaceLocation::Local {
+                    worktree_path: PathBuf::from("/tmp/project-a/worktrees/feature"),
+                }),
+                false,
+            ),
+            None
         );
     }
 
