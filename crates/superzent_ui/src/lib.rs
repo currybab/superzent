@@ -2183,9 +2183,7 @@ async fn resolve_opened_workspace(
             .await;
     }
 
-    cx.update(|window, cx| workspace_from_window(window, cx))
-        .ok()
-        .flatten()
+    None
 }
 
 async fn create_local_workspace(
