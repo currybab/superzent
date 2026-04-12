@@ -7,6 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use util::paths::PathExt as _;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,7 +291,9 @@ impl ProjectEntry {
 
     pub fn display_root(&self) -> String {
         match &self.location {
-            ProjectLocation::Local { repo_root } => repo_root.display().to_string(),
+            ProjectLocation::Local { repo_root } => {
+                repo_root.compact().to_string_lossy().to_string()
+            }
             ProjectLocation::Ssh {
                 connection,
                 repo_root,
