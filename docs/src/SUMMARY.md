@@ -3,6 +3,7 @@
 # Welcome
 
 - [Getting Started](./getting-started.md)
+- [Managed Workspace Lifecycle](./managed-workspace-lifecycle.md)
 - [Installation](./installation.md)
   - [Update](./update.md)
   - [Uninstall](./uninstall.md)

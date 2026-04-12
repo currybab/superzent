@@ -798,6 +798,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            teardown_script_override: None,
             created_at: Default::default(),
             last_opened_at: Default::default(),
         };
@@ -837,6 +838,7 @@ mod tests {
             attention_status: WorkspaceAttentionStatus::Idle,
             review_pending: false,
             last_attention_reason: None,
+            teardown_script_override: None,
             created_at: Default::default(),
             last_opened_at: Default::default(),
         };

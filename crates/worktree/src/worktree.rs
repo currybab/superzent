@@ -5116,8 +5116,9 @@ impl BackgroundScanner {
                 None => {
                     let Ok(relative) = dot_git_dir.strip_prefix(state.snapshot.abs_path()) else {
                         log::debug!(
-                            "skipping .git directory outside the worktree root during repository update: {:?}",
-                            dot_git_dir
+                            "skipping .git directory outside the worktree root during repository update: {} (worktree root: {})",
+                            dot_git_dir.display(),
+                            state.snapshot.abs_path().display()
                         );
                         continue;
                     };

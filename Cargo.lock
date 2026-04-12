@@ -16696,7 +16696,7 @@ dependencies = [
 
 [[package]]
 name = "superzent"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "acp_thread",
  "acp_tools",
@@ -16934,6 +16934,7 @@ dependencies = [
  "gpui",
  "log",
  "menu",
+ "notifications",
  "objc",
  "project",
  "project_panel",
