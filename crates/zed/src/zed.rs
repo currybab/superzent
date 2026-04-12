@@ -524,6 +524,8 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|_| go_to_line::cursor_position::CursorPosition::new(workspace));
         let line_ending_indicator =
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
+        let pending_keystroke_indicator =
+            cx.new(|cx| superzent_ui::PendingKeystrokeIndicator::new(window, cx));
         workspace
             .center_pane_footer()
             .update(cx, |center_pane_footer, cx| {
@@ -531,6 +533,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 center_pane_footer.add_left_item(edit_prediction_ui, window, cx);
                 center_pane_footer.add_left_item(lsp_button, window, cx);
                 center_pane_footer.add_left_item(diagnostic_summary, window, cx);
+                center_pane_footer.add_right_item(pending_keystroke_indicator, window, cx);
                 center_pane_footer.add_right_item(cursor_position, window, cx);
                 center_pane_footer.add_right_item(active_toolchain_language, window, cx);
             });

@@ -3,6 +3,9 @@ mod acp_tabs;
 #[cfg(feature = "acp_tabs")]
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 
+mod pending_keystroke_indicator;
+pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
+
 #[cfg(feature = "acp_tabs")]
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 #[cfg(feature = "acp_tabs")]
