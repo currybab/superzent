@@ -672,8 +672,7 @@
       "cmd-8": ["workspace::ActivatePane", 7],
       "cmd-9": ["workspace::ActivatePane", 8],
       "cmd-b": "workspace::ToggleLeftDock",
-      "cmd-alt-b": "workspace::ToggleRightDock",
-      "cmd-r": "workspace::ToggleRightDock",
+      "cmd-alt-k": "workspace::ToggleRightDock",
       "cmd-j": "workspace::ToggleBottomDock",
       "cmd-alt-j": "multi_workspace::ToggleWorkspaceSidebar",
       "cmd-alt-;": "multi_workspace::FocusWorkspaceSidebar",
@@ -754,7 +753,7 @@
     "context": "Workspace && right_dock == SuperzentRightSidebar",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-w": "superzent::CloseCenterPaneItem"
+      "cmd-w": "superzent::CloseCenterPaneItem",
     },
   },
   {
@@ -1217,7 +1216,7 @@
       "cmd-v": "terminal::Paste",
       "cmd-f": "buffer_search::Deploy",
       "cmd-a": "editor::SelectAll",
-      "cmd-k": "terminal::Clear",
+      "cmd-k cmd-k": "terminal::Clear",
       "cmd-n": "workspace::NewTerminal",
       "ctrl-enter": "assistant::InlineAssist",
       "ctrl-_": null, // emacs undo
