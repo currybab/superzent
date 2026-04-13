@@ -1874,7 +1874,7 @@ fn new_workspace_create_options(
     base_workspace_path: Option<PathBuf>,
     setup_script: Option<String>,
     teardown_script: Option<String>,
-    save_teardown_script_as_repo_default: bool,
+    save_lifecycle_defaults: superzent_git::WorkspaceLifecycleDefaultSaveSelections,
     allow_dirty: bool,
 ) -> superzent_git::CreateWorkspaceOptions {
     superzent_git::CreateWorkspaceOptions {
@@ -1883,9 +1883,16 @@ fn new_workspace_create_options(
         base_workspace_path,
         setup_script,
         teardown_script,
-        save_teardown_script_as_repo_default,
+        save_lifecycle_defaults,
         allow_dirty,
     }
+}
+
+fn allow_dirty_workspace_create_options(
+    mut create_options: superzent_git::CreateWorkspaceOptions,
+) -> superzent_git::CreateWorkspaceOptions {
+    create_options.allow_dirty = true;
+    create_options
 }
 
 fn new_workspace_modal_bootstrap(
@@ -2292,7 +2299,7 @@ fn spawn_new_workspace_request(
     base_branch_override: Option<String>,
     setup_script: Option<String>,
     teardown_script: Option<String>,
-    save_teardown_script_as_repo_default: bool,
+    save_lifecycle_defaults: superzent_git::WorkspaceLifecycleDefaultSaveSelections,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -2308,18 +2315,19 @@ fn spawn_new_workspace_request(
             let mut dirty_move_choice: Option<DirtyWorkspaceCreateChoice> = None;
             let outcome = match &project.location {
                 ProjectLocation::Local { .. } => {
+                    let create_options = new_workspace_create_options(
+                        branch_name.clone(),
+                        base_branch_override.clone(),
+                        base_workspace_path.clone(),
+                        setup_script.clone(),
+                        teardown_script.clone(),
+                        save_lifecycle_defaults,
+                        false,
+                    );
                     match create_local_workspace(
                         project.clone(),
                         preset_id.clone(),
-                        new_workspace_create_options(
-                            branch_name.clone(),
-                            base_branch_override.clone(),
-                            base_workspace_path.clone(),
-                            setup_script.clone(),
-                            teardown_script.clone(),
-                            save_teardown_script_as_repo_default,
-                            false,
-                        ),
+                        create_options.clone(),
                         cx,
                     )
                     .await
@@ -2352,15 +2360,7 @@ fn spawn_new_workspace_request(
                             let outcome = create_local_workspace(
                                 project.clone(),
                                 preset_id.clone(),
-                                new_workspace_create_options(
-                                    branch_name.clone(),
-                                    base_branch_override.clone(),
-                                    base_workspace_path.clone(),
-                                    setup_script.clone(),
-                                    teardown_script.clone(),
-                                    save_teardown_script_as_repo_default,
-                                    true,
-                                ),
+                                allow_dirty_workspace_create_options(create_options),
                                 cx,
                             )
                             .await?;
@@ -2797,7 +2797,7 @@ struct NewWorkspaceModal {
     setup_script_editor: Entity<Editor>,
     teardown_script_editor: Entity<Editor>,
     show_more_options: bool,
-    save_teardown_script_as_repo_default: bool,
+    save_lifecycle_defaults: superzent_git::WorkspaceLifecycleDefaultSaveSelections,
     active_script_target: Option<ScriptEditorTarget>,
     scroll_handle: ScrollHandle,
     base_branch_notice: Option<SharedString>,
@@ -2945,7 +2945,8 @@ impl NewWorkspaceModal {
             setup_script_editor,
             teardown_script_editor,
             show_more_options: false,
-            save_teardown_script_as_repo_default: false,
+            save_lifecycle_defaults:
+                superzent_git::WorkspaceLifecycleDefaultSaveSelections::default(),
             active_script_target: None,
             scroll_handle: ScrollHandle::new(),
             base_branch_notice: bootstrap.base_branch_notice.map(Into::into),
@@ -3075,7 +3076,7 @@ impl NewWorkspaceModal {
             self.base_branch(cx),
             self.setup_script(cx),
             self.teardown_script(cx),
-            self.save_teardown_script_as_repo_default,
+            self.save_lifecycle_defaults,
             window,
             cx,
         );
@@ -3182,12 +3183,29 @@ impl Render for NewWorkspaceModal {
                                                                     )
                                                                     .child(
                                                                         Label::new(
-                                                                            "Runs once after creation for this workspace. Changes here are never saved as repo defaults.",
+                                                                            "Runs once after creation for this workspace.",
                                                                         )
                                                                         .size(LabelSize::Small)
                                                                         .color(Color::Muted),
                                                                     )
-                                                                    .child(self.setup_script_editor.clone()),
+                                                                    .child(self.setup_script_editor.clone())
+                                                                    .child(
+                                                                        Checkbox::new(
+                                                                            "superzent-new-workspace-save-setup-default",
+                                                                            self.save_lifecycle_defaults.setup_script.into(),
+                                                                        )
+                                                                        .label("Save as repo default")
+                                                                        .fill()
+                                                                        .elevation(ElevationIndex::Surface)
+                                                                        .label_size(LabelSize::Small)
+                                                                        .on_click(cx.listener(
+                                                                            |this, selection, _, cx| {
+                                                                                this.save_lifecycle_defaults.setup_script =
+                                                                                    *selection == ToggleState::Selected;
+                                                                                cx.notify();
+                                                                            },
+                                                                        )),
+                                                                    ),
                                                             )
                                                             .child(
                                                                 v_flex()
@@ -3196,7 +3214,31 @@ impl Render for NewWorkspaceModal {
                                                                         Label::new("Teardown Script")
                                                                             .size(LabelSize::Small),
                                                                     )
-                                                                    .child(self.teardown_script_editor.clone()),
+                                                                    .child(
+                                                                        Label::new(
+                                                                            "Runs before deletion for this workspace.",
+                                                                        )
+                                                                        .size(LabelSize::Small)
+                                                                        .color(Color::Muted),
+                                                                    )
+                                                                    .child(self.teardown_script_editor.clone())
+                                                                    .child(
+                                                                        Checkbox::new(
+                                                                            "superzent-new-workspace-save-teardown-default",
+                                                                            self.save_lifecycle_defaults.teardown_script.into(),
+                                                                        )
+                                                                        .label("Save as repo default")
+                                                                        .fill()
+                                                                        .elevation(ElevationIndex::Surface)
+                                                                        .label_size(LabelSize::Small)
+                                                                        .on_click(cx.listener(
+                                                                            |this, selection, _, cx| {
+                                                                                this.save_lifecycle_defaults.teardown_script =
+                                                                                    *selection == ToggleState::Selected;
+                                                                                cx.notify();
+                                                                            },
+                                                                        )),
+                                                                    ),
                                                             )
                                                             .child(
                                                                 v_flex()
@@ -3222,25 +3264,6 @@ impl Render for NewWorkspaceModal {
                                                                                 cx,
                                                                             )),
                                                                     ),
-                                                            )
-                                                            .child(
-                                                                Checkbox::new(
-                                                                    "superzent-new-workspace-save-lifecycle",
-                                                                    self.save_teardown_script_as_repo_default.into(),
-                                                                )
-                                                                .label(
-                                                                    "Save teardown script as the default for this repository",
-                                                                )
-                                                                .fill()
-                                                                .elevation(ElevationIndex::Surface)
-                                                                .label_size(LabelSize::Small)
-                                                                .on_click(cx.listener(
-                                                                    |this, selection, _, cx| {
-                                                                        this.save_teardown_script_as_repo_default =
-                                                                            *selection == ToggleState::Selected;
-                                                                        cx.notify();
-                                                                    },
-                                                                )),
                                                             ),
                                                     )
                                                 }),
@@ -8701,36 +8724,77 @@ mod tests {
     }
 
     #[test]
-    fn new_workspace_create_options_marks_only_teardown_for_repo_default_persistence() {
+    fn new_workspace_create_options_tracks_field_level_repo_default_saves() {
         let options = new_workspace_create_options(
             "feature/bootstrap".to_string(),
             Some("main".to_string()),
             Some(PathBuf::from("/tmp/repo")),
             Some("echo setup".to_string()),
             Some("echo teardown".to_string()),
-            true,
+            superzent_git::WorkspaceLifecycleDefaultSaveSelections {
+                setup_script: true,
+                teardown_script: false,
+            },
             false,
         );
 
         assert_eq!(options.setup_script, Some("echo setup".to_string()));
         assert_eq!(options.teardown_script, Some("echo teardown".to_string()));
-        assert!(options.save_teardown_script_as_repo_default);
+        assert_eq!(
+            options.save_lifecycle_defaults,
+            superzent_git::WorkspaceLifecycleDefaultSaveSelections {
+                setup_script: true,
+                teardown_script: false,
+            }
+        );
         assert_eq!(options.base_branch_override, Some("main".to_string()));
     }
 
     #[test]
-    fn new_workspace_create_options_keeps_repo_default_teardown_persistence_disabled_by_default() {
+    fn new_workspace_create_options_keeps_repo_default_saves_disabled_by_default() {
         let options = new_workspace_create_options(
             "feature/bootstrap".to_string(),
             None,
             Some(PathBuf::from("/tmp/repo")),
             None,
             None,
-            false,
+            superzent_git::WorkspaceLifecycleDefaultSaveSelections::default(),
             false,
         );
 
-        assert!(!options.save_teardown_script_as_repo_default);
+        assert_eq!(
+            options.save_lifecycle_defaults,
+            superzent_git::WorkspaceLifecycleDefaultSaveSelections::default()
+        );
+    }
+
+    #[test]
+    fn allow_dirty_workspace_create_options_preserves_save_selections_and_scripts() {
+        let options = new_workspace_create_options(
+            "feature/bootstrap".to_string(),
+            Some("main".to_string()),
+            Some(PathBuf::from("/tmp/repo")),
+            Some("echo setup".to_string()),
+            Some("echo teardown".to_string()),
+            superzent_git::WorkspaceLifecycleDefaultSaveSelections {
+                setup_script: true,
+                teardown_script: true,
+            },
+            false,
+        );
+
+        let retried = allow_dirty_workspace_create_options(options.clone());
+
+        assert!(retried.allow_dirty);
+        assert_eq!(retried.branch_name, options.branch_name);
+        assert_eq!(retried.base_branch_override, options.base_branch_override);
+        assert_eq!(retried.base_workspace_path, options.base_workspace_path);
+        assert_eq!(retried.setup_script, options.setup_script);
+        assert_eq!(retried.teardown_script, options.teardown_script);
+        assert_eq!(
+            retried.save_lifecycle_defaults,
+            options.save_lifecycle_defaults
+        );
     }
 
     #[test]

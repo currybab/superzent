@@ -32,10 +32,22 @@ pub struct WorkspaceBaseBranchResolution {
     pub notice: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceLifecycleDefaults {
     pub setup_script: Option<String>,
     pub teardown_script: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceLifecycleDefaultSaveSelections {
+    pub setup_script: bool,
+    pub teardown_script: bool,
+}
+
+impl WorkspaceLifecycleDefaultSaveSelections {
+    fn any(self) -> bool {
+        self.setup_script || self.teardown_script
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,7 +133,7 @@ pub struct CreateWorkspaceOptions {
     pub base_workspace_path: Option<PathBuf>,
     pub setup_script: Option<String>,
     pub teardown_script: Option<String>,
-    pub save_teardown_script_as_repo_default: bool,
+    pub save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections,
     pub allow_dirty: bool,
 }
 
@@ -245,8 +257,9 @@ fn create_workspace_internal(
     let configured_teardown_script = normalize_command(options.teardown_script.as_deref());
     let config = prepare_superzent_config_for_create(
         &repo_root,
+        configured_setup_script.clone(),
         configured_teardown_script.clone(),
-        options.save_teardown_script_as_repo_default,
+        options.save_lifecycle_defaults,
     )?;
     let base_branch_resolution = resolve_workspace_base_branch_for_repo(
         &repo_root,
@@ -278,7 +291,7 @@ fn create_workspace_internal(
             &base_branch_resolution.effective_base_branch,
         ],
     )?;
-    if options.save_teardown_script_as_repo_default {
+    if options.save_lifecycle_defaults.any() {
         if let Err(error) = write_superzent_config(&repo_root, &config) {
             cleanup_created_worktree(&repo_root, &worktree_path, &branch_name);
             return Err(error);
@@ -312,7 +325,7 @@ fn create_workspace_internal(
     let teardown_script_override = workspace_teardown_script_override_for_create(
         &config,
         configured_teardown_script.as_deref(),
-        options.save_teardown_script_as_repo_default,
+        options.save_lifecycle_defaults.teardown_script,
     );
 
     Ok(WorkspaceCreateOutcome {
@@ -996,11 +1009,18 @@ fn run_lifecycle_commands(
 
 fn prepare_superzent_config_for_create(
     repo_root: &Path,
+    setup_script: Option<String>,
     teardown_script: Option<String>,
-    save_teardown_script_as_repo_default: bool,
+    save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections,
 ) -> Result<SuperzentConfig> {
     let mut config = load_superzent_config(repo_root)?;
-    if save_teardown_script_as_repo_default {
+    if save_lifecycle_defaults.setup_script {
+        config.setup = setup_script
+            .as_deref()
+            .map(split_commands)
+            .unwrap_or_default();
+    }
+    if save_lifecycle_defaults.teardown_script {
         config.teardown = teardown_script
             .as_deref()
             .map(split_commands)
@@ -1164,7 +1184,7 @@ mod tests {
             base_workspace_path: None,
             setup_script: None,
             teardown_script: None,
-            save_teardown_script_as_repo_default: false,
+            save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
             allow_dirty: false,
         }
     }
@@ -1233,7 +1253,7 @@ mod tests {
                 base_workspace_path: None,
                 setup_script: None,
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: true,
             },
         )
@@ -1280,7 +1300,7 @@ mod tests {
                 base_workspace_path: Some(secondary_worktree_path.clone()),
                 setup_script: None,
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -1304,19 +1324,37 @@ mod tests {
     }
 
     #[test]
-    fn prepare_superzent_config_for_create_updates_only_repo_default_teardown() {
+    fn prepare_superzent_config_for_create_updates_only_selected_repo_defaults() {
         let repo = init_repo();
         fs::create_dir_all(repo.repo_path.join(".superzent")).unwrap();
         fs::write(
             repo.repo_path.join(".superzent").join("config.json"),
-            r#"{"setup":["echo keep setup"]}"#,
+            r#"{"setup":["echo keep setup"],"teardown":["echo keep teardown"]}"#,
         )
         .unwrap();
 
         let config = prepare_superzent_config_for_create(
             &repo.repo_path,
+            Some("echo new setup".to_string()),
             Some("cargo clean\ncargo test".to_string()),
-            true,
+            WorkspaceLifecycleDefaultSaveSelections {
+                setup_script: true,
+                teardown_script: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.setup, vec!["echo new setup".to_string()]);
+        assert_eq!(config.teardown, vec!["echo keep teardown".to_string()]);
+
+        let config = prepare_superzent_config_for_create(
+            &repo.repo_path,
+            Some("echo ignored setup".to_string()),
+            Some("cargo clean\ncargo test".to_string()),
+            WorkspaceLifecycleDefaultSaveSelections {
+                setup_script: false,
+                teardown_script: true,
+            },
         )
         .unwrap();
 
@@ -1328,7 +1366,52 @@ mod tests {
     }
 
     #[test]
-    fn create_workspace_saves_repo_default_teardown_without_persisting_setup_script() {
+    fn create_workspace_saves_selected_repo_default_setup() {
+        let repo = init_repo();
+        let registration = register_project(&repo.repo_path, "codex").unwrap();
+        let outcome = create_workspace(
+            &registration.project,
+            "codex",
+            CreateWorkspaceOptions {
+                branch_name: "feature/persisted-setup".to_string(),
+                base_branch_override: None,
+                base_workspace_path: Some(repo.repo_path.clone()),
+                setup_script: Some("echo setup one\necho setup two".to_string()),
+                teardown_script: Some("echo teardown once".to_string()),
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections {
+                    setup_script: true,
+                    teardown_script: false,
+                },
+                allow_dirty: false,
+            },
+        )
+        .unwrap();
+
+        let config = load_superzent_config(&repo.repo_path).unwrap();
+        assert_eq!(
+            config.setup,
+            vec!["echo setup one".to_string(), "echo setup two".to_string()]
+        );
+        assert!(config.teardown.is_empty());
+        assert_eq!(
+            workspace_lifecycle_defaults(&registration.project)
+                .unwrap()
+                .setup_script,
+            Some("echo setup one\necho setup two".to_string())
+        );
+        assert_eq!(
+            outcome.workspace.teardown_script_override,
+            Some("echo teardown once".to_string())
+        );
+
+        assert_deleted(
+            delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap(),
+            "persisted-setup workspace should be deleted",
+        );
+    }
+
+    #[test]
+    fn create_workspace_saves_selected_repo_default_teardown_without_persisting_setup_script() {
         let repo = init_repo();
         let registration = register_project(&repo.repo_path, "codex").unwrap();
         let outcome = create_workspace(
@@ -1340,7 +1423,10 @@ mod tests {
                 base_workspace_path: Some(repo.repo_path.clone()),
                 setup_script: Some("echo setup one\necho setup two".to_string()),
                 teardown_script: Some("echo teardown".to_string()),
-                save_teardown_script_as_repo_default: true,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections {
+                    setup_script: false,
+                    teardown_script: true,
+                },
                 allow_dirty: false,
             },
         )
@@ -1354,6 +1440,51 @@ mod tests {
         assert_deleted(
             delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap(),
             "persisted-scripts workspace should be deleted",
+        );
+    }
+
+    #[test]
+    fn create_workspace_can_clear_repo_default_lifecycle_fields() {
+        let repo = init_repo();
+        fs::create_dir_all(repo.repo_path.join(".superzent")).unwrap();
+        fs::write(
+            repo.repo_path.join(".superzent").join("config.json"),
+            r#"{"setup":["echo keep setup"],"teardown":["echo keep teardown"]}"#,
+        )
+        .unwrap();
+        commit_all_changes(&repo.repo_path, "add lifecycle defaults");
+
+        let registration = register_project(&repo.repo_path, "codex").unwrap();
+        let outcome = create_workspace(
+            &registration.project,
+            "codex",
+            CreateWorkspaceOptions {
+                branch_name: "feature/clear-defaults".to_string(),
+                base_branch_override: None,
+                base_workspace_path: Some(repo.repo_path.clone()),
+                setup_script: None,
+                teardown_script: None,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections {
+                    setup_script: true,
+                    teardown_script: true,
+                },
+                allow_dirty: false,
+            },
+        )
+        .unwrap();
+
+        let config = load_superzent_config(&repo.repo_path).unwrap();
+        assert!(config.setup.is_empty());
+        assert!(config.teardown.is_empty());
+        assert_eq!(
+            workspace_lifecycle_defaults(&registration.project).unwrap(),
+            WorkspaceLifecycleDefaults::default()
+        );
+        assert_eq!(outcome.workspace.teardown_script_override, None);
+
+        assert_deleted(
+            delete_workspace(&outcome.workspace, repo.repo_path.as_path(), true).unwrap(),
+            "clear-defaults workspace should be deleted",
         );
     }
 
@@ -1378,7 +1509,7 @@ mod tests {
                 base_workspace_path: Some(repo.repo_path.clone()),
                 setup_script: None,
                 teardown_script: Some("echo repo default".to_string()),
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -1416,7 +1547,7 @@ mod tests {
                     "printf workspace-override > \"$SUPERZENT_ROOT_PATH\"/teardown-log.txt"
                         .to_string(),
                 ),
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -1452,7 +1583,10 @@ mod tests {
                 base_workspace_path: Some(repo.repo_path.clone()),
                 setup_script: Some("echo setup".to_string()),
                 teardown_script: Some("echo teardown".to_string()),
-                save_teardown_script_as_repo_default: true,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections {
+                    setup_script: true,
+                    teardown_script: true,
+                },
                 allow_dirty: false,
             },
         )
@@ -1486,7 +1620,10 @@ mod tests {
                 base_workspace_path: Some(repo.repo_path.clone()),
                 setup_script: Some("echo setup".to_string()),
                 teardown_script: None,
-                save_teardown_script_as_repo_default: true,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections {
+                    setup_script: true,
+                    teardown_script: false,
+                },
                 allow_dirty: false,
             },
         )
@@ -1508,7 +1645,7 @@ mod tests {
     }
 
     #[test]
-    fn move_changes_to_workspace_moves_tracked_and_untracked_changes() {
+    fn move_changes_to_workspace_moves_tracked_and_untracked_changes_with_saved_defaults() {
         let repo = init_repo();
         fs::write(repo.repo_path.join("tracked.txt"), "tracked\n").unwrap();
         fs::write(repo.repo_path.join("untracked.txt"), "untracked\n").unwrap();
@@ -1522,13 +1659,24 @@ mod tests {
                 branch_name: "feature/move-changes".to_string(),
                 base_branch_override: None,
                 base_workspace_path: Some(repo.repo_path.clone()),
-                setup_script: None,
+                setup_script: Some("echo saved setup".to_string()),
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections {
+                    setup_script: true,
+                    teardown_script: false,
+                },
                 allow_dirty: true,
             },
         )
         .unwrap();
+
+        assert_eq!(
+            workspace_lifecycle_defaults(&registration.project)
+                .unwrap()
+                .setup_script,
+            Some("echo saved setup".to_string())
+        );
+        assert!(repo.repo_path.join("untracked.txt").exists());
 
         let worktree_path = outcome
             .workspace
@@ -1629,7 +1777,7 @@ mod tests {
                 base_workspace_path: Some(secondary_worktree_path.clone()),
                 setup_script: None,
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -1873,7 +2021,7 @@ mod tests {
                 base_workspace_path: None,
                 setup_script: None,
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -1907,7 +2055,7 @@ mod tests {
                 base_workspace_path: None,
                 setup_script: None,
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -2000,7 +2148,7 @@ mod tests {
                 base_workspace_path: Some(repo.repo_path.clone()),
                 setup_script: None,
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
@@ -2076,7 +2224,7 @@ mod tests {
                 base_workspace_path: Some(repo.repo_path.clone()),
                 setup_script: Some("cp \"$SUPERZENT_BASE_PATH\"/.env .env".to_string()),
                 teardown_script: None,
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: true,
             },
         )
@@ -2202,7 +2350,7 @@ mod tests {
                     "printf workspace-override > \"$SUPERZENT_ROOT_PATH\"/teardown-log.txt"
                         .to_string(),
                 ),
-                save_teardown_script_as_repo_default: false,
+                save_lifecycle_defaults: WorkspaceLifecycleDefaultSaveSelections::default(),
                 allow_dirty: false,
             },
         )
