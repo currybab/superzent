@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/images/superzent_screenshot.png" alt="superzent screenshot" width="800" />
+  <img src="assets/videos/demo.gif" alt="superzent demo" width="800" />
 </p>
 
 One window, multiple local workspaces with git worktree, fast file navigation, diff views, terminal-heavy agent workflows, and center-pane ACP chat tabs.
