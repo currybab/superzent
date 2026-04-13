@@ -1076,13 +1076,7 @@ fn run_shell_command(
         .envs(
             base_workspace_path
                 .map(|base_workspace_path| {
-                    [
-                        ("SUPERZENT_BASE_PATH", base_workspace_path.as_os_str()),
-                        (
-                            "SUPERZENT_SOURCE_WORKSPACE_PATH",
-                            base_workspace_path.as_os_str(),
-                        ),
-                    ]
+                    [("SUPERZENT_BASE_PATH", base_workspace_path.as_os_str())]
                 })
                 .into_iter()
                 .flatten(),

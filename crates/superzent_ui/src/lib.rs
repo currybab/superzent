@@ -3014,6 +3014,7 @@ impl NewWorkspaceModal {
         &self,
         id: &'static str,
         variable: &'static str,
+        description: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
@@ -3031,6 +3032,11 @@ impl NewWorkspaceModal {
                 CopyButton::new(format!("{id}-copy"), variable)
                     .tooltip_label("Copy variable")
                     .icon_size(IconSize::XSmall),
+            )
+            .child(
+                Label::new(description)
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
             )
     }
 
@@ -3201,22 +3207,18 @@ impl Render for NewWorkspaceModal {
                                                                             .color(Color::Muted),
                                                                     )
                                                                     .child(
-                                                                        h_flex()
-                                                                            .gap_2()
-                                                                            .flex_wrap()
+                                                                        v_flex()
+                                                                            .gap_1()
                                                                             .child(self.render_variable_helper(
                                                                                 "superzent-base-path",
                                                                                 "$SUPERZENT_BASE_PATH",
+                                                                                "Path to the source workspace",
                                                                                 cx,
                                                                             ))
                                                                             .child(self.render_variable_helper(
                                                                                 "superzent-worktree-path",
                                                                                 "$SUPERZENT_WORKTREE_PATH",
-                                                                                cx,
-                                                                            ))
-                                                                            .child(self.render_variable_helper(
-                                                                                "superzent-root-path",
-                                                                                "$SUPERZENT_ROOT_PATH",
+                                                                                "Path to the new worktree",
                                                                                 cx,
                                                                             )),
                                                                     ),
