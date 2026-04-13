@@ -3501,7 +3501,7 @@ impl BufferGitState {
                 uncommitted_diff
                     .update(cx, |diff, cx| {
                         if language_changed {
-                            diff.language_changed(language.clone(), language_registry, cx);
+                            diff.language_changed(language.clone(), language_registry.clone(), cx);
                         }
                         diff.set_snapshot_with_secondary(
                             new_uncommitted_diff,
@@ -3530,7 +3530,12 @@ impl BufferGitState {
                     .await;
 
                 oid_diff
-                    .update(cx, |diff, cx| diff.set_snapshot(new_oid_diff, &buffer, cx))
+                    .update(cx, |diff, cx| {
+                        if language_changed {
+                            diff.language_changed(language.clone(), language_registry.clone(), cx);
+                        }
+                        diff.set_snapshot(new_oid_diff, &buffer, cx)
+                    })
                     .await;
 
                 log::debug!(
