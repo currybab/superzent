@@ -14,6 +14,7 @@ One window, multiple local workspaces with git worktree, fast file navigation, d
 
 - Compared with upstream Zed: more opinionated around managing multiple local projects and workspaces in one window, especially for git-worktree-heavy flows, with external ACP chats treated as a first-class center-pane workflow.
 - Compared with `superset.sh`: keeps a native editor in the loop, with language-server-backed navigation, diagnostics, and quick in-place edits alongside terminal agent workflows.
+- All telemetry is off. Metrics and crash diagnostics are disabled by default and there is no collection endpoint configured.
 
 ## Keyboard Shortcuts
 
