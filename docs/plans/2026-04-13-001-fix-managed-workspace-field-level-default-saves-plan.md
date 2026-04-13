@@ -92,16 +92,16 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 
 ## High-Level Technical Design
 
-> *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
+> _This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce._
 
-| Field state at confirm time | Matching save control | Staged `.superzent/config.json` effect | Current create behavior | Persisted workspace effect |
-|---|---|---|---|---|
-| Non-empty `setup` text | Off | Leave repo-default `setup` unchanged | Use the one-off `setup` text for this create | None |
-| Non-empty `setup` text | On | Replace repo-default `setup` with that text | Use the same text for this create | None |
-| Empty `setup` text | On | Clear repo-default `setup` | Run no `setup` for this create | None |
-| Non-empty `teardown` text | Off | Leave repo-default `teardown` unchanged | Keep current create result | Persist a teardown override only if it differs from the staged repo default |
-| Non-empty `teardown` text | On | Replace repo-default `teardown` with that text | Keep current create result | No teardown override for the same value |
-| Empty `teardown` text | On | Clear repo-default `teardown` | Keep current create result | No teardown override |
+| Field state at confirm time | Matching save control | Staged `.superzent/config.json` effect         | Current create behavior                      | Persisted workspace effect                                                  |
+| --------------------------- | --------------------- | ---------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------- |
+| Non-empty `setup` text      | Off                   | Leave repo-default `setup` unchanged           | Use the one-off `setup` text for this create | None                                                                        |
+| Non-empty `setup` text      | On                    | Replace repo-default `setup` with that text    | Use the same text for this create            | None                                                                        |
+| Empty `setup` text          | On                    | Clear repo-default `setup`                     | Run no `setup` for this create               | None                                                                        |
+| Non-empty `teardown` text   | Off                   | Leave repo-default `teardown` unchanged        | Keep current create result                   | Persist a teardown override only if it differs from the staged repo default |
+| Non-empty `teardown` text   | On                    | Replace repo-default `teardown` with that text | Keep current create result                   | No teardown override for the same value                                     |
+| Empty `teardown` text       | On                    | Clear repo-default `teardown`                  | Keep current create result                   | No teardown override                                                        |
 
 ## Implementation Units
 
@@ -114,28 +114,33 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 **Dependencies:** None
 
 **Files:**
+
 - Modify: `crates/superzent_ui/src/lib.rs`
 - Modify: `crates/superzent_git/src/lib.rs`
 - Test: `crates/superzent_ui/src/lib.rs`
 - Test: `crates/superzent_git/src/lib.rs`
 
 **Approach:**
+
 - Extend `NewWorkspaceModal` state and `new_workspace_create_options` so save intent is modeled per field instead of through `save_teardown_script_as_repo_default`.
 - Update `spawn_new_workspace_request` to thread the new save contract through both the initial create attempt and the retry path after the dirty-workspace prompt.
 - Keep modal bootstrap precomputed and data-only; do not reintroduce live workspace lookups during modal construction.
 
 **Patterns to follow:**
+
 - `build_new_workspace_modal_bootstrap` in `crates/superzent_ui/src/lib.rs`
 - Existing helper tests around `new_workspace_create_options` in `crates/superzent_ui/src/lib.rs`
 - `CreateWorkspaceOptions` usage in `crates/superzent_git/src/lib.rs`
 
 **Test scenarios:**
+
 - Happy path: helper-level create options preserve independent `setup` and `teardown` save selections.
 - Happy path: opening the modal still preloads repo-default `setup` and `teardown` text without re-entering workspace state.
 - Edge case: the dirty-workspace retry path preserves both script texts and both save selections on the second create attempt.
 - Edge case: remote workspace creation still bypasses the local lifecycle save path.
 
 **Verification:**
+
 - The create request contract can express "save setup only," "save teardown only," "save both," and "save neither."
 - No local create path silently drops one field's save intent during retry.
 
@@ -148,10 +153,12 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Modify: `crates/superzent_git/src/lib.rs`
 - Test: `crates/superzent_git/src/lib.rs`
 
 **Approach:**
+
 - Expand `prepare_superzent_config_for_create` from a teardown-only helper into a field-aware staging step that updates only the repo-default fields whose save controls were selected.
 - Preserve untouched repo-default fields exactly as they were loaded from `.superzent/config.json`.
 - Interpret explicit empty-plus-save as an empty command list for that field so serialization removes the field from config.
@@ -160,10 +167,12 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 **Execution note:** Implement this characterization-first. The main risk is accidental mutation of untouched repo-default fields.
 
 **Patterns to follow:**
+
 - `prepare_superzent_config_for_create` and `write_superzent_config` in `crates/superzent_git/src/lib.rs`
 - Existing transactional create tests such as `create_workspace_cleans_up_worktree_when_persisted_config_write_fails`
 
 **Test scenarios:**
+
 - Happy path: saving only `setup` updates `config.setup` and preserves the previous repo-default `teardown`.
 - Happy path: saving only `teardown` updates `config.teardown` and preserves the previous repo-default `setup`.
 - Happy path: saving both fields updates both in one config write.
@@ -173,6 +182,7 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 - Error path: config write failure after worktree creation removes the new worktree and leaves `.superzent/config.json` unchanged.
 
 **Verification:**
+
 - Repo-default writes touch only the selected fields.
 - Failed creates leave both the config file and the worktree graph unchanged.
 
@@ -185,23 +195,27 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 **Dependencies:** Unit 2
 
 **Files:**
+
 - Modify: `crates/superzent_git/src/lib.rs`
 - Modify: `crates/superzent_ui/src/lib.rs`
 - Test: `crates/superzent_git/src/lib.rs`
 - Test: `crates/superzent_ui/src/lib.rs`
 
 **Approach:**
+
 - Resolve setup execution from the same staged config/input contract used for repo-default writes so "save setup default" and "run setup for this create" stay in sync.
 - Keep teardown override persistence grounded in the staged repo default so saving a new teardown default does not also persist a redundant workspace-local override.
 - Update modal copy and layout to place the save controls beside the matching editors, including copy that makes "save as repo default" and "clear when empty and saved" behavior legible.
 - Keep `workspace_lifecycle_defaults` as the only modal-prefill source so later create modals reflect whatever repo defaults were actually persisted.
 
 **Patterns to follow:**
+
 - `workspace_lifecycle_defaults` in `crates/superzent_git/src/lib.rs`
 - `workspace_teardown_script_override_for_create` in `crates/superzent_git/src/lib.rs`
 - Existing modal render structure and editor subscriptions in `crates/superzent_ui/src/lib.rs`
 
 **Test scenarios:**
+
 - Happy path: creating with a saved `setup` default writes the config and preloads the same `setup` text when the create modal is opened again later.
 - Happy path: creating with a saved `teardown` default does not persist a workspace-local teardown override for the same value.
 - Happy path: creating with an unsaved one-off teardown still persists a teardown override when it differs from the staged repo default.
@@ -210,6 +224,7 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 - Integration: after the dirty-workspace prompt path, the final persisted config and later modal prefill still match the user's selected save controls.
 
 **Verification:**
+
 - Repo-default prefill, create-time execution, and teardown override persistence all reflect the same staged contract.
 - The UI copy makes the field-level save behavior understandable without relying on old teardown-only assumptions.
 
@@ -230,12 +245,12 @@ This follow-up is a behavior fix inside the new compaction contract, not a rollb
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Field-level save intent could be applied on the first create attempt but dropped on the dirty-workspace retry path | Cover both create attempts with helper-level tests before changing the UI plumbing |
-| Config staging could accidentally overwrite the untouched repo-default field | Add explicit single-field save tests before broadening `prepare_superzent_config_for_create` |
-| Teardown override logic could compare against the pre-edit repo default instead of the staged one | Add regression coverage for "save teardown default and create in one action" before changing the override helper |
-| UI copy could imply a new one-off disable mode that the behavior does not implement | Keep copy scoped to "save as repo default" and "empty plus save clears the default" rather than promising per-create disable semantics |
+| Risk                                                                                                               | Mitigation                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Field-level save intent could be applied on the first create attempt but dropped on the dirty-workspace retry path | Cover both create attempts with helper-level tests before changing the UI plumbing                                                     |
+| Config staging could accidentally overwrite the untouched repo-default field                                       | Add explicit single-field save tests before broadening `prepare_superzent_config_for_create`                                           |
+| Teardown override logic could compare against the pre-edit repo default instead of the staged one                  | Add regression coverage for "save teardown default and create in one action" before changing the override helper                       |
+| UI copy could imply a new one-off disable mode that the behavior does not implement                                | Keep copy scoped to "save as repo default" and "empty plus save clears the default" rather than promising per-create disable semantics |
 
 ## Documentation / Operational Notes
 
