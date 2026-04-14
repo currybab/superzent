@@ -284,20 +284,17 @@ pub fn notify_if_app_was_updated(cx: &mut App) {
                         NotificationId::unique::<UpdateNotification>(),
                         cx,
                         move |cx| {
-                            let workspace_handle = cx.entity().downgrade();
                             cx.new(|cx| {
                                 MessageNotification::new(
                                     format!("Updated to {app_name} {}", version),
                                     cx,
                                 )
                                 .primary_message("View Release Notes")
-                                .primary_on_click(move |window, cx| {
-                                    if let Some(workspace) = workspace_handle.upgrade() {
-                                        workspace.update(cx, |workspace, cx| {
-                                            crate::view_release_notes_locally(
-                                                workspace, window, cx,
-                                            );
-                                        })
+                                // Superzent doesn't serve the /api/release_notes endpoint,
+                                // so open the releases page in the browser directly.
+                                .primary_on_click(move |_window, cx| {
+                                    if let Some(url) = release_notes_url(cx) {
+                                        cx.open_url(&url);
                                     }
                                     cx.emit(DismissEvent);
                                 })
