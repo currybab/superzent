@@ -1179,6 +1179,7 @@ pub struct Editor {
     quick_selection_highlight_task: Option<(Range<Anchor>, Task<()>)>,
     debounced_selection_highlight_task: Option<(Range<Anchor>, Task<()>)>,
     debounced_selection_highlight_complete: bool,
+    last_selection_from_search: bool,
     document_highlights_task: Option<Task<()>>,
     linked_editing_range_task: Option<Task<Option<()>>>,
     linked_edit_ranges: linked_editing_ranges::LinkedEditingRanges,
@@ -1485,6 +1486,7 @@ pub struct SelectionEffects {
     nav_history: Option<bool>,
     completions: bool,
     scroll: Option<Autoscroll>,
+    from_search: bool,
 }
 
 impl Default for SelectionEffects {
@@ -1493,6 +1495,7 @@ impl Default for SelectionEffects {
             nav_history: None,
             completions: true,
             scroll: Some(Autoscroll::fit()),
+            from_search: false,
         }
     }
 }
@@ -1521,6 +1524,13 @@ impl SelectionEffects {
     pub fn nav_history(self, nav_history: bool) -> Self {
         Self {
             nav_history: Some(nav_history),
+            ..self
+        }
+    }
+
+    pub fn from_search(self, from_search: bool) -> Self {
+        Self {
+            from_search,
             ..self
         }
     }
@@ -2437,6 +2447,7 @@ impl Editor {
             quick_selection_highlight_task: None,
             debounced_selection_highlight_task: None,
             debounced_selection_highlight_complete: false,
+            last_selection_from_search: false,
             document_highlights_task: None,
             linked_editing_range_task: None,
             pending_rename: None,
@@ -3506,6 +3517,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.last_selection_from_search = effects.from_search;
         window.invalidate_character_coordinates();
 
         // Copy selections to primary selection buffer
@@ -7598,6 +7610,17 @@ impl Editor {
             return None;
         }
         if !EditorSettings::get_global(cx).selection_highlight {
+            return None;
+        }
+        // When the current selection was set by search navigation, suppress selection
+        // occurrence highlights to avoid confusing non-matching occurrences with actual
+        // search results (e.g. `^something` matches 3 line-start occurrences, but a
+        // literal highlight would also mark a mid-line "something" that never matched
+        // the regex). A manual selection made by the user clears this flag, restoring
+        // the normal occurrence-highlight behavior.
+        if self.last_selection_from_search
+            && self.has_background_highlights(HighlightKey::BufferSearchHighlights)
+        {
             return None;
         }
         if self.selections.count() != 1 || self.selections.line_mode() {
