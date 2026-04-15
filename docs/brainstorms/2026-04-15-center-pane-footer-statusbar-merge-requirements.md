@@ -22,12 +22,14 @@ Superzent currently maintains two separate bottom bars: `CenterPaneFooter` (visi
 - R4. The merged bar must display the following items, split left/right:
 
   Left (status/tool indicators):
+
   - Edit Prediction Button
   - LSP Button
   - Diagnostic Indicator
   - Activity Indicator
 
   Right (editor context info, in order):
+
   - Vim Mode Indicator
   - Pending Keystroke Indicator
   - Cursor Position

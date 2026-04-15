@@ -76,24 +76,29 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   **Dependencies:** None
 
   **Files:**
+
   - Modify: `crates/workspace/src/status_bar.rs`
 
   **Approach:**
+
   - Add `has_items() -> bool` method to StatusBar (delegate to `self.items.has_items()`)
   - Remove `workspace_sidebar_open` field and `set_workspace_sidebar_open()` method from StatusBar
   - Change StatusBar's `Render` impl to match CenterPaneFooter's style: top border (`border_t_1`), `panel_background` background, remove all client-side window decoration rounding logic
   - Delete the entire `CenterPaneFooter` struct, its `Render` impl, and its `impl` block
 
   **Patterns to follow:**
+
   - CenterPaneFooter's `Render` impl (status_bar.rs lines 187-200) is the target style
   - CenterPaneFooter's `has_items()` (line 296) is the pattern to port
 
   **Test scenarios:**
+
   - Happy path: StatusBar renders with top border and `panel_background` when items are present
   - Happy path: `has_items()` returns true when items are added, false when empty
   - Edge case: StatusBar with no items renders nothing (or empty bar) — verify `has_items()` returns false
 
   **Verification:**
+
   - `CenterPaneFooter` type no longer exists in the codebase
   - StatusBar compiles with new render style and `has_items()` method
 
@@ -106,13 +111,15 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   **Dependencies:** Unit 1
 
   **Files:**
+
   - Modify: `crates/workspace/src/workspace.rs`
 
   **Approach:**
+
   - Remove `center_pane_footer: Entity<CenterPaneFooter>` field from Workspace struct
   - Remove `center_pane_footer()` accessor and `center_pane_footer_visible()` method
   - Remove `CenterPaneFooter` from the `use status_bar::{...}` import
-  - In construction (lines 1638-1657): remove `center_pane_footer_bottom_dock_buttons` creation. Change `status_bar_bottom_dock_buttons` to use `PanelButtons::new_only` (was `new_except`) with `STATUS_BAR_BOTTOM_PANELS` — now the StatusBar gets *only* Terminal+Debug buttons instead of *everything except* them
+  - In construction (lines 1638-1657): remove `center_pane_footer_bottom_dock_buttons` creation. Change `status_bar_bottom_dock_buttons` to use `PanelButtons::new_only` (was `new_except`) with `STATUS_BAR_BOTTOM_PANELS` — now the StatusBar gets _only_ Terminal+Debug buttons instead of _everything except_ them
   - Remove `left_dock_buttons` and `right_dock_buttons` creation and their `add_left_item`/`add_right_item` calls on StatusBar (R5: removing left/right dock panel toggle buttons)
   - Remove `center_pane_footer` from struct initialization
   - In `set_status_item_active_pane()` (line 4794): remove the `center_pane_footer.update()` call, keep only the `status_bar.update()` call
@@ -120,14 +127,17 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   - Rename `CENTER_PANE_FOOTER_BOTTOM_PANELS` to `STATUS_BAR_BOTTOM_PANELS`
 
   **Patterns to follow:**
+
   - Existing StatusBar construction pattern (lines 1651-1656)
 
   **Test scenarios:**
+
   - Happy path: Workspace initializes successfully with only StatusBar, no CenterPaneFooter
   - Happy path: Active pane changes propagate to StatusBar items
   - Integration: Terminal and Debug panel buttons appear in StatusBar's right items
 
   **Verification:**
+
   - No references to `CenterPaneFooter` or `center_pane_footer` remain in workspace.rs
   - No references to `left_dock_buttons` or `right_dock_buttons` PanelButtons remain
   - Project compiles
@@ -141,9 +151,11 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   **Dependencies:** Unit 2
 
   **Files:**
+
   - Modify: `crates/workspace/src/workspace.rs`
 
   **Approach:**
+
   - Remove the old StatusBar rendering at the window bottom (lines 8039-8041)
   - Replace every `center_pane_footer_visible(cx)` / `center_pane_footer.clone()` occurrence in the four `BottomDockLayout` branches with `status_bar_visible(cx)` / `status_bar.clone()`
   - In `render_center_pane_footer_row()` and `render_center_pane_footer_with_left_offset()`: replace `self.center_pane_footer.clone()` with `self.status_bar.clone()`. Consider renaming these methods to `render_status_bar_row()` and `render_status_bar_with_left_offset()` for clarity.
@@ -154,9 +166,11 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
     - **RightAligned**: footer rendered as separate row after main content with dock-width spacers — same approach
 
   **Patterns to follow:**
+
   - The existing four-variant layout rendering pattern (lines 7850-8012) — same structure, just swapping the entity reference and visibility check
 
   **Test scenarios:**
+
   - Happy path: StatusBar renders in center pane footer position with `BottomDockLayout::Contained`
   - Happy path: StatusBar respects dock widths in `Full` and `RightAligned` layouts (dock-width spacers present)
   - Happy path: StatusBar respects left dock width in `LeftAligned` layout
@@ -164,6 +178,7 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   - Integration: `which_key` modal still adds bottom padding when StatusBar is visible
 
   **Verification:**
+
   - StatusBar no longer renders at window bottom edge
   - StatusBar renders between docks in all four layout variants
   - Visual inspection confirms correct positioning
@@ -177,9 +192,11 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   **Dependencies:** Unit 2
 
   **Files:**
+
   - Modify: `crates/zed/src/zed.rs`
 
   **Approach:**
+
   - Remove the `center_pane_footer().update()` call (lines 530-538)
   - Replace the `status_bar().update()` call (lines 540-548) with a single call registering all items in order:
     - Left: `edit_prediction_ui` (cfg-gated with `#[cfg(feature = "next_edit")]`), `lsp_button`, `diagnostic_summary`, `activity_indicator`
@@ -189,16 +206,19 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   - Verify right-side ordering: items are rendered in reverse order by `StatusItemStrip` (line 62 of status_bar.rs), so registration order must be reversed from desired display order. The desired display is: `[Vim][Keys][Cursor][Toolchain][Lang][Encoding][LineEnding][Terminal][Debug]`. Since Terminal+Debug are added first during construction, the remaining items added in zed.rs should be added in reverse display order: `line_ending_indicator`, `active_buffer_encoding`, `active_buffer_language`, `active_toolchain_language`, `cursor_position`, `pending_keystroke_indicator`, `vim_mode_indicator`
 
   **Patterns to follow:**
+
   - Current registration pattern in zed.rs (lines 530-548)
   - `StatusItemStrip::render_right_tools()` reverses item order (status_bar.rs line 62)
 
   **Test scenarios:**
+
   - Happy path: All 11 items render in correct left/right positions
   - Happy path: Terminal+Debug panel buttons appear at the far right
   - Happy path: Edit Prediction Button only appears when `next_edit` feature is enabled
   - Integration: Items respond to active pane changes (cursor position updates, language changes, etc.)
 
   **Verification:**
+
   - No `center_pane_footer()` calls remain in zed.rs
   - `search_button` and `image_info` variables are removed
   - Visual inspection confirms item ordering matches the spec
@@ -212,23 +232,28 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   **Dependencies:** Units 1-4
 
   **Files:**
+
   - Modify: `assets/settings/default.json`
   - Modify: `crates/workspace/src/workspace.rs` (test at line 13498)
 
   **Approach:**
+
   - In `assets/settings/default.json` line 1637: change `"experimental.show": false` to `"experimental.show": true`
   - In `test_status_bar_visibility` (workspace.rs line 13498): flip the first assertion from `assert!(!visible, "Status bar should be hidden by default")` to `assert!(visible, "Status bar should be visible by default")`
   - Update the test's comment `"Superzent hides the status bar by default"` to reflect the new default
 
   **Patterns to follow:**
+
   - Existing test structure at workspace.rs lines 13498-13535
 
   **Test scenarios:**
+
   - Happy path: `status_bar_visible()` returns `true` by default
   - Happy path: Setting `show: false` hides the bar
   - Happy path: Setting `show: true` shows the bar (no change from current)
 
   **Verification:**
+
   - `test_status_bar_visibility` passes with updated assertions
   - `./script/clippy` passes
 
@@ -243,11 +268,11 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                                                                                   | Mitigation                                                                                  |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Right-item ordering is reversed by `StatusItemStrip` — easy to get display order wrong | Carefully trace `render_right_tools()` reversal logic; verify visually after implementation |
-| `set_workspace_sidebar_open` removal may break callers in `MultiWorkspace` | Compile errors will surface immediately; search for all callers before removing |
-| `BottomDockLayout::Full` and `RightAligned` variants have distinct footer placement | Test all four variants manually or with layout tests |
+| `set_workspace_sidebar_open` removal may break callers in `MultiWorkspace`             | Compile errors will surface immediately; search for all callers before removing             |
+| `BottomDockLayout::Full` and `RightAligned` variants have distinct footer placement    | Test all four variants manually or with layout tests                                        |
 
 ## Sources & References
 
