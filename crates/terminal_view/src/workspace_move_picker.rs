@@ -126,14 +126,14 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
             )
             .await;
 
-            let _ = picker.update_in(cx, |picker, _window, cx| {
+            picker.update_in(cx, |picker, _window, cx| {
                 let delegate = &mut picker.delegate;
                 delegate.matches = matches;
                 if delegate.selected_index >= delegate.matches.len() {
                     delegate.selected_index = delegate.matches.len().saturating_sub(1);
                 }
                 cx.notify();
-            });
+            }).log_err();
         })
     }
 
