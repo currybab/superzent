@@ -1701,7 +1701,7 @@ impl Item for TerminalView {
     fn added_to_workspace(
         &mut self,
         workspace: &mut Workspace,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.terminal().read(cx).task().is_none() {
@@ -1717,6 +1717,18 @@ impl Item for TerminalView {
                 .detach();
             }
             self.workspace_id = workspace.database_id();
+        }
+
+        let new_workspace = workspace.weak_handle();
+        let is_same_workspace = self
+            .workspace
+            .upgrade()
+            .is_some_and(|current| current.entity_id() == new_workspace.entity_id());
+        if !is_same_workspace {
+            self.workspace = new_workspace.clone();
+            self.project = workspace.project().downgrade();
+            self._terminal_subscriptions =
+                subscribe_for_terminal_events(&self.terminal, new_workspace, window, cx);
         }
     }
 
