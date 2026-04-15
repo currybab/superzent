@@ -5,6 +5,7 @@ mod terminal_path_like_target;
 pub mod terminal_scrollbar;
 #[cfg(feature = "assistant")]
 mod terminal_slash_command;
+mod workspace_move_picker;
 
 use editor::{Editor, EditorSettings, actions::SelectAll, blink_manager::BlinkManager};
 use gpui::{
@@ -87,6 +88,8 @@ actions!(
     [
         /// Reruns the last executed task in the terminal.
         RerunTask,
+        /// Moves the active terminal tab to a different workspace.
+        MoveTerminalToWorkspace,
     ]
 );
 
@@ -102,6 +105,11 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(TerminalView::deploy);
+        workspace.register_action(
+            |workspace: &mut Workspace, _: &MoveTerminalToWorkspace, window, cx| {
+                workspace_move_picker::move_terminal_to_workspace(workspace, window, cx);
+            },
+        );
     })
     .detach();
     #[cfg(feature = "assistant")]
@@ -1606,15 +1614,29 @@ impl Item for TerminalView {
 
     fn tab_extra_context_menu_actions(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
+        let mut actions = Vec::new();
         let terminal = self.terminal.read(cx);
         if terminal.task().is_none() {
-            vec![("Rename".into(), Box::new(RenameTerminal))]
-        } else {
-            Vec::new()
+            actions.push(("Rename".into(), Box::new(RenameTerminal) as Box<dyn gpui::Action>));
         }
+
+        let has_multiple_workspaces = window
+            .window_handle()
+            .downcast::<workspace::MultiWorkspace>()
+            .and_then(|handle| handle.read_with(cx, |mw, _| mw.workspaces().len()).ok())
+            .unwrap_or(0)
+            >= 2;
+        if has_multiple_workspaces {
+            actions.push((
+                "Move to Workspace".into(),
+                Box::new(MoveTerminalToWorkspace),
+            ));
+        }
+
+        actions
     }
 
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {

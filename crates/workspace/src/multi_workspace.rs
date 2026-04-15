@@ -394,6 +394,23 @@ impl MultiWorkspace {
         self.active_workspace_index
     }
 
+    pub fn workspace_entries_excluding_active(
+        &self,
+        cx: &App,
+    ) -> Vec<(usize, String, Entity<Workspace>)> {
+        self.workspaces
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != self.active_workspace_index)
+            .map(|(index, workspace)| {
+                let display_name = workspace.read(cx).project().read(cx).worktrees(cx).next()
+                    .map(|worktree| worktree.read(cx).root_name_str().to_string())
+                    .unwrap_or_else(|| format!("Workspace {}", index + 1));
+                (index, display_name, workspace.clone())
+            })
+            .collect()
+    }
+
     pub fn workspaces_by_recent_use(&self) -> Vec<Entity<Workspace>> {
         let mut ordered_workspaces = Vec::with_capacity(self.workspaces.len());
 
