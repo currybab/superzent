@@ -492,6 +492,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             }
         });
 
+        let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let activity_indicator = activity_indicator::ActivityIndicator::new(
@@ -527,6 +528,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             #[cfg(feature = "next_edit")]
             status_bar.add_left_item(edit_prediction_ui, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
+            status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
             status_bar.add_right_item(line_ending_indicator, window, cx);

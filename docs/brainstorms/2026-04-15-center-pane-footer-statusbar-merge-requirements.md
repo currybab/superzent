@@ -25,6 +25,7 @@ Superzent currently maintains two separate bottom bars: `CenterPaneFooter` (visi
 
   - Edit Prediction Button
   - LSP Button
+  - Search Button
   - Diagnostic Indicator
   - Activity Indicator
 
@@ -41,7 +42,6 @@ Superzent currently maintains two separate bottom bars: `CenterPaneFooter` (visi
 
 - R5. The following current StatusBar items must be removed from registration:
   - Left/Right dock Panel Toggle Buttons
-  - Search Button
   - Image Info
 
 **Visual**

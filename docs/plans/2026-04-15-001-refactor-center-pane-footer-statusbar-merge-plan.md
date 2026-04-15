@@ -21,8 +21,8 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
 - R1. Remove `CenterPaneFooter` as a separate component
 - R2. Position `StatusBar` in the center pane footer location (between docks)
 - R3. `StatusBar` visible by default (`show: true`), setting still controls visibility
-- R4. Item composition: Left (Edit Prediction, LSP, Diagnostics, Activity Indicator) / Right (Vim Mode, Pending Keystroke, Cursor Position, Active Toolchain, Buffer Language, Buffer Encoding, Line Endings, Terminal+Debug panel buttons)
-- R5. Remove: Left/Right dock panel toggle buttons, Search button, Image Info
+- R4. Item composition: Left (Edit Prediction, LSP, Search, Diagnostics, Activity Indicator) / Right (Vim Mode, Pending Keystroke, Cursor Position, Active Toolchain, Buffer Language, Buffer Encoding, Line Endings, Terminal+Debug panel buttons)
+- R5. Remove: Left/Right dock panel toggle buttons, Image Info
 - R6. Visual style follows existing StatusBar render style, adapted for center-pane width
 - R7. Window decoration handling adjusted for non-window-bottom position
 
@@ -199,10 +199,10 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
 
   - Remove the `center_pane_footer().update()` call (lines 530-538)
   - Replace the `status_bar().update()` call (lines 540-548) with a single call registering all items in order:
-    - Left: `edit_prediction_ui` (cfg-gated with `#[cfg(feature = "next_edit")]`), `lsp_button`, `diagnostic_summary`, `activity_indicator`
+    - Left: `edit_prediction_ui` (cfg-gated with `#[cfg(feature = "next_edit")]`), `lsp_button`, `search_button`, `diagnostic_summary`, `activity_indicator`
     - Right: `vim_mode_indicator`, `pending_keystroke_indicator`, `cursor_position`, `active_toolchain_language`, `active_buffer_language`, `active_buffer_encoding`, `line_ending_indicator`
     - Note: Terminal+Debug panel buttons are already added during workspace construction (Unit 2), so they should appear at the far right after these items
-  - Remove creation of `search_button` and `image_info` variables if they become unused after removing their registration
+  - Remove creation of `image_info` variable after removing its registration
   - Verify right-side ordering: items are rendered in reverse order by `StatusItemStrip` (line 62 of status_bar.rs), so registration order must be reversed from desired display order. The desired display is: `[Vim][Keys][Cursor][Toolchain][Lang][Encoding][LineEnding][Terminal][Debug]`. Since Terminal+Debug are added first during construction, the remaining items added in zed.rs should be added in reverse display order: `line_ending_indicator`, `active_buffer_encoding`, `active_buffer_language`, `active_toolchain_language`, `cursor_position`, `pending_keystroke_indicator`, `vim_mode_indicator`
 
   **Patterns to follow:**
@@ -220,7 +220,7 @@ Superzent maintains two structurally near-identical bottom bars — `CenterPaneF
   **Verification:**
 
   - No `center_pane_footer()` calls remain in zed.rs
-  - `search_button` and `image_info` variables are removed
+  - `image_info` variable is removed
   - Visual inspection confirms item ordering matches the spec
 
 - [ ] **Unit 5: Update settings default and tests**
