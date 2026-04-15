@@ -59,6 +59,12 @@ jobs:
         name: superzent-aarch64.dmg
         path: target/aarch64-apple-darwin/release/superzent-aarch64.dmg
         if-no-files-found: error
+    - name: '@actions/upload-artifact superzent-remote-server-macos-aarch64.gz'
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+      with:
+        name: superzent-remote-server-macos-aarch64.gz
+        path: target/superzent-remote-server-macos-aarch64.gz
+        if-no-files-found: error
     timeout-minutes: 360
   bundle_linux_remote_server_stable_x86_64:
     needs:
@@ -187,6 +193,7 @@ jobs:
       run: |
         mkdir -p release-artifacts
         cp "./artifacts/superzent-aarch64.dmg/superzent-aarch64.dmg" "release-artifacts/superzent-aarch64.dmg"
+        cp "./artifacts/superzent-remote-server-macos-aarch64.gz/superzent-remote-server-macos-aarch64.gz" "release-artifacts/superzent-remote-server-macos-aarch64.gz"
         cp "./artifacts/superzent-remote-server-linux-x86_64.gz/superzent-remote-server-linux-x86_64.gz" "release-artifacts/superzent-remote-server-linux-x86_64.gz"
         cp "./artifacts/superzent-remote-server-linux-aarch64.gz/superzent-remote-server-linux-aarch64.gz" "release-artifacts/superzent-remote-server-linux-aarch64.gz"
         shasum -a 256 "release-artifacts/superzent-aarch64.dmg" > "release-artifacts/sha256sums.txt"

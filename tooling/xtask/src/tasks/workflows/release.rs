@@ -9,6 +9,7 @@ use crate::tasks::workflows::{
 };
 
 const RELEASE_ARTIFACT: &str = "superzent-aarch64.dmg";
+const REMOTE_SERVER_MACOS_AARCH64_ARTIFACT: &str = assets::REMOTE_SERVER_MACOS_AARCH64;
 const REMOTE_SERVER_LINUX_AARCH64_ARTIFACT: &str = assets::REMOTE_SERVER_LINUX_AARCH64;
 const REMOTE_SERVER_LINUX_X86_64_ARTIFACT: &str = assets::REMOTE_SERVER_LINUX_X86_64;
 const CHECKSUM_ARTIFACT: &str = "sha256sums.txt";
@@ -124,8 +125,14 @@ fn bundle_mac_stable(validate_release_tag: &NamedJob, valid_release_tag: &JobOut
             .add_step(steps::setup_node())
             .add_step(steps::clear_target_dir_if_large(Platform::Mac))
             .add_step(named::bash("./script/bundle-mac aarch64-apple-darwin"))
+            // Unlike upstream Zed, Superzent currently only publishes the macOS aarch64 bundle.
+            // Keep the matching Darwin arm64 remote-server archive on the same job so SSH remoting
+            // can fetch a prebuilt binary for Apple Silicon hosts from the release assets.
             .add_step(upload_artifact(&format!(
                 "target/aarch64-apple-darwin/release/{RELEASE_ARTIFACT}"
+            )))
+            .add_step(upload_artifact(&format!(
+                "target/{REMOTE_SERVER_MACOS_AARCH64_ARTIFACT}"
             ))),
     }
 }
@@ -196,6 +203,7 @@ fn publish_release(deps: &[&NamedJob], valid_release_tag: &JobOutput) -> NamedJo
         r#"
         mkdir -p release-artifacts
         cp "./artifacts/{release_artifact}/{release_artifact}" "release-artifacts/{release_artifact}"
+        cp "./artifacts/{remote_server_macos_aarch64_artifact}/{remote_server_macos_aarch64_artifact}" "release-artifacts/{remote_server_macos_aarch64_artifact}"
         cp "./artifacts/{remote_server_linux_x86_64_artifact}/{remote_server_linux_x86_64_artifact}" "release-artifacts/{remote_server_linux_x86_64_artifact}"
         cp "./artifacts/{remote_server_linux_aarch64_artifact}/{remote_server_linux_aarch64_artifact}" "release-artifacts/{remote_server_linux_aarch64_artifact}"
         shasum -a 256 "release-artifacts/{release_artifact}" > "release-artifacts/{checksum_artifact}"
@@ -213,6 +221,7 @@ fn publish_release(deps: &[&NamedJob], valid_release_tag: &JobOutput) -> NamedJo
           release-artifacts/*
         "#,
         release_artifact = RELEASE_ARTIFACT,
+        remote_server_macos_aarch64_artifact = REMOTE_SERVER_MACOS_AARCH64_ARTIFACT,
         remote_server_linux_x86_64_artifact = REMOTE_SERVER_LINUX_X86_64_ARTIFACT,
         remote_server_linux_aarch64_artifact = REMOTE_SERVER_LINUX_AARCH64_ARTIFACT,
         checksum_artifact = CHECKSUM_ARTIFACT,

@@ -347,6 +347,7 @@ impl serde::Serialize for WorkflowSecret {
 
 pub mod assets {
     pub const MAC_AARCH64: &str = "superzent-aarch64.dmg";
+    pub const REMOTE_SERVER_MACOS_AARCH64: &str = "superzent-remote-server-macos-aarch64.gz";
     pub const REMOTE_SERVER_LINUX_AARCH64: &str = "superzent-remote-server-linux-aarch64.gz";
     pub const REMOTE_SERVER_LINUX_X86_64: &str = "superzent-remote-server-linux-x86_64.gz";
 }
