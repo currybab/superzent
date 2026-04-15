@@ -1,7 +1,6 @@
 use crate::{ItemHandle, Pane};
 use gpui::{
-    AnyView, App, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
-    Window,
+    AnyView, App, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window,
 };
 use std::any::TypeId;
 use ui::{h_flex, prelude::*};

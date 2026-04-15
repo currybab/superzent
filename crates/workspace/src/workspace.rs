@@ -109,8 +109,8 @@ use sqlez::{
     bindable::{Bind, Column, StaticColumnCount},
     statement::Statement,
 };
-pub use status_bar::StatusItemView;
 use status_bar::StatusBar;
+pub use status_bar::StatusItemView;
 use std::{
     any::TypeId,
     borrow::Cow,
@@ -1634,9 +1634,8 @@ impl Workspace {
         let left_dock = Dock::new(DockPosition::Left, modal_layer.clone(), window, cx);
         let bottom_dock = Dock::new(DockPosition::Bottom, modal_layer.clone(), window, cx);
         let right_dock = Dock::new(DockPosition::Right, modal_layer.clone(), window, cx);
-        let status_bar_bottom_dock_buttons = cx.new(|cx| {
-            PanelButtons::new_only(bottom_dock.clone(), STATUS_BAR_BOTTOM_PANELS, cx)
-        });
+        let status_bar_bottom_dock_buttons =
+            cx.new(|cx| PanelButtons::new_only(bottom_dock.clone(), STATUS_BAR_BOTTOM_PANELS, cx));
         let status_bar = cx.new(|cx| {
             let mut status_bar = StatusBar::new(&center_pane.clone(), window, cx);
             status_bar.add_right_item(status_bar_bottom_dock_buttons, window, cx);
@@ -7922,53 +7921,45 @@ impl Render for Workspace {
                                                 ))),
                                         ),
 
-                                    BottomDockLayout::Contained => {
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .h_full()
-                                            .children(self.render_dock(
-                                                DockPosition::Left,
-                                                &self.left_dock,
-                                                window,
-                                                cx,
-                                            ))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .flex_1()
-                                                    .overflow_hidden()
-                                                    .child(self.render_center_pane_stack(
-                                                        paddings.0,
-                                                        paddings.1,
-                                                        window,
-                                                        cx,
-                                                    ))
-                                                    .children(self.render_dock(
-                                                        DockPosition::Bottom,
-                                                        &self.bottom_dock,
-                                                        window,
-                                                        cx,
-                                                    ))
-                                                    .when(
-                                                        self.status_bar_visible(cx),
-                                                        |this| {
-                                                            this.child(
-                                                                self.render_status_bar_with_left_offset(
-                                                                    None,
-                                                                ),
-                                                            )
-                                                        },
-                                                    ),
-                                            )
-                                            .children(self.render_dock(
-                                                DockPosition::Right,
-                                                &self.right_dock,
-                                                window,
-                                                cx,
-                                            ))
-                                    }
+                                    BottomDockLayout::Contained => div()
+                                        .flex()
+                                        .flex_row()
+                                        .h_full()
+                                        .children(self.render_dock(
+                                            DockPosition::Left,
+                                            &self.left_dock,
+                                            window,
+                                            cx,
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .flex_1()
+                                                .overflow_hidden()
+                                                .child(self.render_center_pane_stack(
+                                                    paddings.0, paddings.1, window, cx,
+                                                ))
+                                                .children(self.render_dock(
+                                                    DockPosition::Bottom,
+                                                    &self.bottom_dock,
+                                                    window,
+                                                    cx,
+                                                ))
+                                                .when(self.status_bar_visible(cx), |this| {
+                                                    this.child(
+                                                        self.render_status_bar_with_left_offset(
+                                                            None,
+                                                        ),
+                                                    )
+                                                }),
+                                        )
+                                        .children(self.render_dock(
+                                            DockPosition::Right,
+                                            &self.right_dock,
+                                            window,
+                                            cx,
+                                        )),
                                 }
                             }))
                             .when(
