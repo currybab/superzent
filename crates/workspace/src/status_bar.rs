@@ -1,10 +1,9 @@
 use crate::{ItemHandle, Pane};
 use gpui::{
-    AnyView, App, Context, Decorations, Entity, IntoElement, ParentElement, Render, Styled,
-    Subscription, Window,
+    AnyView, App, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
+    Window,
 };
 use std::any::TypeId;
-use theme::CLIENT_SIDE_DECORATION_ROUNDING;
 use ui::{h_flex, prelude::*};
 use util::ResultExt;
 
@@ -147,44 +146,9 @@ impl StatusItemStrip {
 pub struct StatusBar {
     items: StatusItemStrip,
     _observe_active_pane: Subscription,
-    workspace_sidebar_open: bool,
-}
-
-pub struct CenterPaneFooter {
-    items: StatusItemStrip,
-    _observe_active_pane: Subscription,
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .w_full()
-            .justify_between()
-            .gap(DynamicSpacing::Base08.rems(cx))
-            .py(DynamicSpacing::Base04.rems(cx))
-            .px(DynamicSpacing::Base06.rems(cx))
-            .bg(cx.theme().colors().status_bar_background)
-            .map(|el| match window.window_decorations() {
-                Decorations::Server => el,
-                Decorations::Client { tiling, .. } => el
-                    .when(!(tiling.bottom || tiling.right), |el| {
-                        el.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING)
-                    })
-                    .when(
-                        !(tiling.bottom || tiling.left) && !self.workspace_sidebar_open,
-                        |el| el.rounded_bl(CLIENT_SIDE_DECORATION_ROUNDING),
-                    )
-                    // This border is to avoid a transparent gap in the rounded corners
-                    .mb(px(-1.))
-                    .border_b(px(1.0))
-                    .border_color(cx.theme().colors().status_bar_background),
-            })
-            .child(self.items.render_left_tools())
-            .child(self.items.render_right_tools())
-    }
-}
-
-impl Render for CenterPaneFooter {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .w_full()
@@ -207,15 +171,13 @@ impl StatusBar {
             _observe_active_pane: cx.observe_in(active_pane, window, |this, _, window, cx| {
                 this.items.update_active_pane_item(window, cx)
             }),
-            workspace_sidebar_open: false,
         };
         this.items.update_active_pane_item(window, cx);
         this
     }
 
-    pub fn set_workspace_sidebar_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.workspace_sidebar_open = open;
-        cx.notify();
+    pub fn has_items(&self) -> bool {
+        self.items.has_items()
     }
 
     pub fn add_left_item<T>(&mut self, item: Entity<T>, window: &mut Window, cx: &mut Context<Self>)
@@ -252,56 +214,6 @@ impl StatusBar {
 
     pub fn remove_item_at(&mut self, position: usize, cx: &mut Context<Self>) {
         self.items.remove_item_at(position);
-        cx.notify();
-    }
-
-    pub fn add_right_item<T>(
-        &mut self,
-        item: Entity<T>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) where
-        T: 'static + StatusItemView,
-    {
-        self.items.add_right_item(item, window, cx);
-        cx.notify();
-    }
-
-    pub fn set_active_pane(
-        &mut self,
-        active_pane: &Entity<Pane>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.items.set_active_pane(active_pane);
-        self._observe_active_pane = cx.observe_in(active_pane, window, |this, _, window, cx| {
-            this.items.update_active_pane_item(window, cx)
-        });
-        self.items.update_active_pane_item(window, cx);
-    }
-}
-
-impl CenterPaneFooter {
-    pub fn new(active_pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut this = Self {
-            items: StatusItemStrip::new(active_pane),
-            _observe_active_pane: cx.observe_in(active_pane, window, |this, _, window, cx| {
-                this.items.update_active_pane_item(window, cx)
-            }),
-        };
-        this.items.update_active_pane_item(window, cx);
-        this
-    }
-
-    pub fn has_items(&self) -> bool {
-        self.items.has_items()
-    }
-
-    pub fn add_left_item<T>(&mut self, item: Entity<T>, window: &mut Window, cx: &mut Context<Self>)
-    where
-        T: 'static + StatusItemView,
-    {
-        self.items.add_left_item(item, window, cx);
         cx.notify();
     }
 

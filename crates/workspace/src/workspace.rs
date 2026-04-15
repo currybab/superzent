@@ -110,7 +110,7 @@ use sqlez::{
     statement::Statement,
 };
 pub use status_bar::StatusItemView;
-use status_bar::{CenterPaneFooter, StatusBar};
+use status_bar::StatusBar;
 use std::{
     any::TypeId,
     borrow::Cow,
@@ -173,7 +173,7 @@ static ZED_WINDOW_POSITION: LazyLock<Option<Point<Pixels>>> = LazyLock::new(|| {
         .and_then(parse_pixel_position_env_var)
 });
 
-const CENTER_PANE_FOOTER_BOTTOM_PANELS: &[&str] = &["TerminalPanel", "DebugPanel"];
+const STATUS_BAR_BOTTOM_PANELS: &[&str] = &["TerminalPanel", "DebugPanel"];
 
 pub trait TerminalProvider {
     fn spawn(
@@ -1310,7 +1310,6 @@ pub struct Workspace {
     last_active_center_pane: Option<WeakEntity<Pane>>,
     last_active_view_id: Option<proto::ViewId>,
     status_bar: Entity<StatusBar>,
-    center_pane_footer: Entity<CenterPaneFooter>,
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
@@ -1635,23 +1634,11 @@ impl Workspace {
         let left_dock = Dock::new(DockPosition::Left, modal_layer.clone(), window, cx);
         let bottom_dock = Dock::new(DockPosition::Bottom, modal_layer.clone(), window, cx);
         let right_dock = Dock::new(DockPosition::Right, modal_layer.clone(), window, cx);
-        let left_dock_buttons = cx.new(|cx| PanelButtons::new(left_dock.clone(), cx));
         let status_bar_bottom_dock_buttons = cx.new(|cx| {
-            PanelButtons::new_except(bottom_dock.clone(), CENTER_PANE_FOOTER_BOTTOM_PANELS, cx)
-        });
-        let center_pane_footer_bottom_dock_buttons = cx.new(|cx| {
-            PanelButtons::new_only(bottom_dock.clone(), CENTER_PANE_FOOTER_BOTTOM_PANELS, cx)
-        });
-        let right_dock_buttons = cx.new(|cx| PanelButtons::new(right_dock.clone(), cx));
-        let center_pane_footer = cx.new(|cx| {
-            let mut center_pane_footer = CenterPaneFooter::new(&center_pane.clone(), window, cx);
-            center_pane_footer.add_right_item(center_pane_footer_bottom_dock_buttons, window, cx);
-            center_pane_footer
+            PanelButtons::new_only(bottom_dock.clone(), STATUS_BAR_BOTTOM_PANELS, cx)
         });
         let status_bar = cx.new(|cx| {
             let mut status_bar = StatusBar::new(&center_pane.clone(), window, cx);
-            status_bar.add_left_item(left_dock_buttons, window, cx);
-            status_bar.add_right_item(right_dock_buttons, window, cx);
             status_bar.add_right_item(status_bar_bottom_dock_buttons, window, cx);
             status_bar
         });
@@ -1731,7 +1718,6 @@ impl Workspace {
             last_active_center_pane: Some(center_pane.downgrade()),
             last_active_view_id: None,
             status_bar,
-            center_pane_footer,
             modal_layer,
             toast_layer,
             titlebar_item: None,
@@ -2194,22 +2180,8 @@ impl Workspace {
         &self.status_bar
     }
 
-    pub fn center_pane_footer(&self) -> &Entity<CenterPaneFooter> {
-        &self.center_pane_footer
-    }
-
-    pub fn set_workspace_sidebar_open(&self, open: bool, cx: &mut App) {
-        self.status_bar.update(cx, |status_bar, cx| {
-            status_bar.set_workspace_sidebar_open(open, cx);
-        });
-    }
-
     pub fn status_bar_visible(&self, cx: &App) -> bool {
         StatusBarSettings::get_global(cx).show
-    }
-
-    fn center_pane_footer_visible(&self, cx: &App) -> bool {
-        self.center_pane_footer.read(cx).has_items()
     }
 
     pub fn app_state(&self) -> &Arc<AppState> {
@@ -4800,10 +4772,6 @@ impl Workspace {
         self.status_bar.update(cx, |status_bar, cx| {
             status_bar.set_active_pane(pane, window, cx);
         });
-        self.center_pane_footer
-            .update(cx, |center_pane_footer, cx| {
-                center_pane_footer.set_active_pane(pane, window, cx);
-            });
     }
 
     fn handle_panel_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -7099,7 +7067,7 @@ impl Workspace {
         )
     }
 
-    fn render_center_pane_footer_row(&self, window: &Window, cx: &App) -> Div {
+    fn render_status_bar_row(&self, window: &Window, cx: &App) -> Div {
         let left_dock_width = self.left_dock.read(cx).active_panel_size(window, cx);
         let right_dock_width = self.right_dock.read(cx).active_panel_size(window, cx);
 
@@ -7113,14 +7081,14 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    .child(self.center_pane_footer.clone()),
+                    .child(self.status_bar.clone()),
             )
             .when_some(right_dock_width, |this, width| {
                 this.child(div().w(width).flex_none())
             })
     }
 
-    fn render_center_pane_footer_with_left_offset(&self, left_offset: Option<Pixels>) -> Div {
+    fn render_status_bar_with_left_offset(&self, left_offset: Option<Pixels>) -> Div {
         h_flex()
             .w_full()
             .when_some(left_offset, |this, width| {
@@ -7131,7 +7099,7 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    .child(self.center_pane_footer.clone()),
+                    .child(self.status_bar.clone()),
             )
     }
 
@@ -7898,9 +7866,9 @@ impl Render for Workspace {
                                                     window,
                                                     cx,
                                                 )))
-                                                .when(self.center_pane_footer_visible(cx), |this| {
+                                                .when(self.status_bar_visible(cx), |this| {
                                                     this.child(
-                                                        self.render_center_pane_footer_with_left_offset(
+                                                        self.render_status_bar_with_left_offset(
                                                             self.left_dock
                                                                 .read(cx)
                                                                 .active_panel_size(window, cx),
@@ -7984,10 +7952,10 @@ impl Render for Workspace {
                                                         cx,
                                                     ))
                                                     .when(
-                                                        self.center_pane_footer_visible(cx),
+                                                        self.status_bar_visible(cx),
                                                         |this| {
                                                             this.child(
-                                                                self.render_center_pane_footer_with_left_offset(
+                                                                self.render_status_bar_with_left_offset(
                                                                     None,
                                                                 ),
                                                             )
@@ -8004,12 +7972,12 @@ impl Render for Workspace {
                                 }
                             }))
                             .when(
-                                self.center_pane_footer_visible(cx)
+                                self.status_bar_visible(cx)
                                     && matches!(
                                         bottom_dock_layout,
                                         BottomDockLayout::Full | BottomDockLayout::RightAligned
                                     ),
-                                |this| this.child(self.render_center_pane_footer_row(window, cx)),
+                                |this| this.child(self.render_status_bar_row(window, cx)),
                             )
                             .children(self.zoomed.as_ref().and_then(|view| {
                                 let zoomed_view = view.upgrade()?;
@@ -8036,9 +8004,6 @@ impl Render for Workspace {
                             }))
                             .children(self.render_notifications(window, cx)),
                     )
-                    .when(self.status_bar_visible(cx), |parent| {
-                        parent.child(self.status_bar.clone())
-                    })
                     .child(self.toast_layer.clone()),
             )
     }
@@ -13503,10 +13468,10 @@ mod tests {
         let (workspace, _cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
 
-        // Superzent hides the status bar by default.
+        // Superzent shows the status bar by default.
         workspace.read_with(cx, |workspace, cx| {
             let visible = workspace.status_bar_visible(cx);
-            assert!(!visible, "Status bar should be hidden by default");
+            assert!(visible, "Status bar should be visible by default");
         });
 
         // Test with status bar hidden

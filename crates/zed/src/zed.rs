@@ -36,7 +36,6 @@ use gpui::{
     UpdateGlobal, Window, WindowHandle, WindowKind, WindowOptions, actions, image_cache, point, px,
     retain_all,
 };
-use image_viewer::ImageInfo;
 use language::Capability;
 use language_onboarding::BasedPyrightBanner;
 use language_tools::lsp_button::{self, LspButton};
@@ -493,7 +492,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             }
         });
 
-        let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let activity_indicator = activity_indicator::ActivityIndicator::new(
@@ -509,7 +507,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let active_toolchain_language =
             cx.new(|cx| toolchain_selector::ActiveToolchain::new(workspace, window, cx));
         let vim_mode_indicator = cx.new(|cx| vim::ModeIndicator::new(window, cx));
-        let image_info = cx.new(|_cx| ImageInfo::new(workspace));
 
         let lsp_button_menu_handle = PopoverMenuHandle::default();
         let lsp_button =
@@ -526,25 +523,19 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
         let pending_keystroke_indicator =
             cx.new(|cx| superzent_ui::PendingKeystrokeIndicator::new(window, cx));
-        workspace
-            .center_pane_footer()
-            .update(cx, |center_pane_footer, cx| {
-                #[cfg(feature = "next_edit")]
-                center_pane_footer.add_left_item(edit_prediction_ui, window, cx);
-                center_pane_footer.add_left_item(lsp_button, window, cx);
-                center_pane_footer.add_left_item(diagnostic_summary, window, cx);
-                center_pane_footer.add_right_item(pending_keystroke_indicator, window, cx);
-                center_pane_footer.add_right_item(cursor_position, window, cx);
-                center_pane_footer.add_right_item(active_toolchain_language, window, cx);
-            });
         workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(search_button, window, cx);
+            #[cfg(feature = "next_edit")]
+            status_bar.add_left_item(edit_prediction_ui, window, cx);
+            status_bar.add_left_item(lsp_button, window, cx);
+            status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
+            status_bar.add_right_item(line_ending_indicator, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
-            status_bar.add_right_item(line_ending_indicator, window, cx);
+            status_bar.add_right_item(active_toolchain_language, window, cx);
+            status_bar.add_right_item(cursor_position, window, cx);
+            status_bar.add_right_item(pending_keystroke_indicator, window, cx);
             status_bar.add_right_item(vim_mode_indicator, window, cx);
-            status_bar.add_right_item(image_info, window, cx);
         });
 
         let panels_task = initialize_panels(window, cx);

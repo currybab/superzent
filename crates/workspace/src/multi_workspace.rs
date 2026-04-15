@@ -276,22 +276,12 @@ impl MultiWorkspace {
 
     pub fn open_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_open = true;
-        for workspace in &self.workspaces {
-            workspace.update(cx, |workspace, cx| {
-                workspace.set_workspace_sidebar_open(true, cx);
-            });
-        }
         self.serialize(cx);
         cx.notify();
     }
 
     fn close_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_open = false;
-        for workspace in &self.workspaces {
-            workspace.update(cx, |workspace, cx| {
-                workspace.set_workspace_sidebar_open(false, cx);
-            });
-        }
         let pane = self.workspace().read(cx).active_pane().clone();
         let pane_focus = pane.read(cx).focus_handle(cx);
         window.focus(&pane_focus, cx);
@@ -474,11 +464,6 @@ impl MultiWorkspace {
             self.record_workspace_usage(self.workspaces[index].entity_id());
             index
         } else {
-            if self.sidebar_open {
-                workspace.update(cx, |workspace, cx| {
-                    workspace.set_workspace_sidebar_open(true, cx);
-                });
-            }
             Self::subscribe_to_workspace(&workspace, cx);
             self.workspaces.push(workspace.clone());
             self.record_workspace_usage(workspace.entity_id());
@@ -502,12 +487,6 @@ impl MultiWorkspace {
         else {
             return false;
         };
-
-        if self.sidebar_open {
-            new_workspace.update(cx, |workspace, cx| {
-                workspace.set_workspace_sidebar_open(true, cx);
-            });
-        }
 
         Self::subscribe_to_workspace(&new_workspace, cx);
         let removed_workspace =
