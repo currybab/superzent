@@ -20,7 +20,7 @@ use editor::{Editor, EditorEvent, actions::SelectAll};
 use git::repository::validate_worktree_directory;
 use git_ui::git_panel::GitPanel;
 use gpui::{
-    Action, Animation, AnimationExt, App, AsyncWindowContext, ClickEvent, ClipboardItem,
+    Action, Animation, AnimationExt, App, AsyncWindowContext, ClickEvent, ClipboardItem, Corner,
     DismissEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
     MouseDownEvent, PathPromptOptions, Point, PromptLevel, ScrollHandle, SharedString,
     Subscription, Task, WeakEntity, WindowHandle, actions, anchored, deferred, px,
@@ -2122,55 +2122,57 @@ async fn create_remote_workspace(
             .read(cx)
             .workspace_for_location(&workspace_location)
             .cloned();
-        let now = Utc::now();
-
-        WorkspaceEntry {
-            id: existing_workspace
-                .as_ref()
-                .map(|workspace| workspace.id.clone())
-                .unwrap_or_else(|| Uuid::new_v4().to_string()),
-            project_id: project.id.clone(),
-            kind: WorkspaceKind::Worktree,
-            name: branch_name.clone(),
-            display_name: existing_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.display_name.clone()),
-            branch: branch_name.clone(),
-            location: workspace_location,
-            agent_preset_id: existing_workspace
-                .as_ref()
-                .map(|workspace| workspace.agent_preset_id.clone())
-                .unwrap_or(preset_id),
-            managed: true,
-            git_status: WorkspaceGitStatus::Available,
-            git_summary: existing_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.git_summary.clone()),
-            attention_status: existing_workspace
-                .as_ref()
-                .map(|workspace| workspace.attention_status.clone())
-                .unwrap_or(WorkspaceAttentionStatus::Idle),
-            review_pending: existing_workspace
-                .as_ref()
-                .is_some_and(|workspace| workspace.review_pending),
-            last_attention_reason: existing_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.last_attention_reason.clone()),
-            teardown_script_override: existing_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.teardown_script_override.clone()),
-            created_at: existing_workspace
-                .as_ref()
-                .map(|workspace| workspace.created_at)
-                .unwrap_or(now),
-            last_opened_at: now,
-        }
+        build_created_remote_workspace_entry(
+            &project,
+            &branch_name,
+            workspace_location,
+            existing_workspace.as_ref(),
+            &preset_id,
+        )
     })?;
 
     Ok(WorkspaceCreationResult {
         workspace,
         notice: None,
     })
+}
+
+fn build_created_remote_workspace_entry(
+    project: &ProjectEntry,
+    branch_name: &str,
+    workspace_location: WorkspaceLocation,
+    existing_workspace: Option<&WorkspaceEntry>,
+    preset_id: &str,
+) -> WorkspaceEntry {
+    let now = Utc::now();
+
+    WorkspaceEntry {
+        id: existing_workspace
+            .map(|workspace| workspace.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        project_id: project.id.clone(),
+        kind: WorkspaceKind::Worktree,
+        name: branch_name.to_string(),
+        display_name: existing_workspace.and_then(|workspace| workspace.display_name.clone()),
+        branch: branch_name.to_string(),
+        location: workspace_location,
+        agent_preset_id: preset_id.to_string(),
+        managed: true,
+        git_status: WorkspaceGitStatus::Available,
+        git_summary: existing_workspace.and_then(|workspace| workspace.git_summary.clone()),
+        attention_status: existing_workspace
+            .map(|workspace| workspace.attention_status.clone())
+            .unwrap_or(WorkspaceAttentionStatus::Idle),
+        review_pending: existing_workspace.is_some_and(|workspace| workspace.review_pending),
+        last_attention_reason: existing_workspace
+            .and_then(|workspace| workspace.last_attention_reason.clone()),
+        teardown_script_override: existing_workspace
+            .and_then(|workspace| workspace.teardown_script_override.clone()),
+        created_at: existing_workspace
+            .map(|workspace| workspace.created_at)
+            .unwrap_or(now),
+        last_opened_at: now,
+    }
 }
 
 async fn resolve_opened_workspace(
@@ -2291,12 +2293,32 @@ enum DirtyWorkspaceCreateChoice {
     CreateAndMoveChanges,
 }
 
+fn preset_or_default<'a>(presets: &'a [AgentPreset], preset_id: &str) -> &'a AgentPreset {
+    presets
+        .iter()
+        .find(|preset| preset.id == preset_id)
+        .unwrap_or_else(|| {
+            presets
+                .first()
+                .expect("Superzent requires at least one agent preset")
+        })
+}
+
+fn should_launch_new_workspace_preset<E>(
+    auto_launch: bool,
+    setup_result: Option<&Result<(), E>>,
+) -> bool {
+    auto_launch && setup_result.is_none_or(|result| result.is_ok())
+}
+
 fn spawn_new_workspace_request(
     workspace_handle: Entity<Workspace>,
     app_state: Arc<WorkspaceAppState>,
     project: ProjectEntry,
     branch_name: String,
     base_branch_override: Option<String>,
+    preset_id: String,
+    auto_launch: bool,
     setup_script: Option<String>,
     teardown_script: Option<String>,
     save_lifecycle_defaults: superzent_git::WorkspaceLifecycleDefaultSaveSelections,
@@ -2304,7 +2326,6 @@ fn spawn_new_workspace_request(
     cx: &mut App,
 ) {
     let store = SuperzentStore::global(cx);
-    let preset_id = store.read(cx).default_preset().id.clone();
     let base_workspace_path = {
         let store = store.read(cx);
         local_base_workspace_path_for_create_request(&workspace_handle, &project, &store, cx)
@@ -2526,9 +2547,8 @@ fn spawn_new_workspace_request(
                 }
             }
 
-            let should_launch_preset = setup_result
-                .as_ref()
-                .is_none_or(|result| result.is_ok());
+            let should_launch_preset =
+                should_launch_new_workspace_preset(auto_launch, setup_result.as_ref());
 
             if should_launch_preset {
                 let target_workspace = if let Some(visible_workspace) = visible_workspace.clone() {
@@ -2794,6 +2814,8 @@ struct NewWorkspaceModal {
     project: ProjectEntry,
     branch_name_editor: Entity<Editor>,
     base_branch_editor: Entity<Editor>,
+    selected_preset_id: String,
+    auto_launch: bool,
     setup_script_editor: Entity<Editor>,
     teardown_script_editor: Entity<Editor>,
     show_more_options: bool,
@@ -2829,6 +2851,10 @@ impl NewWorkspaceModal {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let selected_preset_id = {
+            let store = SuperzentStore::global(cx);
+            store.read(cx).default_preset().id.clone()
+        };
         let branch_name_editor = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text("feature/my-branch", window, cx);
@@ -2942,6 +2968,8 @@ impl NewWorkspaceModal {
             project,
             branch_name_editor,
             base_branch_editor,
+            selected_preset_id,
+            auto_launch: false,
             setup_script_editor,
             teardown_script_editor,
             show_more_options: false,
@@ -2984,6 +3012,72 @@ impl NewWorkspaceModal {
         } else {
             Some(teardown_script.to_string())
         }
+    }
+
+    fn resolved_preset_id(&self, cx: &App) -> String {
+        let store = SuperzentStore::global(cx);
+        let store = store.read(cx);
+        preset_or_default(store.presets(), &self.selected_preset_id)
+            .id
+            .clone()
+    }
+
+    fn preset_dropdown_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> DropdownMenu {
+        let weak = cx.weak_entity();
+        let store = SuperzentStore::global(cx);
+        let (selected_label, presets) = {
+            let store = store.read(cx);
+            (
+                preset_or_default(store.presets(), &self.selected_preset_id)
+                    .label
+                    .clone(),
+                store.presets().to_vec(),
+            )
+        };
+        let trigger = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .child(
+                Label::new(selected_label.clone())
+                    .size(LabelSize::Small)
+                    .color(Color::Default),
+            )
+            .child(
+                Icon::new(IconName::ChevronUpDown)
+                    .size(IconSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .into_any_element();
+
+        DropdownMenu::new_with_element(
+            "superzent-new-workspace-preset",
+            trigger,
+            ContextMenu::build(window, cx, move |mut menu, _, _| {
+                for preset in &presets {
+                    let weak = weak.clone();
+                    let preset_id = preset.id.clone();
+                    let label = preset.label.clone();
+                    menu = menu.entry(label, None, move |_window, cx| {
+                        weak.update(cx, |this, cx| {
+                            this.selected_preset_id = preset_id.clone();
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                }
+
+                menu
+            }),
+        )
+        .style(DropdownStyle::Outlined)
+        .full_width(true)
+        .no_chevron()
+        .attach(Corner::BottomLeft)
+        .offset(Point {
+            x: px(0.0),
+            y: px(2.0),
+        })
     }
 
     fn insert_variable(&mut self, variable: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -3067,6 +3161,7 @@ impl NewWorkspaceModal {
         }
 
         let app_state = workspace_handle.read(cx).app_state().clone();
+        let preset_id = self.resolved_preset_id(cx);
 
         spawn_new_workspace_request(
             workspace_handle,
@@ -3074,6 +3169,8 @@ impl NewWorkspaceModal {
             self.project.clone(),
             branch_name,
             self.base_branch(cx),
+            preset_id,
+            self.auto_launch,
             self.setup_script(cx),
             self.teardown_script(cx),
             self.save_lifecycle_defaults,
@@ -3121,22 +3218,66 @@ impl Render for NewWorkspaceModal {
                                         this.child(
                                             v_flex()
                                                 .gap_1()
-                                                .child(Label::new("Base Branch").size(LabelSize::Small))
+                                                .child(
+                                                    Label::new("Base Branch")
+                                                        .size(LabelSize::Small),
+                                                )
                                                 .child(self.base_branch_editor.clone())
-                                                .when_some(self.base_branch_notice.clone(), |this, notice| {
-                                                    this.child(
-                                                        Label::new(notice)
-                                                            .size(LabelSize::Small)
-                                                            .color(Color::Warning),
-                                                    )
-                                                })
-                                                .when_some(self.base_branch_error.clone(), |this, error| {
-                                                    this.child(
-                                                        Label::new(error)
-                                                            .size(LabelSize::Small)
-                                                            .color(Color::Error),
-                                                    )
-                                                })
+                                                .when_some(
+                                                    self.base_branch_notice.clone(),
+                                                    |this, notice| {
+                                                        this.child(
+                                                            Label::new(notice)
+                                                                .size(LabelSize::Small)
+                                                                .color(Color::Warning),
+                                                        )
+                                                    },
+                                                )
+                                                .when_some(
+                                                    self.base_branch_error.clone(),
+                                                    |this, error| {
+                                                        this.child(
+                                                            Label::new(error)
+                                                                .size(LabelSize::Small)
+                                                                .color(Color::Error),
+                                                        )
+                                                    },
+                                                ),
+                                        )
+                                    },
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_2()
+                                        .child(
+                                            v_flex()
+                                                .gap_1()
+                                                .child(Label::new("Preset").size(LabelSize::Small))
+                                                .child(self.preset_dropdown_menu(window, cx)),
+                                        )
+                                        .child(
+                                            Checkbox::new(
+                                                "superzent-new-workspace-auto-launch",
+                                                self.auto_launch.into(),
+                                            )
+                                            .label("Auto-launch after creation")
+                                            .fill()
+                                            .elevation(ElevationIndex::Surface)
+                                            .label_size(LabelSize::Small)
+                                            .on_click(cx.listener(
+                                                |this, selection, _, cx| {
+                                                    this.auto_launch =
+                                                        *selection == ToggleState::Selected;
+                                                    cx.notify();
+                                                },
+                                            )),
+                                        ),
+                                )
+                                .when(
+                                    matches!(self.project.location, ProjectLocation::Local { .. }),
+                                    |this| {
+                                        this.child(
+                                            v_flex()
                                                 .child(
                                                     div()
                                                         .w_full()
@@ -8563,6 +8704,19 @@ mod tests {
     use git::status::StatusCode;
     use std::path::PathBuf;
 
+    fn preset(id: &str, label: &str) -> AgentPreset {
+        AgentPreset {
+            id: id.to_string(),
+            label: label.to_string(),
+            launch_mode: PresetLaunchMode::Terminal,
+            command: label.to_ascii_lowercase(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            acp_agent_name: None,
+            attention_patterns: Vec::new(),
+        }
+    }
+
     fn workspace_entry(kind: WorkspaceKind) -> WorkspaceEntry {
         WorkspaceEntry {
             id: "workspace".to_string(),
@@ -8821,6 +8975,81 @@ mod tests {
             retried.save_lifecycle_defaults,
             options.save_lifecycle_defaults
         );
+    }
+
+    #[test]
+    fn build_created_remote_workspace_entry_uses_requested_preset_when_reusing_workspace() {
+        let project = ProjectEntry {
+            id: "project".to_string(),
+            name: "Remote Project".to_string(),
+            location: ProjectLocation::Ssh {
+                connection: ssh_connection(),
+                repo_root: "/repo/main".to_string(),
+            },
+            collapsed: false,
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        };
+        let existing_workspace =
+            ssh_workspace_entry("workspace-remote", "project", "/repo/worktrees/feature-a");
+        let existing_workspace_id = existing_workspace.id.clone();
+        let workspace_location = WorkspaceLocation::Ssh {
+            connection: ssh_connection(),
+            worktree_path: "/repo/worktrees/feature-a".to_string(),
+        };
+
+        let workspace_entry = build_created_remote_workspace_entry(
+            &project,
+            "feature-a",
+            workspace_location,
+            Some(&existing_workspace),
+            "claude-code",
+        );
+
+        assert_eq!(workspace_entry.id, existing_workspace_id);
+        assert_eq!(workspace_entry.agent_preset_id, "claude-code".to_string());
+    }
+
+    #[test]
+    fn preset_or_default_prefers_matching_preset() {
+        let presets = vec![preset("codex", "Codex"), preset("claude", "Claude Code")];
+
+        assert_eq!(
+            preset_or_default(&presets, "claude").label,
+            "Claude Code".to_string()
+        );
+    }
+
+    #[test]
+    fn preset_or_default_falls_back_to_first_preset() {
+        let presets = vec![preset("codex", "Codex"), preset("claude", "Claude Code")];
+
+        assert_eq!(
+            preset_or_default(&presets, "missing").id,
+            "codex".to_string()
+        );
+    }
+
+    #[test]
+    fn should_launch_new_workspace_preset_requires_opt_in() {
+        assert!(!should_launch_new_workspace_preset::<()>(false, None));
+        assert!(!should_launch_new_workspace_preset(
+            false,
+            Some(&Ok::<(), ()>(()))
+        ));
+    }
+
+    #[test]
+    fn should_launch_new_workspace_preset_preserves_setup_success_guard() {
+        assert!(should_launch_new_workspace_preset::<()>(true, None));
+        assert!(should_launch_new_workspace_preset(
+            true,
+            Some(&Ok::<(), anyhow::Error>(()))
+        ));
+        assert!(!should_launch_new_workspace_preset(
+            true,
+            Some(&Err(anyhow::anyhow!("setup failed")))
+        ));
     }
 
     #[test]
