@@ -1614,7 +1614,7 @@ impl Item for TerminalView {
 
     fn tab_extra_context_menu_actions(
         &self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
         let mut actions = Vec::new();
@@ -1623,18 +1623,10 @@ impl Item for TerminalView {
             actions.push(("Rename".into(), Box::new(RenameTerminal) as Box<dyn gpui::Action>));
         }
 
-        let has_multiple_workspaces = window
-            .window_handle()
-            .downcast::<workspace::MultiWorkspace>()
-            .and_then(|handle| handle.read_with(cx, |mw, _| mw.workspaces().len()).ok())
-            .unwrap_or(0)
-            >= 2;
-        if has_multiple_workspaces {
-            actions.push((
-                "Move to Workspace".into(),
-                Box::new(MoveTerminalToWorkspace),
-            ));
-        }
+        actions.push((
+            "Move to Workspace".into(),
+            Box::new(MoveTerminalToWorkspace),
+        ));
 
         actions
     }
