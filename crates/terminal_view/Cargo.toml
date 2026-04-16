@@ -42,6 +42,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true
+superzent_model.workspace = true
 shellexpand.workspace = true
 terminal.workspace = true
 theme.workspace = true

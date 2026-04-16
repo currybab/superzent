@@ -397,16 +397,21 @@ impl MultiWorkspace {
     pub fn workspace_entries_excluding_active(
         &self,
         cx: &App,
-    ) -> Vec<(usize, String, Entity<Workspace>)> {
+    ) -> Vec<(usize, std::path::PathBuf, Entity<Workspace>)> {
         self.workspaces
             .iter()
             .enumerate()
             .filter(|(index, _)| *index != self.active_workspace_index)
             .map(|(index, workspace)| {
-                let display_name = workspace.read(cx).project().read(cx).worktrees(cx).next()
-                    .map(|worktree| worktree.read(cx).root_name_str().to_string())
-                    .unwrap_or_else(|| format!("Workspace {}", index + 1));
-                (index, display_name, workspace.clone())
+                let worktree_path = workspace
+                    .read(cx)
+                    .project()
+                    .read(cx)
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+                    .unwrap_or_default();
+                (index, worktree_path, workspace.clone())
             })
             .collect()
     }

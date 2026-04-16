@@ -1,16 +1,25 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use fuzzy::StringMatchCandidate;
 use gpui::{
     App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Task, Window,
 };
 use picker::{Picker, PickerDelegate};
-use std::sync::Arc;
+use superzent_model::SuperzentStore;
 use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
 use util::ResultExt;
-use workspace::{ModalView, MultiWorkspace, Pane, Workspace};
 use workspace::item::ItemHandle;
+use workspace::{ModalView, MultiWorkspace, Pane, Workspace};
 
 use crate::TerminalView;
+
+struct WorkspaceCandidate {
+    index: usize,
+    display_name: String,
+    workspace: Entity<Workspace>,
+}
 
 pub struct WorkspaceMovePicker {
     picker: Entity<Picker<WorkspaceMovePickerDelegate>>,
@@ -20,19 +29,20 @@ impl WorkspaceMovePicker {
     fn new(
         source_pane: Entity<Pane>,
         item_to_move: Box<dyn ItemHandle>,
-        workspace_entries: Vec<(usize, String, Entity<Workspace>)>,
+        candidates: Vec<WorkspaceCandidate>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let delegate = WorkspaceMovePickerDelegate {
             source_pane,
             item_to_move,
-            workspace_entries,
+            candidates,
             matches: Vec::new(),
             selected_index: 0,
         };
         let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx).modal(true));
-        cx.subscribe(&picker, |_, _, _, cx| cx.emit(DismissEvent)).detach();
+        cx.subscribe(&picker, |_, _, _, cx| cx.emit(DismissEvent))
+            .detach();
         Self { picker }
     }
 }
@@ -55,7 +65,7 @@ impl Render for WorkspaceMovePicker {
 struct WorkspaceMovePickerDelegate {
     source_pane: Entity<Pane>,
     item_to_move: Box<dyn ItemHandle>,
-    workspace_entries: Vec<(usize, String, Entity<Workspace>)>,
+    candidates: Vec<WorkspaceCandidate>,
     matches: Vec<fuzzy::StringMatch>,
     selected_index: usize,
 }
@@ -91,10 +101,10 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> Task<()> {
         let candidates: Vec<StringMatchCandidate> = self
-            .workspace_entries
+            .candidates
             .iter()
             .enumerate()
-            .map(|(ix, (_, name, _))| StringMatchCandidate::new(ix, name))
+            .map(|(ix, candidate)| StringMatchCandidate::new(ix, &candidate.display_name))
             .collect();
 
         if query.is_empty() {
@@ -126,14 +136,16 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
             )
             .await;
 
-            picker.update_in(cx, |picker, _window, cx| {
-                let delegate = &mut picker.delegate;
-                delegate.matches = matches;
-                if delegate.selected_index >= delegate.matches.len() {
-                    delegate.selected_index = delegate.matches.len().saturating_sub(1);
-                }
-                cx.notify();
-            }).log_err();
+            picker
+                .update_in(cx, |picker, _window, cx| {
+                    let delegate = &mut picker.delegate;
+                    delegate.matches = matches;
+                    if delegate.selected_index >= delegate.matches.len() {
+                        delegate.selected_index = delegate.matches.len().saturating_sub(1);
+                    }
+                    cx.notify();
+                })
+                .log_err();
         })
     }
 
@@ -141,11 +153,11 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
         let Some(string_match) = self.matches.get(self.selected_index) else {
             return;
         };
-        let Some((target_index, _, target_workspace)) =
-            self.workspace_entries.get(string_match.candidate_id).cloned()
-        else {
+        let Some(candidate) = self.candidates.get(string_match.candidate_id) else {
             return;
         };
+        let target_index = candidate.index;
+        let target_workspace = candidate.workspace.clone();
 
         let item = self.item_to_move.boxed_clone();
         let item_id = item.item_id();
@@ -218,9 +230,11 @@ pub fn move_terminal_to_workspace(
         return;
     };
 
-    let workspace_entries = multi_workspace.read(cx).workspace_entries_excluding_active(cx);
+    let raw_entries = multi_workspace
+        .read(cx)
+        .workspace_entries_excluding_active(cx);
 
-    if workspace_entries.is_empty() {
+    if raw_entries.is_empty() {
         workspace.show_toast(
             workspace::Toast::new(
                 workspace::notifications::NotificationId::unique::<WorkspaceMovePicker>(),
@@ -231,9 +245,57 @@ pub fn move_terminal_to_workspace(
         return;
     }
 
+    let candidates = build_workspace_candidates(&raw_entries, cx);
     let item_to_move = active_item.boxed_clone();
 
     workspace.toggle_modal(window, cx, |window, cx| {
-        WorkspaceMovePicker::new(active_pane, item_to_move, workspace_entries, window, cx)
+        WorkspaceMovePicker::new(active_pane, item_to_move, candidates, window, cx)
     });
+}
+
+fn build_workspace_candidates(
+    entries: &[(usize, PathBuf, Entity<Workspace>)],
+    cx: &App,
+) -> Vec<WorkspaceCandidate> {
+    let store = SuperzentStore::global(cx);
+    let store = store.read(cx);
+
+    entries
+        .iter()
+        .map(|(index, worktree_path, workspace_entity)| {
+            let display_name =
+                if let Some(workspace_entry) = store.workspace_for_path(worktree_path) {
+                    let project_name = store
+                        .project(&workspace_entry.project_id)
+                        .map(|project| project.name.as_str())
+                        .unwrap_or("Unknown");
+
+                    let workspace_label =
+                        if workspace_entry.kind == superzent_model::WorkspaceKind::Primary {
+                            "local".to_string()
+                        } else if let Some(display) = workspace_entry
+                            .display_name
+                            .as_deref()
+                            .filter(|name| !name.trim().is_empty())
+                        {
+                            display.to_string()
+                        } else {
+                            workspace_entry.branch.clone()
+                        };
+
+                    format!("[{project_name}] {workspace_label}")
+                } else {
+                    worktree_path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_else(|| format!("Workspace {}", index + 1))
+                };
+
+            WorkspaceCandidate {
+                index: *index,
+                display_name,
+                workspace: workspace_entity.clone(),
+            }
+        })
+        .collect()
 }
