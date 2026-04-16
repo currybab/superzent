@@ -229,6 +229,13 @@ pub fn move_terminal_to_workspace(
     };
 
     if workspace_entries.is_empty() {
+        workspace.show_toast(
+            workspace::Toast::new(
+                workspace::notifications::NotificationId::unique::<WorkspaceMovePicker>(),
+                "Open another workspace first to move this terminal.",
+            ),
+            cx,
+        );
         return;
     }
 
