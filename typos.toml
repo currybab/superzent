@@ -95,6 +95,8 @@ extend-ignore-re = [
     # AMD GPU Services
     "AGS",
     # Yarn Plug'n'Play
-    "PnP"
+    "PnP",
+    # `image` crate method: Delay::from_numer_denom_ms
+    "numer"
 ]
 check-filename = true
