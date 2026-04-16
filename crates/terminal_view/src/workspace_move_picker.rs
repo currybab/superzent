@@ -161,12 +161,10 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
             });
         });
 
-        if let Some(multi_workspace_handle) = window.window_handle().downcast::<MultiWorkspace>() {
-            multi_workspace_handle
-                .update(cx, |multi_workspace, window, cx| {
-                    multi_workspace.activate_index(target_index, window, cx);
-                })
-                .log_err();
+        if let Some(Some(multi_workspace)) = window.root::<MultiWorkspace>() {
+            multi_workspace.update(cx, |multi_workspace, cx| {
+                multi_workspace.activate_index(target_index, window, cx);
+            });
         }
 
         cx.emit(DismissEvent);
@@ -216,17 +214,11 @@ pub fn move_terminal_to_workspace(
         return;
     }
 
-    let Some(multi_workspace_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+    let Some(Some(multi_workspace)) = window.root::<MultiWorkspace>() else {
         return;
     };
 
-    let Ok(workspace_entries) =
-        multi_workspace_handle.read_with(cx, |multi_workspace, cx| {
-            multi_workspace.workspace_entries_excluding_active(cx)
-        })
-    else {
-        return;
-    };
+    let workspace_entries = multi_workspace.read(cx).workspace_entries_excluding_active(cx);
 
     if workspace_entries.is_empty() {
         workspace.show_toast(
