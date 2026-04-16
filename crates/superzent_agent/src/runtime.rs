@@ -543,6 +543,10 @@ fn wrapper_resolver_content(binary_name: &str, override_env_var: &str, bin_dir: 
       "{bin_dir}") continue ;;
     esac
     if [ -x "$dir/$name" ] && [ ! -d "$dir/$name" ]; then
+      # Skip other Superzent wrapper scripts to prevent cross-instance recursion
+      if head -2 "$dir/$name" 2>/dev/null | grep -qF "{WRAPPER_MARKER}"; then
+        continue
+      fi
       printf "%s\n" "$dir/$name"
       return 0
     fi
