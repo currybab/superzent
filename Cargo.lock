@@ -6845,6 +6845,8 @@ dependencies = [
 name = "fuzzy_nucleo"
 version = "0.1.0"
 dependencies = [
+ "criterion",
+ "fuzzy",
  "gpui",
  "nucleo",
  "util",
