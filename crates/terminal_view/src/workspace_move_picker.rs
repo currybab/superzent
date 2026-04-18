@@ -16,7 +16,6 @@ use workspace::{ModalView, MultiWorkspace, Pane, Workspace};
 use crate::TerminalView;
 
 struct WorkspaceCandidate {
-    index: usize,
     display_name: String,
     workspace: Entity<Workspace>,
 }
@@ -156,7 +155,6 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
         let Some(candidate) = self.candidates.get(string_match.candidate_id) else {
             return;
         };
-        let target_index = candidate.index;
         let target_workspace = candidate.workspace.clone();
 
         let item = self.item_to_move.boxed_clone();
@@ -175,7 +173,7 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
 
         if let Some(Some(multi_workspace)) = window.root::<MultiWorkspace>() {
             multi_workspace.update(cx, |multi_workspace, cx| {
-                multi_workspace.activate_index(target_index, window, cx);
+                multi_workspace.activate(target_workspace.clone(), cx);
             });
         }
 
@@ -292,7 +290,6 @@ fn build_workspace_candidates(
                 };
 
             WorkspaceCandidate {
-                index: *index,
                 display_name,
                 workspace: workspace_entity.clone(),
             }
