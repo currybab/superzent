@@ -1620,7 +1620,10 @@ impl Item for TerminalView {
         let mut actions = Vec::new();
         let terminal = self.terminal.read(cx);
         if terminal.task().is_none() {
-            actions.push(("Rename".into(), Box::new(RenameTerminal) as Box<dyn gpui::Action>));
+            actions.push((
+                "Rename".into(),
+                Box::new(RenameTerminal) as Box<dyn gpui::Action>,
+            ));
         }
 
         actions.push((

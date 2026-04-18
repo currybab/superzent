@@ -3038,6 +3038,7 @@ impl Pane {
                 let pane = pane.clone();
                 let menu_context = menu_context.clone();
                 let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
+                let item_handle = item_handle.boxed_clone();
                 ContextMenu::build(window, cx, move |mut menu, window, cx| {
                     let close_active_item_action = CloseActiveItem {
                         save_intent: None,
@@ -3300,7 +3301,20 @@ impl Pane {
                     if !extra_actions.is_empty() {
                         menu = menu.separator();
                         for (label, action) in extra_actions {
-                            menu = menu.action(label, action);
+                            menu = menu.entry(label, Some(action.boxed_clone()), {
+                                let pane = pane.clone();
+                                let item_handle = item_handle.boxed_clone();
+                                move |window, cx| {
+                                    let Some(pane) = pane.upgrade() else {
+                                        return;
+                                    };
+
+                                    pane.update(cx, |pane, cx| {
+                                        pane.activate_item(ix, true, true, window, cx);
+                                    });
+                                    item_handle.relay_action(action.boxed_clone(), window, cx);
+                                }
+                            });
                         }
                     }
 

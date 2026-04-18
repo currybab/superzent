@@ -7,19 +7,13 @@ use gpui::{
     SharedString, Subscription, Task, Window,
 };
 use picker::{Picker, PickerDelegate};
-use superzent_model::{
-    ProjectEntry, ProjectLocation, SuperzentStore,
-};
+use superzent_model::{ProjectEntry, ProjectLocation, SuperzentStore};
 use terminal_view::TerminalView;
 use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
-use workspace::{
-    ModalView, MultiWorkspace, Toast, Workspace,
-    notifications::NotificationId,
-};
+use workspace::{ModalView, MultiWorkspace, Toast, Workspace, notifications::NotificationId};
 
 use crate::{
-    SuperzentSidebar, build_synced_local_workspace_entry,
-    open_local_workspace_path_and_resolve,
+    SuperzentSidebar, build_synced_local_workspace_entry, open_local_workspace_path_and_resolve,
 };
 
 pub fn run_import_worktree(
@@ -109,10 +103,11 @@ impl ImportWorktreeModal {
             let discovered = match discovered {
                 Ok(worktrees) => worktrees,
                 Err(error) => {
-                    this.update_in(cx, |this, _, cx| {
-                        this.picker.update(cx, |picker, _| {
+                    this.update_in(cx, |this, window, cx| {
+                        this.picker.update(cx, |picker, cx| {
                             picker.delegate.discovery_error =
                                 Some(format!("Failed to discover worktrees: {error}"));
+                            picker.refresh(window, cx);
                         });
                     })
                     .ok();
@@ -334,12 +329,8 @@ impl PickerDelegate for ImportWorktreeDelegate {
             store.upsert_workspace(workspace_entry, cx);
         });
 
-        let open_task = open_local_workspace_path_and_resolve(
-            worktree_path.clone(),
-            app_state,
-            window,
-            cx,
-        );
+        let open_task =
+            open_local_workspace_path_and_resolve(worktree_path.clone(), app_state, window, cx);
 
         let source_pane = workspace_handle
             .read_with(cx, |workspace, _| workspace.active_pane().clone())
@@ -458,16 +449,13 @@ impl PickerDelegate for ImportWorktreeDelegate {
                 .spacing(ListItemSpacing::Sparse)
                 .toggle_state(selected)
                 .child(
-                    v_flex()
-                        .w_full()
-                        .child(branch_label)
-                        .child(
-                            Label::new(path_display)
-                                .size(ui::LabelSize::Small)
-                                .color(Color::Muted)
-                                .truncate()
-                                .into_any_element(),
-                        ),
+                    v_flex().w_full().child(branch_label).child(
+                        Label::new(path_display)
+                            .size(ui::LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate()
+                            .into_any_element(),
+                    ),
                 ),
         )
     }
