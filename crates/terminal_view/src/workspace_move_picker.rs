@@ -170,9 +170,17 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
             return;
         }
 
+        let source_workspace = self.source_pane.read(cx).workspace();
+
         self.source_pane.update(cx, |pane, cx| {
             pane.remove_item(item_id, true, false, window, cx);
         });
+
+        if let Some(source_workspace) = source_workspace {
+            source_workspace.update(cx, |workspace, cx| {
+                workspace.forget_item_dirty_state(item_id, window, cx);
+            });
+        }
 
         target_workspace.update(cx, |workspace, cx| {
             if !workspace.add_item_to_center(item.boxed_clone(), window, cx) {
