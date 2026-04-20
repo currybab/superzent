@@ -118,6 +118,7 @@ Moving a tab (`Item`) from a `Pane` in workspace A to a `Pane` in workspace B is
 4. **Clear the source workspace's dirty-item tracking explicitly after removing the item.** The dirty subscription fires when the item is fully released from all strong references; because the moved item is still alive in the target pane, that release never occurs and the source workspace retains phantom edited/dirty state indefinitely. Call `workspace.forget_item_dirty_state(item_id, window, cx)` (defined in `crates/workspace/src/workspace.rs`) immediately after `remove_item`. This method removes the `EntityId` from `dirty_items` and updates the window-edited flag.
 
 5. **Activate the target workspace through `MultiWorkspace::activate` after the transfer.** `Pane::add_item` and `Pane::remove_item` only update pane-internal state; they do not switch which workspace is displayed in the `MultiWorkspace` split. After adding the item to the target pane, call:
+
    ```rust
    if let Some(Some(multi_workspace)) = window.root::<MultiWorkspace>() {
        multi_workspace.update(cx, |multi_workspace, cx| {
@@ -163,11 +164,13 @@ Apply this guidance whenever you are:
 The following files in the `tab-move-workspace` branch contain correct implementations of each pattern:
 
 **`crates/terminal_view/src/terminal_view.rs`**
+
 - `tab_extra_context_menu_actions` uses `window.root::<MultiWorkspace>()` to count workspaces without re-borrowing the leased window.
 - `MoveTerminalToAnotherWorkspace` is registered via `.on_action(cx.listener(TerminalView::move_to_another_workspace))` on the item's element, not on the workspace.
 - `move_to_another_workspace` resolves the source pane via `workspace.pane_for(&self_entity)` rather than `workspace.active_pane()`.
 
 **`crates/terminal_view/src/workspace_move_picker.rs`**
+
 - Source-still-has-item guard in `confirm` before any transfer begins.
 - `pane.remove_item(item_id, true, false, window, cx)` — `activate_pane: true` to keep the source's `active_item_index` valid.
 - `workspace.forget_item_dirty_state(item_id, window, cx)` called on the source workspace immediately after `remove_item`.
@@ -176,13 +179,16 @@ The following files in the `tab-move-workspace` branch contain correct implement
 - `build_workspace_candidates` uses `SuperzentStore::try_global(cx)` with a path-based display-name fallback, avoiding a panic if the store is not initialized.
 
 **`crates/workspace/src/workspace.rs`**
+
 - `Workspace::forget_item_dirty_state` — removes the item's `EntityId` from `dirty_items` and updates the window-edited flag.
 - `Workspace::add_item_to_center` — walks `last_active_center_pane` rather than `active_pane`, ensuring items land in the center pane group regardless of dock focus state.
 
 **`crates/workspace/src/multi_workspace.rs`**
+
 - `MultiWorkspace::workspace_entries_excluding_active` — enumerates all workspaces except the currently active one, used as the picker's candidate list so the user cannot "move" a tab to the workspace it already lives in.
 
 **`crates/superzent_ui/src/import_worktree_picker.rs`**
+
 - `store.upsert_workspace(workspace_entry, cx)` is called synchronously before `open_local_workspace_path_and_resolve`, ensuring the store entry exists before the workspace opens (avoids a duplicate-unmanaged-entry race).
 - The open task is awaited in `cx.spawn_in`; on failure, `store_weak.update(cx, |store, cx| store.remove_workspace(...))` rolls back the upserted entry. `store_weak` (a `WeakEntity`) is captured before the spawn because `Entity::update` from an async closure context requires a weak handle to return `Result<R>`.
 
