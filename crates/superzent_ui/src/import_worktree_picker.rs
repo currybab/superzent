@@ -291,6 +291,7 @@ impl PickerDelegate for ImportWorktreeDelegate {
 
         let project = self.project.clone();
         let store = SuperzentStore::global(cx);
+        let store_weak = store.downgrade();
         let workspace_handle = self.workspace.clone();
 
         let workspace_entry = {
@@ -324,29 +325,34 @@ impl PickerDelegate for ImportWorktreeDelegate {
             return;
         };
 
-        store.update(cx, |store, cx| {
-            store.upsert_workspace(workspace_entry, cx);
-        });
-
         let open_task =
             open_local_workspace_path_and_resolve(worktree_path.clone(), app_state, window, cx);
 
         cx.spawn_in(window, async move |_, cx| {
-            if let Err(error) = open_task.await {
-                workspace_handle
-                    .update(cx, |workspace, cx| {
-                        workspace.show_toast(
-                            Toast::new(
-                                NotificationId::unique::<SuperzentSidebar>(),
-                                format!(
-                                    "Failed to open worktree at {}: {error}",
-                                    worktree_path.display()
+            match open_task.await {
+                Ok(_) => {
+                    store_weak
+                        .update(cx, |store, cx| {
+                            store.upsert_workspace(workspace_entry, cx);
+                        })
+                        .ok();
+                }
+                Err(error) => {
+                    workspace_handle
+                        .update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                Toast::new(
+                                    NotificationId::unique::<SuperzentSidebar>(),
+                                    format!(
+                                        "Failed to open worktree at {}: {error}",
+                                        worktree_path.display()
+                                    ),
                                 ),
-                            ),
-                            cx,
-                        );
-                    })
-                    .ok();
+                                cx,
+                            );
+                        })
+                        .ok();
+                }
             }
             anyhow::Ok(())
         })

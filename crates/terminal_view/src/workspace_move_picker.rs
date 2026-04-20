@@ -160,6 +160,16 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
         let item = self.item_to_move.boxed_clone();
         let item_id = item.item_id();
 
+        let source_still_has_item = self
+            .source_pane
+            .read(cx)
+            .items()
+            .any(|existing| existing.item_id() == item_id);
+        if !source_still_has_item {
+            cx.emit(DismissEvent);
+            return;
+        }
+
         self.source_pane.update(cx, |pane, cx| {
             pane.remove_item(item_id, true, false, window, cx);
         });
