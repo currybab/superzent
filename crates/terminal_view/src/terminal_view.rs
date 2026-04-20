@@ -1614,7 +1614,7 @@ impl Item for TerminalView {
 
     fn tab_extra_context_menu_actions(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
         let mut actions = Vec::new();
@@ -1626,10 +1626,17 @@ impl Item for TerminalView {
             ));
         }
 
-        actions.push((
-            "Move to Another Workspace".into(),
-            Box::new(MoveTerminalToAnotherWorkspace),
-        ));
+        let other_workspace_count = window
+            .root::<workspace::MultiWorkspace>()
+            .flatten()
+            .map(|multi_workspace| multi_workspace.read(cx).workspaces().len())
+            .unwrap_or(0);
+        if other_workspace_count >= 2 {
+            actions.push((
+                "Move to Another Workspace".into(),
+                Box::new(MoveTerminalToAnotherWorkspace),
+            ));
+        }
 
         actions
     }
