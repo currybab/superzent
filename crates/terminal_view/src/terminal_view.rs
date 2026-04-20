@@ -5,6 +5,7 @@ mod terminal_path_like_target;
 pub mod terminal_scrollbar;
 #[cfg(feature = "assistant")]
 mod terminal_slash_command;
+mod workspace_move_picker;
 
 use editor::{Editor, EditorSettings, actions::SelectAll, blink_manager::BlinkManager};
 use gpui::{
@@ -87,6 +88,8 @@ actions!(
     [
         /// Reruns the last executed task in the terminal.
         RerunTask,
+        /// Moves the active terminal tab to another workspace.
+        MoveTerminalToAnotherWorkspace,
     ]
 );
 
@@ -102,6 +105,11 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(TerminalView::deploy);
+        workspace.register_action(
+            |workspace: &mut Workspace, _: &MoveTerminalToAnotherWorkspace, window, cx| {
+                workspace_move_picker::move_terminal_to_workspace(workspace, window, cx);
+            },
+        );
     })
     .detach();
     #[cfg(feature = "assistant")]
@@ -445,6 +453,30 @@ impl TerminalView {
         }
         cx.notify();
         self.focus_handle.focus(window, cx);
+    }
+
+    pub fn move_to_another_workspace(
+        &mut self,
+        _: &MoveTerminalToAnotherWorkspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let self_entity = cx.entity();
+        workspace.update(cx, |workspace, cx| {
+            let Some(source_pane) = workspace.pane_for(&self_entity) else {
+                return;
+            };
+            workspace_move_picker::open_workspace_move_picker(
+                workspace,
+                source_pane,
+                Box::new(self_entity.clone()),
+                window,
+                cx,
+            );
+        });
     }
 
     pub fn rename_terminal(
@@ -1269,6 +1301,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::select_all))
             .on_action(cx.listener(TerminalView::rerun_task))
             .on_action(cx.listener(TerminalView::rename_terminal))
+            .on_action(cx.listener(TerminalView::move_to_another_workspace))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1606,15 +1639,31 @@ impl Item for TerminalView {
 
     fn tab_extra_context_menu_actions(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
+        let mut actions = Vec::new();
         let terminal = self.terminal.read(cx);
         if terminal.task().is_none() {
-            vec![("Rename".into(), Box::new(RenameTerminal))]
-        } else {
-            Vec::new()
+            actions.push((
+                "Rename".into(),
+                Box::new(RenameTerminal) as Box<dyn gpui::Action>,
+            ));
         }
+
+        let other_workspace_count = window
+            .root::<workspace::MultiWorkspace>()
+            .flatten()
+            .map(|multi_workspace| multi_workspace.read(cx).workspaces().len())
+            .unwrap_or(0);
+        if other_workspace_count >= 2 {
+            actions.push((
+                "Move to Another Workspace".into(),
+                Box::new(MoveTerminalToAnotherWorkspace),
+            ));
+        }
+
+        actions
     }
 
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
@@ -1701,7 +1750,7 @@ impl Item for TerminalView {
     fn added_to_workspace(
         &mut self,
         workspace: &mut Workspace,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.terminal().read(cx).task().is_none() {
@@ -1717,6 +1766,18 @@ impl Item for TerminalView {
                 .detach();
             }
             self.workspace_id = workspace.database_id();
+        }
+
+        let new_workspace = workspace.weak_handle();
+        let is_same_workspace = self
+            .workspace
+            .upgrade()
+            .is_some_and(|current| current.entity_id() == new_workspace.entity_id());
+        if !is_same_workspace {
+            self.workspace = new_workspace.clone();
+            self.project = workspace.project().downgrade();
+            self._terminal_subscriptions =
+                subscribe_for_terminal_events(&self.terminal, new_workspace, window, cx);
         }
     }
 

@@ -5374,6 +5374,17 @@ impl Workspace {
         }
     }
 
+    pub fn forget_item_dirty_state(
+        &mut self,
+        item_id: EntityId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.dirty_items.remove(&item_id).is_some() {
+            self.update_window_edited(window, cx);
+        }
+    }
+
     fn update_item_dirty_state(
         &mut self,
         item: &dyn ItemHandle,

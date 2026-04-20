@@ -3,6 +3,7 @@ mod acp_tabs;
 #[cfg(feature = "acp_tabs")]
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 
+mod import_worktree_picker;
 mod pending_keystroke_indicator;
 pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 
@@ -97,6 +98,7 @@ actions!(
     [
         AddProject,
         NewWorkspace,
+        ImportWorktree,
         RevealChanges,
         CloseCenterPaneItem,
         OpenWorkspaceInNewWindow,
@@ -827,6 +829,9 @@ pub fn init(cx: &mut App) {
                 })
                 .register_action(|workspace, _: &NewWorkspace, window, cx| {
                     run_new_workspace(workspace, window, cx);
+                })
+                .register_action(|workspace, _: &ImportWorktree, window, cx| {
+                    import_worktree_picker::run_import_worktree(workspace, window, cx);
                 })
                 .register_action(|workspace, _: &RevealChanges, window, cx| {
                     run_reveal_changes(workspace, window, cx);
@@ -4176,6 +4181,15 @@ impl SuperzentSidebar {
             let mut menu = menu;
 
             if matches!(&project.location, ProjectLocation::Local { .. }) {
+                menu = menu.entry("Import Worktree", None, {
+                    let entity = entity.clone();
+                    let project = project.clone();
+                    move |window, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.import_worktree(project.clone(), window, cx);
+                        });
+                    }
+                });
                 menu = menu.entry("Sync Worktrees", None, {
                     let entity = entity.clone();
                     let project = project.clone();
@@ -4366,6 +4380,23 @@ impl SuperzentSidebar {
             return;
         };
         run_sync_project_worktrees_from_store(current_workspace, project, window, cx);
+    }
+
+    fn import_worktree(
+        &mut self,
+        project: ProjectEntry,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current_workspace) = self.current_workspace_entity(cx) else {
+            return;
+        };
+        import_worktree_picker::run_import_worktree_for_project(
+            current_workspace,
+            project,
+            window,
+            cx,
+        );
     }
 
     fn render_project_drop_zone(
@@ -7126,7 +7157,7 @@ fn open_local_workspace_path(
     })
 }
 
-fn open_local_workspace_path_and_resolve(
+pub(crate) fn open_local_workspace_path_and_resolve(
     path: PathBuf,
     app_state: Arc<WorkspaceAppState>,
     window: &mut gpui::Window,
@@ -7767,7 +7798,7 @@ fn local_path_basename(path: &Path) -> String {
         .to_string()
 }
 
-fn build_synced_local_workspace_entry(
+pub(crate) fn build_synced_local_workspace_entry(
     project: &ProjectEntry,
     discovered_worktree: &superzent_git::DiscoveredWorktree,
     store: &SuperzentStore,
