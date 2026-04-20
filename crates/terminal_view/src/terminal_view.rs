@@ -88,7 +88,7 @@ actions!(
     [
         /// Reruns the last executed task in the terminal.
         RerunTask,
-        /// Moves the active terminal tab to a different workspace.
+        /// Moves the active terminal tab to another workspace.
         MoveTerminalToWorkspace,
     ]
 );
@@ -1627,7 +1627,7 @@ impl Item for TerminalView {
         }
 
         actions.push((
-            "Move to Workspace".into(),
+            "Move to Another Workspace".into(),
             Box::new(MoveTerminalToWorkspace),
         ));
 
