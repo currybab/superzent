@@ -455,6 +455,30 @@ impl TerminalView {
         self.focus_handle.focus(window, cx);
     }
 
+    pub fn move_to_another_workspace(
+        &mut self,
+        _: &MoveTerminalToAnotherWorkspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let self_entity = cx.entity();
+        workspace.update(cx, |workspace, cx| {
+            let Some(source_pane) = workspace.pane_for(&self_entity) else {
+                return;
+            };
+            workspace_move_picker::open_workspace_move_picker(
+                workspace,
+                source_pane,
+                Box::new(self_entity.clone()),
+                window,
+                cx,
+            );
+        });
+    }
+
     pub fn rename_terminal(
         &mut self,
         _: &RenameTerminal,
@@ -1277,6 +1301,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::select_all))
             .on_action(cx.listener(TerminalView::rerun_task))
             .on_action(cx.listener(TerminalView::rename_terminal))
+            .on_action(cx.listener(TerminalView::move_to_another_workspace))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,

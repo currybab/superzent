@@ -226,6 +226,22 @@ pub fn move_terminal_to_workspace(
         return;
     }
 
+    open_workspace_move_picker(
+        workspace,
+        active_pane,
+        active_item.boxed_clone(),
+        window,
+        cx,
+    );
+}
+
+pub fn open_workspace_move_picker(
+    workspace: &mut Workspace,
+    source_pane: Entity<Pane>,
+    item_to_move: Box<dyn ItemHandle>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let Some(Some(multi_workspace)) = window.root::<MultiWorkspace>() else {
         return;
     };
@@ -246,10 +262,9 @@ pub fn move_terminal_to_workspace(
     }
 
     let candidates = build_workspace_candidates(&raw_entries, cx);
-    let item_to_move = active_item.boxed_clone();
 
     workspace.toggle_modal(window, cx, |window, cx| {
-        WorkspaceMovePicker::new(active_pane, item_to_move, candidates, window, cx)
+        WorkspaceMovePicker::new(source_pane, item_to_move, candidates, window, cx)
     });
 }
 
