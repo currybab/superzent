@@ -165,10 +165,12 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
         });
 
         target_workspace.update(cx, |workspace, cx| {
-            let target_pane = workspace.active_pane().clone();
-            target_pane.update(cx, |pane, cx| {
-                pane.add_item(item, true, true, None, window, cx);
-            });
+            if !workspace.add_item_to_center(item.boxed_clone(), window, cx) {
+                let target_pane = workspace.active_pane().clone();
+                target_pane.update(cx, |pane, cx| {
+                    pane.add_item(item, true, true, None, window, cx);
+                });
+            }
         });
 
         if let Some(Some(multi_workspace)) = window.root::<MultiWorkspace>() {
