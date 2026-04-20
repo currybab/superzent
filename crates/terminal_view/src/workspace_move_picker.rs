@@ -282,14 +282,15 @@ fn build_workspace_candidates(
     entries: &[(usize, PathBuf, Entity<Workspace>)],
     cx: &App,
 ) -> Vec<WorkspaceCandidate> {
-    let store = SuperzentStore::global(cx);
-    let store = store.read(cx);
+    let store_entity = SuperzentStore::try_global(cx);
+    let store = store_entity.as_ref().map(|entity| entity.read(cx));
 
     entries
         .iter()
         .map(|(index, worktree_path, workspace_entity)| {
-            let display_name =
-                if let Some(workspace_entry) = store.workspace_for_path(worktree_path) {
+            let display_name = store
+                .and_then(|store| {
+                    let workspace_entry = store.workspace_for_path(worktree_path)?;
                     let project_name = store
                         .project(&workspace_entry.project_id)
                         .map(|project| project.name.as_str())
@@ -308,13 +309,14 @@ fn build_workspace_candidates(
                             workspace_entry.branch.clone()
                         };
 
-                    format!("[{project_name}] {workspace_label}")
-                } else {
+                    Some(format!("[{project_name}] {workspace_label}"))
+                })
+                .unwrap_or_else(|| {
                     worktree_path
                         .file_name()
                         .map(|name| name.to_string_lossy().to_string())
                         .unwrap_or_else(|| format!("Workspace {}", index + 1))
-                };
+                });
 
             WorkspaceCandidate {
                 display_name,
