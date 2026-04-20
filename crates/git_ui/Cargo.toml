@@ -35,6 +35,7 @@ file_icons.workspace = true
 futures.workspace = true
 feature_flags.workspace = true
 fuzzy.workspace = true
+fuzzy_nucleo.workspace = true
 git.workspace = true
 gpui.workspace = true
 itertools.workspace = true
