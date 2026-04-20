@@ -325,34 +325,35 @@ impl PickerDelegate for ImportWorktreeDelegate {
             return;
         };
 
+        let workspace_entry_id = workspace_entry.id.clone();
+        store.update(cx, |store, cx| {
+            store.upsert_workspace(workspace_entry, cx);
+        });
+
         let open_task =
             open_local_workspace_path_and_resolve(worktree_path.clone(), app_state, window, cx);
 
         cx.spawn_in(window, async move |_, cx| {
-            match open_task.await {
-                Ok(_) => {
-                    store_weak
-                        .update(cx, |store, cx| {
-                            store.upsert_workspace(workspace_entry, cx);
-                        })
-                        .ok();
-                }
-                Err(error) => {
-                    workspace_handle
-                        .update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                Toast::new(
-                                    NotificationId::unique::<SuperzentSidebar>(),
-                                    format!(
-                                        "Failed to open worktree at {}: {error}",
-                                        worktree_path.display()
-                                    ),
+            if let Err(error) = open_task.await {
+                store_weak
+                    .update(cx, |store, cx| {
+                        store.remove_workspace(&workspace_entry_id, cx);
+                    })
+                    .ok();
+                workspace_handle
+                    .update(cx, |workspace, cx| {
+                        workspace.show_toast(
+                            Toast::new(
+                                NotificationId::unique::<SuperzentSidebar>(),
+                                format!(
+                                    "Failed to open worktree at {}: {error}",
+                                    worktree_path.display()
                                 ),
-                                cx,
-                            );
-                        })
-                        .ok();
-                }
+                            ),
+                            cx,
+                        );
+                    })
+                    .ok();
             }
             anyhow::Ok(())
         })
