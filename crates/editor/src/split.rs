@@ -199,9 +199,10 @@ where
             return;
         };
 
-        let diff = source_snapshot
-            .diff_for_buffer_id(first.source_buffer.remote_id())
-            .expect("buffer with no diff when creating patches");
+        let Some(diff) = source_snapshot.diff_for_buffer_id(first.source_buffer.remote_id()) else {
+            pending.clear();
+            return;
+        };
         let rhs_buffer = if first.source_buffer.remote_id() == diff.base_text().remote_id() {
             first.target_buffer
         } else {
