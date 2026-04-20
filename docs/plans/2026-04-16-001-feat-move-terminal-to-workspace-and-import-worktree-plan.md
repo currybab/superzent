@@ -252,7 +252,7 @@ Superzent's `MultiWorkspace` hosts multiple workspaces in one window, but there 
 
 ---
 
-- [x] **Unit 5: Post-import terminal move prompt**
+- [ ] ~~**Unit 5: Post-import terminal move prompt**~~ — Dropped: prompt did not work reliably in practice; users can move the terminal manually via the picker if needed.
 
 **Goal:** After importing a worktree, offer to move the current center pane terminal to the new workspace.
 

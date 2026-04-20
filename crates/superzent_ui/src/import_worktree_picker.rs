@@ -3,14 +3,13 @@ use std::sync::Arc;
 
 use fuzzy::StringMatchCandidate;
 use gpui::{
-    App, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, PromptLevel,
-    SharedString, Subscription, Task, Window,
+    App, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, SharedString,
+    Subscription, Task, Window,
 };
 use picker::{Picker, PickerDelegate};
 use superzent_model::{ProjectEntry, ProjectLocation, SuperzentStore};
-use terminal_view::TerminalView;
 use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
-use workspace::{ModalView, MultiWorkspace, Toast, Workspace, notifications::NotificationId};
+use workspace::{ModalView, Toast, Workspace, notifications::NotificationId};
 
 use crate::{
     SuperzentSidebar, build_synced_local_workspace_entry, open_local_workspace_path_and_resolve,
@@ -332,79 +331,23 @@ impl PickerDelegate for ImportWorktreeDelegate {
         let open_task =
             open_local_workspace_path_and_resolve(worktree_path.clone(), app_state, window, cx);
 
-        let source_pane = workspace_handle
-            .read_with(cx, |workspace, _| workspace.active_pane().clone())
-            .ok();
-
         cx.spawn_in(window, async move |_, cx| {
-            let new_workspace = match open_task.await {
-                Ok(workspace) => workspace,
-                Err(error) => {
-                    workspace_handle
-                        .update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                Toast::new(
-                                    NotificationId::unique::<SuperzentSidebar>(),
-                                    format!(
-                                        "Failed to open worktree at {}: {error}",
-                                        worktree_path.display()
-                                    ),
+            if let Err(error) = open_task.await {
+                workspace_handle
+                    .update(cx, |workspace, cx| {
+                        workspace.show_toast(
+                            Toast::new(
+                                NotificationId::unique::<SuperzentSidebar>(),
+                                format!(
+                                    "Failed to open worktree at {}: {error}",
+                                    worktree_path.display()
                                 ),
-                                cx,
-                            );
-                        })
-                        .ok();
-                    return anyhow::Ok(());
-                }
-            };
-
-            let Some(source_pane) = source_pane else {
-                return anyhow::Ok(());
-            };
-
-            let terminal_item = source_pane.read_with(cx, |pane, _| {
-                pane.active_item()
-                    .filter(|item| item.downcast::<TerminalView>().is_some())
-                    .map(|item| item.boxed_clone())
-            });
-
-            let Some(terminal_item) = terminal_item else {
-                return anyhow::Ok(());
-            };
-
-            let answer = cx.prompt(
-                PromptLevel::Info,
-                "Move terminal?",
-                Some("Move the active terminal to the newly imported workspace?"),
-                &["Keep Here", "Move Terminal"],
-            );
-
-            if answer.await == Ok(1) {
-                let item_id = terminal_item.item_id();
-                cx.update(|window, cx| {
-                    source_pane.update(cx, |pane, cx| {
-                        pane.remove_item(item_id, false, false, window, cx);
-                    });
-
-                    new_workspace.update(cx, |workspace, cx| {
-                        let target_pane = workspace.active_pane().clone();
-                        target_pane.update(cx, |pane, cx| {
-                            pane.add_item(terminal_item, true, true, None, window, cx);
-                        });
-                    });
-                })?;
-
-                if let Some(multi_workspace_handle) =
-                    cx.window_handle().downcast::<MultiWorkspace>()
-                {
-                    multi_workspace_handle
-                        .update(cx, |multi_workspace, _window, cx| {
-                            multi_workspace.activate(new_workspace.clone(), cx);
-                        })
-                        .ok();
-                }
+                            ),
+                            cx,
+                        );
+                    })
+                    .ok();
             }
-
             anyhow::Ok(())
         })
         .detach_and_log_err(cx);
