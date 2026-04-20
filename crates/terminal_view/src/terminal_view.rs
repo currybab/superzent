@@ -89,7 +89,7 @@ actions!(
         /// Reruns the last executed task in the terminal.
         RerunTask,
         /// Moves the active terminal tab to another workspace.
-        MoveTerminalToWorkspace,
+        MoveTerminalToAnotherWorkspace,
     ]
 );
 
@@ -106,7 +106,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(TerminalView::deploy);
         workspace.register_action(
-            |workspace: &mut Workspace, _: &MoveTerminalToWorkspace, window, cx| {
+            |workspace: &mut Workspace, _: &MoveTerminalToAnotherWorkspace, window, cx| {
                 workspace_move_picker::move_terminal_to_workspace(workspace, window, cx);
             },
         );
@@ -1628,7 +1628,7 @@ impl Item for TerminalView {
 
         actions.push((
             "Move to Another Workspace".into(),
-            Box::new(MoveTerminalToWorkspace),
+            Box::new(MoveTerminalToAnotherWorkspace),
         ));
 
         actions
