@@ -161,7 +161,7 @@ impl PickerDelegate for WorkspaceMovePickerDelegate {
         let item_id = item.item_id();
 
         self.source_pane.update(cx, |pane, cx| {
-            pane.remove_item(item_id, false, false, window, cx);
+            pane.remove_item(item_id, true, false, window, cx);
         });
 
         target_workspace.update(cx, |workspace, cx| {
