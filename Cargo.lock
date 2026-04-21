@@ -16696,7 +16696,7 @@ dependencies = [
 
 [[package]]
 name = "superzent"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "acp_thread",
  "acp_tools",
