@@ -139,6 +139,15 @@ pub enum FoldStatus {
     Foldable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NavigationOverlayKey(TypeId);
+
+impl NavigationOverlayKey {
+    pub const fn unique<T: 'static>() -> Self {
+        Self(TypeId::of::<T>())
+    }
+}
+
 /// Keys for tagging text highlights.
 ///
 /// Note the order is important as it determines the priority of the highlights, lower means higher priority
@@ -163,6 +172,7 @@ pub enum HighlightKey {
     InlineAssist,
     InputComposition,
     MatchingBracket,
+    NavigationOverlay(NavigationOverlayKey),
     PendingInput,
     ProjectSearchView,
     Rename,
