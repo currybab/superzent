@@ -16,6 +16,7 @@ pub mod blink_manager;
 mod bracket_colorization;
 mod clangd_ext;
 pub mod code_context_menus;
+mod code_lens;
 pub mod display_map;
 mod document_colors;
 mod document_symbols;
@@ -98,6 +99,7 @@ use code_context_menus::{
     AvailableCodeAction, CodeActionContents, CodeActionsItem, CodeActionsMenu, CodeContextMenu,
     CompletionsMenu, ContextMenuOrigin,
 };
+use code_lens::CodeLensState;
 use collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use convert_case::{Case, Casing};
 use dap::TelemetrySpawnLocation;
@@ -111,7 +113,7 @@ use editor_settings::{GoToDefinitionFallback, Minimap as MinimapSettings};
 use element::{AcceptEditPredictionBinding, LineWithInvisibles, PositionMap, layout_line};
 use futures::{
     FutureExt,
-    future::{self, Shared, join},
+    future::{self, Shared},
 };
 use fuzzy::{StringMatch, StringMatchCandidate};
 use git::blame::{GitBlame, GlobalBlameRenderer};
@@ -1297,8 +1299,10 @@ pub struct Editor {
 
     selection_drag_state: SelectionDragState,
     colors: Option<LspColorData>,
+    code_lens: Option<CodeLensState>,
     post_scroll_update: Task<()>,
     refresh_colors_task: Task<()>,
+    refresh_code_lens_task: Task<()>,
     use_document_folding_ranges: bool,
     refresh_folding_ranges_task: Task<()>,
     inlay_hints: Option<LspInlayHintData>,
@@ -2104,7 +2108,7 @@ impl Editor {
                 window,
                 |editor, _, event, window, cx| match event {
                     project::Event::RefreshCodeLens => {
-                        // we always query lens with actions, without storing them, always refreshing them
+                        editor.refresh_code_lenses(None, window, cx);
                     }
                     project::Event::RefreshInlayHints {
                         server_id,
@@ -2530,7 +2534,9 @@ impl Editor {
             runnables: RunnableData::new(),
             pull_diagnostics_task: Task::ready(()),
             colors: None,
+            code_lens: None,
             refresh_colors_task: Task::ready(()),
+            refresh_code_lens_task: Task::ready(()),
             use_document_folding_ranges: false,
             refresh_folding_ranges_task: Task::ready(()),
             inlay_hints: None,
@@ -2711,6 +2717,9 @@ impl Editor {
             editor.colors = Some(LspColorData::new(cx));
             editor.use_document_folding_ranges = true;
             editor.inlay_hints = Some(LspInlayHintData::new(inlay_hint_settings));
+            if EditorSettings::get_global(cx).code_lens.inline() {
+                editor.code_lens = Some(CodeLensState::default());
+            }
 
             if let Some(buffer) = multi_buffer.read(cx).as_singleton() {
                 editor.register_buffer(buffer.read(cx).remote_id(), cx);
@@ -6938,6 +6947,10 @@ impl Editor {
                 action,
                 provider,
             } => {
+                if code_lens::try_handle_client_command(&action, self, &workspace, window, cx) {
+                    return Some(Task::ready(Ok(())));
+                }
+
                 let apply_code_action =
                     provider.apply_code_action(buffer, action, excerpt_id, true, window, cx);
                 let workspace = workspace.downgrade();
@@ -24789,6 +24802,12 @@ impl Editor {
                 self.refresh_document_colors(None, window, cx);
             }
 
+            let code_lens_inline = EditorSettings::get_global(cx).code_lens.inline();
+            let was_inline = self.code_lens.is_some();
+            if code_lens_inline != was_inline {
+                self.toggle_code_lens(code_lens_inline, window, cx);
+            }
+
             self.refresh_inlay_hints(
                 InlayHintRefreshReason::SettingsChange(inlay_hint_settings(
                     self.selections.newest_anchor().head(),
@@ -25948,6 +25967,7 @@ impl Editor {
         self.refresh_semantic_tokens(for_buffer, None, cx);
         self.refresh_document_colors(for_buffer, window, cx);
         self.refresh_folding_ranges(for_buffer, window, cx);
+        self.refresh_code_lenses(for_buffer, window, cx);
         self.refresh_document_symbols(for_buffer, cx);
     }
 
@@ -26086,6 +26106,7 @@ impl Editor {
         self.register_visible_buffers(cx);
         self.colorize_brackets(false, cx);
         self.refresh_inlay_hints(InlayHintRefreshReason::NewLinesShown, cx);
+        self.resolve_visible_code_lenses(cx);
         if !self.buffer().read(cx).is_singleton() {
             self.update_lsp_data(None, window, cx);
             self.refresh_runnables(None, window, cx);
@@ -27345,21 +27366,22 @@ impl CodeActionProvider for Entity<Project> {
         cx: &mut App,
     ) -> Task<Result<Vec<CodeAction>>> {
         self.update(cx, |project, cx| {
-            let code_lens_actions = project.code_lens_actions(buffer, range.clone(), cx);
+            let code_lens_actions = if EditorSettings::get_global(cx).code_lens.show_in_menu() {
+                Some(project.code_lens_actions(buffer, range.clone(), cx))
+            } else {
+                None
+            };
             let code_actions = project.code_actions(buffer, range, None, cx);
             cx.background_spawn(async move {
-                let (code_lens_actions, code_actions) = join(code_lens_actions, code_actions).await;
-                Ok(code_lens_actions
-                    .context("code lens fetch")?
-                    .into_iter()
-                    .flatten()
-                    .chain(
-                        code_actions
-                            .context("code action fetch")?
-                            .into_iter()
-                            .flatten(),
-                    )
-                    .collect())
+                let code_lens_actions = match code_lens_actions {
+                    Some(task) => task.await.context("code lens fetch")?.unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                let code_actions = code_actions
+                    .await
+                    .context("code action fetch")?
+                    .unwrap_or_default();
+                Ok(code_lens_actions.into_iter().chain(code_actions).collect())
             })
         })
     }
