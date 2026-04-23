@@ -16,6 +16,10 @@ use language::{Anchor, Buffer, BufferId};
 #[cfg(feature = "ai")]
 use project::git_store::{GitStoreEvent, RepositoryEvent};
 use project::{ConflictRegion, ConflictSet, ConflictSetUpdate, ProjectItem as _};
+#[cfg(feature = "ai")]
+use settings::Settings as _;
+#[cfg(feature = "ai")]
+use std::{cell::RefCell, rc::Rc};
 use std::{ops::Range, sync::Arc};
 #[cfg(feature = "ai")]
 use ui::Divider;
