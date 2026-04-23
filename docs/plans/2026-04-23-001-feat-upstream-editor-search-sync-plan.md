@@ -113,7 +113,7 @@ flowchart TD
 
 ## Implementation Units
 
-- [ ] **Unit 1: Preflight the candidate set and branch state**
+- [x] **Unit 1: Preflight the candidate set and branch state**
 
   **Goal:** Establish a safe execution baseline before any cherry-pick changes land.
 
@@ -150,7 +150,7 @@ flowchart TD
   - Candidate list is ordered and categorized before code changes begin.
   - Superzent-specific hard gates are explicit before any conflict resolution starts.
 
-- [ ] **Unit 2: Backport search correctness and symbol safety fixes**
+- [x] **Unit 2: Backport search correctness and symbol safety fixes**
 
   **Goal:** Improve search reliability while keeping the project search and buffer search surfaces stable.
 
@@ -209,7 +209,7 @@ flowchart TD
   - Search results, replace-all, replace focus, and UTF-8 symbol highlighting behave as described.
   - Focused search and project symbol tests pass.
 
-- [ ] **Unit 3: Backport terminal correctness fixes**
+- [x] **Unit 3: Backport terminal correctness fixes**
 
   **Goal:** Improve terminal behavior in ordinary terminal use and managed agent-terminal contexts.
 
