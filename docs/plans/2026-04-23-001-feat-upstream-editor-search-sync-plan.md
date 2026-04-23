@@ -549,7 +549,7 @@ flowchart TD
   - Bookmark behavior works in editor and project integration tests.
   - Superzent workspace persistence still restores the expected active workspace and project groups.
 
-- [ ] **Unit 8: Trial Code Lens, navigation overlays, and hover-delay backports**
+- [x] **Unit 8: Trial Code Lens, navigation overlays, and hover-delay backports**
 
   **Goal:** Evaluate larger editor UX features that touch LSP, settings, rendering, and quick action surfaces.
 
@@ -560,7 +560,7 @@ flowchart TD
   **Candidate order:**
 
   - `497b6de85f` editor: Add configurable hover delay (#53504)
-  - `76883bb983` Support Code Lens in the editor (#54100)
+  - Deferred: `76883bb983` Support Code Lens in the editor (#54100). The patch depends on newer editor/LSP helper APIs such as `visible_buffers`, `visible_buffer_ranges`, and `is_lsp_relevant`, so accepting it here would become a broader editor/LSP API backport.
   - `0800c007c4` editor: Add generic navigation overlays (#52630)
 
   **Files:**
