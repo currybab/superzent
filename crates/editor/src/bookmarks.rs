@@ -48,7 +48,9 @@ impl Editor {
             if let Some((buffer_anchor, _)) =
                 multi_buffer_snapshot.anchor_to_buffer_anchor(multibuffer_anchor)
             {
-                let buffer_id = buffer_anchor.buffer_id;
+                let Some(buffer_id) = buffer_anchor.buffer_id else {
+                    continue;
+                };
                 if let Some(buffer) = project.read(cx).buffer_for_id(buffer_id, cx) {
                     bookmark_store.update(cx, |store, cx| {
                         store.toggle_bookmark(buffer, buffer_anchor, cx);
@@ -72,7 +74,10 @@ impl Editor {
         let Some((position, _)) = buffer_snapshot.anchor_to_buffer_anchor(anchor) else {
             return;
         };
-        let Some(buffer) = self.buffer.read(cx).buffer(position.buffer_id) else {
+        let Some(buffer_id) = position.buffer_id else {
+            return;
+        };
+        let Some(buffer) = self.buffer.read(cx).buffer(buffer_id) else {
             return;
         };
 
@@ -91,7 +96,10 @@ impl Editor {
         let Some((position, _)) = buffer_snapshot.anchor_to_buffer_anchor(anchor) else {
             return;
         };
-        let Some(buffer) = self.buffer.read(cx).buffer(position.buffer_id) else {
+        let Some(buffer_id) = position.buffer_id else {
+            return;
+        };
+        let Some(buffer) = self.buffer.read(cx).buffer(buffer_id) else {
             return;
         };
 

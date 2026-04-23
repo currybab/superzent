@@ -5991,6 +5991,35 @@ impl MultiBufferSnapshot {
         Self::anchor_in_excerpt_(excerpt, text_anchor)
     }
 
+    /// Creates a multibuffer anchor for the given buffer anchor, if it is contained in any excerpt.
+    pub fn anchor_in_buffer(&self, text_anchor: text::Anchor) -> Option<Anchor> {
+        let buffer_id = text_anchor.buffer_id?;
+        for (excerpt_id, buffer_snapshot, range) in self.excerpts() {
+            if buffer_snapshot.remote_id() == buffer_id
+                && range
+                    .context
+                    .start
+                    .cmp(&text_anchor, buffer_snapshot)
+                    .is_le()
+                && range.context.end.cmp(&text_anchor, buffer_snapshot).is_ge()
+            {
+                return Some(Anchor::in_buffer(excerpt_id, text_anchor));
+            }
+        }
+
+        None
+    }
+
+    /// Returns the buffer anchor and buffer snapshot for the given multibuffer anchor.
+    pub fn anchor_to_buffer_anchor(
+        &self,
+        anchor: Anchor,
+    ) -> Option<(text::Anchor, &BufferSnapshot)> {
+        let excerpt_id = self.latest_excerpt_id(anchor.excerpt_id);
+        let buffer = self.buffer_for_excerpt(excerpt_id)?;
+        Some((anchor.text_anchor, buffer))
+    }
+
     /// Same as [`MultiBuffer::anchor_in_excerpt`], but more efficient than calling it multiple times.
     pub fn anchors_in_excerpt(
         &self,

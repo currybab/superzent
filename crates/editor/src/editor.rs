@@ -12016,7 +12016,7 @@ impl Editor {
         let (bookmark_position, _) = snapshot
             .buffer_snapshot()
             .anchor_to_buffer_anchor(bookmark_position)?;
-        let buffer = self.buffer.read(cx).buffer(bookmark_position.buffer_id)?;
+        let buffer = self.buffer.read(cx).buffer(bookmark_position.buffer_id?)?;
 
         let buffer_snapshot = buffer.read(cx).snapshot();
 
@@ -12046,7 +12046,7 @@ impl Editor {
                         if bookmark_row == row {
                             snapshot
                                 .buffer_snapshot()
-                                .anchor_in_excerpt(bookmark.anchor())
+                                .anchor_in_buffer(bookmark.anchor())
                         } else {
                             None
                         }
