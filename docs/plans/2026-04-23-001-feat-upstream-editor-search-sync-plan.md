@@ -488,7 +488,7 @@ flowchart TD
   - File finder and routed picker behavior is at least as stable as before.
   - Superzent-specific picker flows are not regressed.
 
-- [ ] **Unit 7: Trial Bookmarks backport**
+- [x] **Unit 7: Trial Bookmarks backport**
 
   **Goal:** Evaluate upstream Bookmarks as a larger editor feature backport with persistence and workspace implications.
 
