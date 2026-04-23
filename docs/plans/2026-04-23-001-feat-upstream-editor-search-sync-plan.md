@@ -289,7 +289,7 @@ flowchart TD
 
   - `b0e35b6599` Allow search/replace to span multiple lines (#50783)
   - `43867668f4` Add query and search options to `pane::DeploySearch` action (#47331)
-  - `fd4d8444cf` markdown_preview: Add search support to markdown preview (#52502)
+  - Deferred: `fd4d8444cf` markdown_preview: Add search support to markdown preview (#52502). Upstream's patch assumes the newer `MarkdownElement` / `Markdown` entity rendering path, while this branch still uses the parsed-block/list preview renderer. Backporting it here would become a markdown-preview refactor rather than a scoped search UX change.
 
   **Files:**
 
