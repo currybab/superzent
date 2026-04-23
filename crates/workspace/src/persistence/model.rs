@@ -14,8 +14,7 @@ use gpui::{AsyncWindowContext, Entity, WeakEntity, WindowId};
 
 use language::{Toolchain, ToolchainScope};
 use project::{
-    Project, ProjectGroupKey, bookmark_store::SerializedBookmark,
-    debugger::breakpoint_store::SourceBreakpoint,
+    Project, bookmark_store::SerializedBookmark, debugger::breakpoint_store::SourceBreakpoint,
 };
 use remote::RemoteConnectionOptions;
 use serde::{Deserialize, Serialize};
