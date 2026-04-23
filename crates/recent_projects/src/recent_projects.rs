@@ -1688,7 +1688,7 @@ mod tests {
                             candidate_id: 0,
                             score: 1.0,
                             positions: Vec::new(),
-                            string: "fake candidate".to_string(),
+                            string: "fake candidate".into(),
                         })];
                 });
             })
