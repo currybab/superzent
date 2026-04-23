@@ -1512,7 +1512,8 @@ async fn test_fold_with_unindented_multiline_block_comment_includes_closing_brac
         assert_eq!(
             editor.display_text(cx),
             indoc! {"
-                fn main() {⋯}
+                fn main() {⋯
+                }
             "},
         );
     });
