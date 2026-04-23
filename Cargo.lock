@@ -21878,6 +21878,8 @@ dependencies = [
  "postage",
  "pretty_assertions",
  "project",
+ "proptest",
+ "proptest-derive",
  "remote",
  "schemars",
  "serde",
