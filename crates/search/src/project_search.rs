@@ -5422,8 +5422,8 @@ pub mod tests {
         init_test(cx);
 
         cx.update(|cx| {
-            cx.update_global::<SettingsStore, _>(|store, cx| {
-                store.update_default_settings(cx, |settings| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
                     settings.editor.use_smartcase_search = Some(true);
                 });
             });
