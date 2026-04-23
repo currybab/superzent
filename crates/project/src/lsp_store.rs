@@ -1754,8 +1754,8 @@ impl LocalLspStore {
                         range_utf16,
                         cx,
                     )
-                        .await
-                        .transpose()?;
+                    .await
+                    .transpose()?;
                     let Some(mut diff) = diff else {
                         zlog::trace!(logger => "No changes");
                         continue;
