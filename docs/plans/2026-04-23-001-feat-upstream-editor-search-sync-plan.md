@@ -277,7 +277,7 @@ flowchart TD
   - Focused terminal, terminal hyperlink, and shell-builder behavior is covered.
   - Managed terminal wrapper smoke checks still show wrapper-first execution.
 
-- [ ] **Unit 4: Backport medium search UX and markdown-preview search**
+- [x] **Unit 4: Backport medium search UX and markdown-preview search**
 
   **Goal:** Improve search command deployment and enable search inside markdown preview while preserving existing Superzent search entry points.
 
@@ -337,7 +337,7 @@ flowchart TD
   - Search deployment, multi-line search/replace, and markdown preview search work from normal UI entry points.
   - Keymap validation passes after keymap changes.
 
-- [ ] **Unit 5: Backport medium editor interaction improvements**
+- [x] **Unit 5: Backport medium editor interaction improvements**
 
   **Goal:** Improve common editor editing and navigation behavior without adding large persistent features.
 
