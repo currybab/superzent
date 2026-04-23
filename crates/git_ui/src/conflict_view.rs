@@ -391,6 +391,8 @@ fn render_conflict_buttons(
     let is_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
     #[cfg(not(feature = "ai"))]
     let _is_ai_enabled = false;
+    #[cfg(feature = "ai")]
+    let agent_editor = editor.clone();
 
     let row = h_flex()
         .id(cx.block_id)
@@ -442,7 +444,6 @@ fn render_conflict_buttons(
             Button::new("both", "Use Both")
                 .label_size(LabelSize::Small)
                 .on_click({
-                    let editor = editor.clone();
                     let conflict = conflict.clone();
                     let ours = conflict.ours.clone();
                     let theirs = conflict.theirs.clone();
@@ -471,6 +472,7 @@ fn render_conflict_buttons(
                         .color(Color::Muted),
                 )
                 .on_click({
+                    let editor = agent_editor.clone();
                     let conflict = conflict.clone();
                     move |_, window, cx| {
                         let content = editor
