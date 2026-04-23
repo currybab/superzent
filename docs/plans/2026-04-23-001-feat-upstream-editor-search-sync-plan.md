@@ -420,7 +420,7 @@ flowchart TD
   - Focused editor, Vim, formatter, and grammar behavior is covered.
   - Existing editor navigation and search behavior from earlier units remains intact.
 
-- [ ] **Unit 6: Trial `fuzzy_nucleo` picker backports**
+- [x] **Unit 6: Trial `fuzzy_nucleo` picker backports**
 
   **Goal:** Evaluate and, if clean, backport upstream's improved fuzzy matching for file finder and selected picker surfaces.
 
