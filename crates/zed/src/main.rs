@@ -14,7 +14,7 @@ use db::kvp::{GLOBAL_KEY_VALUE_STORE, KEY_VALUE_STORE};
 use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
-use futures::{StreamExt, channel::oneshot, future};
+use futures::{StreamExt, channel::oneshot};
 use git::GitHostingProviderRegistry;
 use git_ui::clone::clone_and_open;
 use gpui::{App, AppContext, Application, AsyncApp, Entity, Global, QuitMode, UpdateGlobal as _};
@@ -1389,7 +1389,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                             },
                         )?);
                     }
-                    for result in future::join_all(promises).await {
+                    for result in futures::future::join_all(promises).await {
                         result.log_err();
                     }
                     anyhow::Ok(())
