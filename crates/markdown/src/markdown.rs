@@ -1259,82 +1259,27 @@ impl MarkdownElement {
     }
 
     fn paint_highlight_range(
-        bounds: Bounds<Pixels>,
         start: usize,
         end: usize,
         color: Hsla,
         rendered_text: &RenderedText,
         window: &mut Window,
     ) {
-        let start_pos = rendered_text.position_for_source_index(start);
-        let end_pos = rendered_text.position_for_source_index(end);
-        if let Some(((start_position, start_line_height), (end_position, end_line_height))) =
-            start_pos.zip(end_pos)
-        {
-            if start_position.y == end_position.y {
-                window.paint_quad(quad(
-                    Bounds::from_corners(
-                        start_position,
-                        point(end_position.x, end_position.y + end_line_height),
-                    ),
-                    Pixels::ZERO,
-                    color,
-                    Edges::default(),
-                    Hsla::transparent_black(),
-                    BorderStyle::default(),
-                ));
-            } else {
-                window.paint_quad(quad(
-                    Bounds::from_corners(
-                        start_position,
-                        point(bounds.right(), start_position.y + start_line_height),
-                    ),
-                    Pixels::ZERO,
-                    color,
-                    Edges::default(),
-                    Hsla::transparent_black(),
-                    BorderStyle::default(),
-                ));
-
-                if end_position.y > start_position.y + start_line_height {
-                    window.paint_quad(quad(
-                        Bounds::from_corners(
-                            point(bounds.left(), start_position.y + start_line_height),
-                            point(bounds.right(), end_position.y),
-                        ),
-                        Pixels::ZERO,
-                        color,
-                        Edges::default(),
-                        Hsla::transparent_black(),
-                        BorderStyle::default(),
-                    ));
-                }
-
-                window.paint_quad(quad(
-                    Bounds::from_corners(
-                        point(bounds.left(), end_position.y),
-                        point(end_position.x, end_position.y + end_line_height),
-                    ),
-                    Pixels::ZERO,
-                    color,
-                    Edges::default(),
-                    Hsla::transparent_black(),
-                    BorderStyle::default(),
-                ));
-            }
+        for bounds in rendered_text.bounds_for_source_range(start..end) {
+            window.paint_quad(quad(
+                bounds,
+                Pixels::ZERO,
+                color,
+                Edges::default(),
+                Hsla::transparent_black(),
+                BorderStyle::default(),
+            ));
         }
     }
 
-    fn paint_selection(
-        &self,
-        bounds: Bounds<Pixels>,
-        rendered_text: &RenderedText,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    fn paint_selection(&self, rendered_text: &RenderedText, window: &mut Window, cx: &mut App) {
         let selection = self.markdown.read(cx).selection.clone();
         Self::paint_highlight_range(
-            bounds,
             selection.start,
             selection.end,
             self.style.selection_background_color,
@@ -1345,7 +1290,6 @@ impl MarkdownElement {
 
     fn paint_search_highlights(
         &self,
-        bounds: Bounds<Pixels>,
         rendered_text: &RenderedText,
         window: &mut Window,
         cx: &mut App,
@@ -1361,7 +1305,6 @@ impl MarkdownElement {
                 colors.search_match_background
             };
             Self::paint_highlight_range(
-                bounds,
                 highlight_range.start,
                 highlight_range.end,
                 color,
@@ -2239,7 +2182,7 @@ impl Element for MarkdownElement {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         rendered_markdown: &mut Self::RequestLayoutState,
         hitbox: &mut Self::PrepaintState,
         window: &mut Window,
@@ -2269,8 +2212,8 @@ impl Element for MarkdownElement {
 
         self.paint_mouse_listeners(hitbox, &rendered_markdown.text, window, cx);
         rendered_markdown.element.paint(window, cx);
-        self.paint_search_highlights(bounds, &rendered_markdown.text, window, cx);
-        self.paint_selection(bounds, &rendered_markdown.text, window, cx);
+        self.paint_search_highlights(&rendered_markdown.text, window, cx);
+        self.paint_selection(&rendered_markdown.text, window, cx);
     }
 }
 
@@ -2887,6 +2830,78 @@ struct RenderedFootnoteRef {
 }
 
 impl RenderedText {
+    fn bounds_for_source_range(&self, range: Range<usize>) -> Vec<Bounds<Pixels>> {
+        let mut all_bounds = Vec::new();
+
+        for line in self.lines.iter() {
+            let line_source_start = line.source_mappings.first().unwrap().source_index;
+            if line_source_start >= range.end {
+                break;
+            }
+            if line.source_end <= range.start {
+                continue;
+            }
+
+            let layout = &line.layout;
+            let line_bounds = layout.bounds();
+            let line_height = layout.line_height();
+
+            let rendered_start =
+                line.rendered_index_for_source_index(range.start.max(line_source_start));
+            let rendered_end = line.rendered_index_for_source_index(range.end.min(line.source_end));
+
+            let mut wrapped_line_start = 0;
+            let mut row_top = line_bounds.top();
+
+            while wrapped_line_start < rendered_end {
+                let Some(wrapped_line) = layout.line_layout_for_index(wrapped_line_start) else {
+                    break;
+                };
+
+                let unwrapped_layout = &wrapped_line.unwrapped_layout;
+                let wrapped_line_end = wrapped_line_start + wrapped_line.len();
+
+                let row_ends = wrapped_line
+                    .wrap_boundaries()
+                    .iter()
+                    .map(|wrap_boundary| {
+                        let glyph = &unwrapped_layout.runs[wrap_boundary.run_ix].glyphs
+                            [wrap_boundary.glyph_ix];
+                        (wrapped_line_start + glyph.index, glyph.position.x)
+                    })
+                    .chain([(wrapped_line_end, unwrapped_layout.width)]);
+
+                let mut row_start = wrapped_line_start;
+                let mut row_start_x = Pixels::ZERO;
+
+                for (row_end, row_end_x) in row_ends {
+                    let selection_start = rendered_start.max(row_start);
+                    let selection_end = rendered_end.min(row_end);
+
+                    if selection_start < selection_end {
+                        let x_for_index = |index| {
+                            line_bounds.left()
+                                + unwrapped_layout.x_for_index(index - wrapped_line_start)
+                                - row_start_x
+                        };
+                        all_bounds.push(Bounds::from_corners(
+                            point(x_for_index(selection_start), row_top),
+                            point(x_for_index(selection_end), row_top + line_height),
+                        ));
+                    }
+
+                    row_start = row_end;
+                    row_start_x = row_end_x;
+                    row_top += line_height;
+                }
+
+                wrapped_line_start = wrapped_line_end + 1;
+            }
+        }
+
+        all_bounds
+    }
+
     fn source_index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
         let mut lines = self.lines.iter().peekable();
         let mut fallback_line: Option<&RenderedLine> = None;
@@ -3711,6 +3726,50 @@ mod tests {
                     source_ix
                 );
             }
+        }
+    }
+
+    #[gpui::test]
+    fn test_bounds_for_source_range_skips_gaps_between_rendered_lines(cx: &mut TestAppContext) {
+        let source = "First\n\nSecond";
+        let rendered = render_markdown(source, cx);
+        let highlight_bounds = rendered.bounds_for_source_range(0..source.len());
+        assert_eq!(highlight_bounds.len(), rendered.lines.len());
+
+        for (line, highlight_bounds) in rendered.lines.iter().zip(highlight_bounds.iter()) {
+            let line_bounds = line.layout.bounds();
+            assert_eq!(highlight_bounds.top(), line_bounds.top());
+            assert_eq!(
+                highlight_bounds.bottom(),
+                line_bounds.top() + line.layout.line_height()
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn test_bounds_for_source_range_returns_one_bound_per_soft_wrap_row(cx: &mut TestAppContext) {
+        let sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, \
+            sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.";
+        let source = [sentence, sentence, sentence, sentence].join(" ");
+        let rendered = render_markdown(&source, cx);
+        let line = &rendered.lines[0];
+        let line_bounds = line.layout.bounds();
+        let line_height = line.layout.line_height();
+        let wrapped_line = line.layout.line_layout_for_index(0).unwrap();
+        let visual_row_count = wrapped_line.wrap_boundaries().len() + 1;
+
+        let highlight_bounds = rendered.bounds_for_source_range(0..source.len());
+        assert_eq!(highlight_bounds.len(), visual_row_count);
+
+        let mut row_top = line_bounds.top();
+        for (row_index, row_bounds) in highlight_bounds.iter().enumerate() {
+            assert_eq!(row_bounds.top(), row_top);
+            assert_eq!(row_bounds.bottom(), row_top + line_height);
+            assert!(
+                row_bounds.size.width > Pixels::ZERO,
+                "row {row_index} should have a non-empty highlight"
+            );
+            row_top += line_height;
         }
     }
 
