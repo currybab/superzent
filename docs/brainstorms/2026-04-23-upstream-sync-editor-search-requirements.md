@@ -14,18 +14,21 @@ The first sync phase should use cherry-picks, not a broad merge. It should prior
 ## Requirements
 
 **Selection Strategy**
+
 - R1. Phase 1 must use upstream commit or PR-level cherry-picks rather than merging all of `upstream/main`.
 - R2. Phase 1 must include both low-risk bug fixes and selected editor/search feature improvements.
 - R3. Phase 1 must exclude broad upstream agent/sidebar/chat architecture rewrites.
 - R4. Any selected commit that touches default-build AI, hosted model setup, ACP tabs, or chat surfaces must be reviewed against Superzent's existing next-edit and `full` feature split before inclusion.
 
 **Recommended Cherry-Pick Waves**
+
 - R5. Wave A should apply small terminal/search/editor correctness fixes first, because they provide value with low conflict risk.
 - R6. Wave B should apply search and picker improvements that touch shared project/search infrastructure.
 - R7. Wave C should evaluate larger feature backports separately: fuzzy picker matching, Bookmarks, Code Lens, and generic navigation overlays.
 - R8. Wave C candidates may be deferred individually if they introduce persistence, settings, LSP, workspace, or build-feature conflicts.
 
 **Candidate Coverage**
+
 - R9. Search candidates should include replace/search correctness fixes, project search stale result fixes, symbol picker UTF-8 safety, markdown-preview search support, and non-ASCII replace-all hang fixes.
 - R10. Editor candidates should include folding, sticky header, hover, completion undo, selection, formatting, block-comment, Bookmarks, Code Lens, and navigation overlay improvements where they can be backported cleanly.
 - R11. Terminal candidates should include small terminal input, focus, cursor, path detection, process cleanup, and combining-mark fixes.
@@ -34,6 +37,7 @@ The first sync phase should use cherry-picks, not a broad merge. It should prior
 ## Initial Candidate Shortlist
 
 **Wave A: Small, High-Confidence Fixes**
+
 - `e5dc2f06c9` search: Fix replace all being silently dropped (#50852)
 - `4b1a2f3ad8` search: Fix focus replacement field when opening replace (#51061)
 - `7d3ccce952` Don't auto-close in search (#52553)
@@ -51,6 +55,7 @@ The first sync phase should use cherry-picks, not a broad merge. It should prior
 - `debf4c9988` Fix terminal combining marks (#53176)
 
 **Wave B: Medium Search/Editor Improvements**
+
 - `b0e35b6599` Allow search/replace to span multiple lines (#50783)
 - `0238d2d180` search: Fix deleted files persisting in project search results (#50551)
 - `43867668f4` Add query and search options to `pane::DeploySearch` action (#47331)
@@ -67,6 +72,7 @@ The first sync phase should use cherry-picks, not a broad merge. It should prior
 - `aa14c4201b` terminal_view: Don't try `home_dir` when working locally (#53071)
 
 **Wave C: Larger Feature Backports**
+
 - `93438829c7` Add `fuzzy_nucleo` crate for order independent file finder search (#51164)
 - `722f3089ed` fuzzy_nucleo: Optimize path matching with CharBag prefilter (#54112)
 - `68541960a7` fuzzy_nucleo: Add strings module and route several pickers through it (#54123)
@@ -107,6 +113,7 @@ The first sync phase should use cherry-picks, not a broad merge. It should prior
 ## Outstanding Questions
 
 ### Deferred to Planning
+
 - [Affects R5-R12][Technical] Which Wave A and Wave B commits cherry-pick cleanly onto current Superzent, and which require manual adaptation?
 - [Affects R7-R8][Needs research] Do Bookmarks and Code Lens conflict with Superzent's workspace persistence, status bar/footer merge, or default feature split?
 - [Affects R12][Needs research] Does `fuzzy_nucleo` change picker behavior in a way that affects Superzent's workspace switcher, import-worktree picker, or managed workspace flows?

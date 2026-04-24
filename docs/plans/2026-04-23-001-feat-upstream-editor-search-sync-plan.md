@@ -93,7 +93,7 @@ Superzent is based on Zed but has its own product constraints: a single-window w
 
 ## High-Level Technical Design
 
-> *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
+> _This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce._
 
 ```mermaid
 flowchart TD
@@ -670,14 +670,14 @@ flowchart TD
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                                                                   | Mitigation                                                                                                                                           |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A small-looking upstream commit depends on unlisted upstream refactors | Inspect each candidate's parent/file context before adapting. Include only narrow dependencies that directly support the candidate; otherwise defer. |
-| Wave C pulls in too much persistence/LSP/settings churn | Treat Wave C candidates as trials with explicit accept/defer gates. Earlier waves should remain shippable without them. |
-| Default build accidentally absorbs hosted AI/chat behavior | Re-check `crates/zed/Cargo.toml` and AI/chat-related file changes after every candidate touching agent/language model surfaces. |
-| Fuzzy matching changes Superzent picker semantics | Smoke check workspace switcher, import-worktree picker, recent projects, branch picker, and tab switcher before accepting. |
-| Terminal shell changes regress managed wrappers | Validate wrapper-first `codex` / `claude` resolution and hook visibility after shell-builder or terminal environment changes. |
-| Conflict resolution silently overwrites Superzent customizations | Review diffs against Superzent-specific docs and recent worktree/status/footer changes before committing each wave. |
+| Wave C pulls in too much persistence/LSP/settings churn                | Treat Wave C candidates as trials with explicit accept/defer gates. Earlier waves should remain shippable without them.                              |
+| Default build accidentally absorbs hosted AI/chat behavior             | Re-check `crates/zed/Cargo.toml` and AI/chat-related file changes after every candidate touching agent/language model surfaces.                      |
+| Fuzzy matching changes Superzent picker semantics                      | Smoke check workspace switcher, import-worktree picker, recent projects, branch picker, and tab switcher before accepting.                           |
+| Terminal shell changes regress managed wrappers                        | Validate wrapper-first `codex` / `claude` resolution and hook visibility after shell-builder or terminal environment changes.                        |
+| Conflict resolution silently overwrites Superzent customizations       | Review diffs against Superzent-specific docs and recent worktree/status/footer changes before committing each wave.                                  |
 
 ## Phased Delivery
 
