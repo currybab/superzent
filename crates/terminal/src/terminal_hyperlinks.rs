@@ -205,17 +205,20 @@ fn sanitize_url_punctuation<T: EventListener>(
     }
 }
 
-/// Returns the byte offset just past the first unbalanced `(` in `s`, or `None`
-/// if all parentheses are balanced. Used to strip prefixes like `Update(` from
-/// path matches while preserving balanced parens in filenames like `file(copy).txt`.
-fn first_unbalanced_open_paren(s: &str) -> Option<usize> {
+/// Returns the byte offset just past the first unbalanced delimiter `(` in `s`,
+/// or `None` if no prefix should be stripped.
+fn unbalanced_delimiter_open_paren(s: &str, is_closed_after_match: bool) -> Option<usize> {
+    if !is_closed_after_match {
+        return None;
+    }
+
     let mut balance: i32 = 0;
     let mut first_unmatched = None;
     for (i, c) in s.char_indices() {
         match c {
             '(' => {
                 if balance == 0 {
-                    first_unmatched = Some(i + c.len_utf8());
+                    first_unmatched = Some((i, i + c.len_utf8()));
                 }
                 balance += 1;
             }
@@ -229,7 +232,12 @@ fn first_unbalanced_open_paren(s: &str) -> Option<usize> {
             _ => {}
         }
     }
-    first_unmatched.filter(|_| balance > 0)
+    first_unmatched
+        .filter(|_| balance > 0)
+        .and_then(|(open_paren, trim)| {
+            let prefix = &s[..open_paren];
+            (!prefix.contains(['/', '\\', ':', '.'])).then_some(trim)
+        })
 }
 
 fn path_match<T>(
@@ -366,12 +374,12 @@ fn path_match<T>(
             link_range.start += line_start_offset;
             link_range.end += line_start_offset;
 
-            // Strip prefix up to the first unbalanced `(` in the matched path.
-            // This handles delimiter parens like `Update(.claude/SKILL.md)` while
-            // preserving balanced parens in filenames like `file(copy).txt`.
-            // Analogous to `sanitize_url_punctuation` which strips unbalanced
-            // trailing `)` from URLs.
-            if let Some(trim) = first_unbalanced_open_paren(&line[path_range.clone()]) {
+            // The path regex excludes closing delimiters, so wrappers such as
+            // `Update(src/cool.rs)` can look unbalanced inside the match.
+            if let Some(trim) = unbalanced_delimiter_open_paren(
+                &line[path_range.clone()],
+                line[path_range.end..].starts_with(')'),
+            ) {
                 path_range.start += trim;
                 link_range.start = link_range.start.max(path_range.start);
             }
@@ -1012,6 +1020,7 @@ mod tests {
             // Unbalanced leading `(` (e.g. `Update(.claude/SKILL.md)`) is stripped.
             fn parens_in_filename() {
                 test_path!("‹«docker-compose.prod(👉copy).yml»›");
+                test_path!("‹«src/foo(👉bar.rs»›");
             }
         }
 
