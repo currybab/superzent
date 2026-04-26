@@ -266,6 +266,8 @@ impl VsCodeSettings {
             horizontal_scroll_margin: None,
             hover_popover_delay: self.read_u64("editor.hover.delay").map(Into::into),
             hover_popover_enabled: self.read_bool("editor.hover.enabled"),
+            hover_popover_sticky: self.read_bool("editor.hover.sticky"),
+            hover_popover_hiding_delay: self.read_u64("editor.hover.hidingDelay").map(Into::into),
             inline_code_actions: None,
             jupyter: None,
             lsp_document_colors: None,
@@ -326,6 +328,7 @@ impl VsCodeSettings {
             min_line_number_digits: None,
             runnables: None,
             breakpoints: None,
+            bookmarks: None,
             folds: self.read_enum("editor.showFoldingControls", |s| match s {
                 "always" | "mouseover" => Some(true),
                 "never" => Some(false),

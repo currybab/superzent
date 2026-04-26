@@ -1,5 +1,6 @@
 pub mod agent_registry_store;
 pub mod agent_server_store;
+pub mod bookmark_store;
 pub mod buffer_store;
 pub mod color_extractor;
 pub mod connection_manager;
@@ -36,6 +37,7 @@ use dap::inline_value::{InlineValueLocation, VariableLookupKind, VariableScope};
 use itertools::Either;
 
 use crate::{
+    bookmark_store::BookmarkStore,
     git_store::GitStore,
     lsp_store::{SymbolLocation, log_store::LogKind},
     project_search::SearchResultsHandle,
@@ -147,6 +149,8 @@ pub use fs::*;
 pub use language::Location;
 #[cfg(any(test, feature = "test-support"))]
 pub use prettier::FORMAT_SUFFIX as TEST_PRETTIER_FORMAT_SUFFIX;
+#[cfg(any(test, feature = "test-support"))]
+pub use prettier::RANGE_FORMAT_SUFFIX as TEST_PRETTIER_RANGE_FORMAT_SUFFIX;
 pub use task_inventory::{
     BasicContextProvider, ContextProviderWithTasks, DebugScenarioContext, Inventory, TaskContexts,
     TaskSourceKind,
@@ -208,6 +212,7 @@ pub struct Project {
     dap_store: Entity<DapStore>,
     agent_server_store: Entity<AgentServerStore>,
 
+    bookmark_store: Entity<BookmarkStore>,
     breakpoint_store: Entity<BreakpointStore>,
     collab_client: Arc<client::Client>,
     join_project_response_message_id: u32,
@@ -1192,6 +1197,9 @@ impl Project {
             cx.subscribe(&buffer_store, Self::on_buffer_store_event)
                 .detach();
 
+            let bookmark_store =
+                cx.new(|_| BookmarkStore::new(worktree_store.clone(), buffer_store.clone()));
+
             let breakpoint_store =
                 cx.new(|_| BreakpointStore::local(worktree_store.clone(), buffer_store.clone()));
 
@@ -1309,6 +1317,7 @@ impl Project {
                 settings_observer,
                 fs,
                 remote_client: None,
+                bookmark_store,
                 breakpoint_store,
                 dap_store,
                 agent_server_store,
@@ -1465,6 +1474,9 @@ impl Project {
             });
             cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
 
+            let bookmark_store =
+                cx.new(|_| BookmarkStore::new(worktree_store.clone(), buffer_store.clone()));
+
             let breakpoint_store = cx.new(|_| {
                 BreakpointStore::remote(
                     REMOTE_SERVER_PROJECT_ID,
@@ -1510,6 +1522,7 @@ impl Project {
                 image_store,
                 lsp_store,
                 context_server_store,
+                bookmark_store,
                 breakpoint_store,
                 dap_store,
                 join_project_response_message_id: 0,
@@ -1687,6 +1700,10 @@ impl Project {
 
         let environment =
             cx.new(|cx| ProjectEnvironment::new(None, worktree_store.downgrade(), None, true, cx));
+
+        let bookmark_store =
+            cx.new(|_| BookmarkStore::new(worktree_store.clone(), buffer_store.clone()));
+
         let breakpoint_store = cx.new(|_| {
             BreakpointStore::remote(
                 remote_id,
@@ -1819,6 +1836,7 @@ impl Project {
                     remote_id,
                     replica_id,
                 },
+                bookmark_store: bookmark_store.clone(),
                 breakpoint_store: breakpoint_store.clone(),
                 dap_store: dap_store.clone(),
                 git_store: git_store.clone(),
@@ -2050,6 +2068,11 @@ impl Project {
     #[inline]
     pub fn dap_store(&self) -> Entity<DapStore> {
         self.dap_store.clone()
+    }
+
+    #[inline]
+    pub fn bookmark_store(&self) -> Entity<BookmarkStore> {
+        self.bookmark_store.clone()
     }
 
     #[inline]
@@ -6049,6 +6072,77 @@ impl<'a> Iterator for PathMatchCandidateSetIter<'a> {
         self.traversal
             .next()
             .map(|entry| fuzzy::PathMatchCandidate {
+                is_dir: entry.kind.is_dir(),
+                path: &entry.path,
+                char_bag: entry.char_bag,
+            })
+    }
+}
+
+impl<'a> fuzzy_nucleo::PathMatchCandidateSet<'a> for PathMatchCandidateSet {
+    type Candidates = PathMatchCandidateSetNucleoIter<'a>;
+    fn id(&self) -> usize {
+        self.snapshot.id().to_usize()
+    }
+    fn len(&self) -> usize {
+        match self.candidates {
+            Candidates::Files => {
+                if self.include_ignored {
+                    self.snapshot.file_count()
+                } else {
+                    self.snapshot.visible_file_count()
+                }
+            }
+            Candidates::Directories => {
+                if self.include_ignored {
+                    self.snapshot.dir_count()
+                } else {
+                    self.snapshot.visible_dir_count()
+                }
+            }
+            Candidates::Entries => {
+                if self.include_ignored {
+                    self.snapshot.entry_count()
+                } else {
+                    self.snapshot.visible_entry_count()
+                }
+            }
+        }
+    }
+    fn prefix(&self) -> Arc<RelPath> {
+        if self.snapshot.root_entry().is_some_and(|e| e.is_file()) || self.include_root_name {
+            self.snapshot.root_name().into()
+        } else {
+            RelPath::empty().into()
+        }
+    }
+    fn root_is_file(&self) -> bool {
+        self.snapshot.root_entry().is_some_and(|f| f.is_file())
+    }
+    fn path_style(&self) -> PathStyle {
+        self.snapshot.path_style()
+    }
+    fn candidates(&'a self, start: usize) -> Self::Candidates {
+        PathMatchCandidateSetNucleoIter {
+            traversal: match self.candidates {
+                Candidates::Directories => self.snapshot.directories(self.include_ignored, start),
+                Candidates::Files => self.snapshot.files(self.include_ignored, start),
+                Candidates::Entries => self.snapshot.entries(self.include_ignored, start),
+            },
+        }
+    }
+}
+
+pub struct PathMatchCandidateSetNucleoIter<'a> {
+    traversal: Traversal<'a>,
+}
+
+impl<'a> Iterator for PathMatchCandidateSetNucleoIter<'a> {
+    type Item = fuzzy_nucleo::PathMatchCandidate<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.traversal
+            .next()
+            .map(|entry| fuzzy_nucleo::PathMatchCandidate {
                 is_dir: entry.kind.is_dir(),
                 path: &entry.path,
                 char_bag: entry.char_bag,

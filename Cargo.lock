@@ -3389,7 +3389,7 @@ dependencies = [
  "command_palette_hooks",
  "db",
  "editor",
- "fuzzy",
+ "fuzzy_nucleo",
  "go_to_line",
  "gpui",
  "language",
@@ -6284,6 +6284,7 @@ dependencies = [
  "file_icons",
  "futures 0.3.31",
  "fuzzy",
+ "fuzzy_nucleo",
  "gpui",
  "menu",
  "open_path_prompt",
@@ -6841,6 +6842,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzzy_nucleo"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "fuzzy",
+ "gpui",
+ "nucleo",
+ "util",
+]
+
+[[package]]
 name = "gaoya"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7356,6 +7368,7 @@ dependencies = [
  "file_icons",
  "futures 0.3.31",
  "fuzzy",
+ "fuzzy_nucleo",
  "git",
  "gpui",
  "indoc",
@@ -11084,6 +11097,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleo"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5262af4c94921c2646c5ac6ff7900c2af9cbb08dc26a797e18130a7019c039d4"
+dependencies = [
+ "nucleo-matcher",
+ "parking_lot",
+ "rayon",
+]
+
+[[package]]
+name = "nucleo-matcher"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf33f538733d1a5a3494b836ba913207f14d9d4a1d3cd67030c5061bdd2cac85"
+dependencies = [
+ "memchr",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13146,6 +13180,7 @@ dependencies = [
  "fs",
  "futures 0.3.31",
  "fuzzy",
+ "fuzzy_nucleo",
  "git",
  "git2",
  "git_hosting_providers",
@@ -14043,7 +14078,7 @@ dependencies = [
  "extension_host",
  "fs",
  "futures 0.3.31",
- "fuzzy",
+ "fuzzy_nucleo",
  "gpui",
  "http_client",
  "indoc",
@@ -15366,6 +15401,7 @@ dependencies = [
  "language",
  "lsp",
  "menu",
+ "multi_buffer",
  "pretty_assertions",
  "project",
  "serde",
@@ -17452,7 +17488,7 @@ dependencies = [
  "collections",
  "ctor",
  "editor",
- "fuzzy",
+ "fuzzy_nucleo",
  "gpui",
  "menu",
  "picker",
@@ -17461,7 +17497,6 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
- "smol",
  "theme",
  "ui",
  "util",
@@ -17688,7 +17723,11 @@ dependencies = [
  "pretty_assertions",
  "project",
  "regex",
+ "release_channel",
+ "remote",
+ "rpc",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "settings",

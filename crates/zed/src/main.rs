@@ -1389,7 +1389,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                             },
                         )?);
                     }
-                    for result in future::join_all(promises).await {
+                    for result in futures::future::join_all(promises).await {
                         result.log_err();
                     }
                     anyhow::Ok(())

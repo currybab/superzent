@@ -72,6 +72,7 @@ impl Console {
             editor.disable_scrollbars_and_minimap(window, cx);
             editor.set_show_gutter(false, cx);
             editor.set_show_runnables(false, cx);
+            editor.set_show_bookmarks(false, cx);
             editor.set_show_breakpoints(false, cx);
             editor.set_show_code_actions(false, cx);
             editor.set_show_line_numbers(false, cx);
@@ -303,7 +304,8 @@ impl Console {
     }
 
     fn previous_query(&mut self, _: &SelectPrevious, window: &mut Window, cx: &mut Context<Self>) {
-        let prev = self.history.previous(&mut self.cursor);
+        let current_query = self.query_bar.read(cx).text(cx);
+        let prev = self.history.previous(&mut self.cursor, &current_query);
         if let Some(prev) = prev {
             self.query_bar.update(cx, |editor, cx| {
                 editor.set_text(prev, window, cx);

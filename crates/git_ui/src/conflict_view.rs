@@ -16,6 +16,10 @@ use language::{Anchor, Buffer, BufferId};
 #[cfg(feature = "ai")]
 use project::git_store::{GitStoreEvent, RepositoryEvent};
 use project::{ConflictRegion, ConflictSet, ConflictSetUpdate, ProjectItem as _};
+#[cfg(feature = "ai")]
+use settings::Settings as _;
+#[cfg(feature = "ai")]
+use std::{cell::RefCell, rc::Rc};
 use std::{ops::Range, sync::Arc};
 #[cfg(feature = "ai")]
 use ui::Divider;
@@ -387,6 +391,8 @@ fn render_conflict_buttons(
     let is_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
     #[cfg(not(feature = "ai"))]
     let _is_ai_enabled = false;
+    #[cfg(feature = "ai")]
+    let agent_editor = editor.clone();
 
     let row = h_flex()
         .id(cx.block_id)
@@ -466,6 +472,7 @@ fn render_conflict_buttons(
                         .color(Color::Muted),
                 )
                 .on_click({
+                    let editor = agent_editor.clone();
                     let conflict = conflict.clone();
                     move |_, window, cx| {
                         let content = editor

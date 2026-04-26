@@ -397,6 +397,13 @@
     "context": "BufferSearchBar && !in_replace > Editor",
     "use_key_equivalents": true,
     "bindings": {
+      "ctrl-enter": "editor::Newline",
+      "shift-enter": "search::SelectPreviousMatch",
+    },
+  },
+  {
+    "context": "BufferSearchBar && !in_replace > Editor",
+    "bindings": {
       "up": "search::PreviousHistoryQuery",
       "down": "search::NextHistoryQuery",
     },
@@ -413,7 +420,6 @@
   },
   {
     "context": "ProjectSearchBar > Editor",
-    "use_key_equivalents": true,
     "bindings": {
       "up": "search::PreviousHistoryQuery",
       "down": "search::NextHistoryQuery",
@@ -425,6 +431,12 @@
     "bindings": {
       "enter": "search::ReplaceNext",
       "ctrl-alt-enter": "search::ReplaceAll",
+    },
+  },
+  {
+    "context": "ProjectSearchBar && !in_replace > Editor",
+    "bindings": {
+      "ctrl-enter": "editor::Newline",
     },
   },
   {
@@ -511,6 +523,8 @@
       "ctrl-k ctrl-f": "editor::FormatSelections",
       "ctrl-/": ["editor::ToggleComments", { "advance_downwards": false }],
       "ctrl-k ctrl-c": ["editor::ToggleComments", { "advance_downwards": false }],
+      "ctrl-k ctrl-/": "editor::ToggleBlockComments",
+      "shift-alt-a": "editor::ToggleBlockComments",
       "f8": ["editor::GoToDiagnostic", { "severity": { "min": "hint", "max": "error" } }],
       "shift-f8": ["editor::GoToPreviousDiagnostic", { "severity": { "min": "hint", "max": "error" } }],
       "f2": "editor::Rename",

@@ -22,7 +22,7 @@ pub use remote_connection::{RemoteConnectionModal, connect};
 pub use remote_connections::{navigate_to_positions, open_remote_project};
 
 use disconnected_overlay::DisconnectedOverlay;
-use fuzzy::{StringMatch, StringMatchCandidate};
+use fuzzy_nucleo::{StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
     Action, AnyElement, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     Subscription, Task, WeakEntity, Window, actions, px,
@@ -771,7 +771,7 @@ impl PickerDelegate for RecentProjectsDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> gpui::Task<()> {
         let query = query.trim_start();
-        let smart_case = query.chars().any(|c| c.is_uppercase());
+        let case = fuzzy_nucleo::Case::smart_if_uppercase_in(query);
         let is_empty_query = query.is_empty();
 
         let folder_matches = if self.open_folders.is_empty() {
@@ -784,15 +784,13 @@ impl PickerDelegate for RecentProjectsDelegate {
                 .map(|(id, folder)| StringMatchCandidate::new(id, folder.name.as_ref()))
                 .collect();
 
-            smol::block_on(fuzzy::match_strings(
+            match_strings(
                 &candidates,
                 query,
-                smart_case,
-                true,
+                case,
+                fuzzy_nucleo::LengthPenalty::On,
                 100,
-                &Default::default(),
-                cx.background_executor().clone(),
-            ))
+            )
         };
 
         let recent_candidates: Vec<_> = self
@@ -810,21 +808,13 @@ impl PickerDelegate for RecentProjectsDelegate {
             })
             .collect();
 
-        let mut recent_matches = smol::block_on(fuzzy::match_strings(
+        let recent_matches = match_strings(
             &recent_candidates,
             query,
-            smart_case,
-            true,
+            case,
+            fuzzy_nucleo::LengthPenalty::On,
             100,
-            &Default::default(),
-            cx.background_executor().clone(),
-        ));
-        recent_matches.sort_unstable_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.candidate_id.cmp(&b.candidate_id))
-        });
+        );
 
         let mut entries = Vec::new();
 
@@ -861,7 +851,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                             candidate_id: id,
                             score: 0.0,
                             positions: Vec::new(),
-                            string: String::new(),
+                            string: Default::default(),
                         }));
                     }
                 }
@@ -1698,7 +1688,7 @@ mod tests {
                             candidate_id: 0,
                             score: 1.0,
                             positions: Vec::new(),
-                            string: "fake candidate".to_string(),
+                            string: "fake candidate".into(),
                         })];
                 });
             })

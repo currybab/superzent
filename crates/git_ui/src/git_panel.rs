@@ -23,6 +23,8 @@ use editor::{
 };
 use editor::{EditorStyle, RewrapOptions};
 use file_icons::FileIcons;
+#[cfg(feature = "ai")]
+use futures::StreamExt as _;
 use git::commit::ParsedCommitMessage;
 #[cfg(feature = "ai")]
 use git::repository::DiffType;

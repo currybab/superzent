@@ -139,6 +139,15 @@ pub enum FoldStatus {
     Foldable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NavigationOverlayKey(TypeId);
+
+impl NavigationOverlayKey {
+    pub const fn unique<T: 'static>() -> Self {
+        Self(TypeId::of::<T>())
+    }
+}
+
 /// Keys for tagging text highlights.
 ///
 /// Note the order is important as it determines the priority of the highlights, lower means higher priority
@@ -163,6 +172,7 @@ pub enum HighlightKey {
     InlineAssist,
     InputComposition,
     MatchingBracket,
+    NavigationOverlay(NavigationOverlayKey),
     PendingInput,
     ProjectSearchView,
     Rename,
@@ -2269,6 +2279,29 @@ impl DisplaySnapshot {
             .unwrap_or(false)
     }
 
+    /// Returns the indent length of `row` if it starts with a closing bracket.
+    fn closing_bracket_indent_len(&self, row: u32) -> Option<u32> {
+        let snapshot = self.buffer_snapshot();
+        let indent_len = self
+            .line_indent_for_buffer_row(MultiBufferRow(row))
+            .raw_len();
+        let content_start = Point::new(row, indent_len);
+        let line_text: String = snapshot
+            .chars_at(content_start)
+            .take_while(|ch| *ch != '\n')
+            .collect();
+
+        let scope = snapshot.language_scope_at(Point::new(row, 0))?;
+        if scope
+            .brackets()
+            .any(|(pair, _)| line_text.starts_with(&pair.end))
+        {
+            return Some(indent_len);
+        }
+
+        None
+    }
+
     #[instrument(skip_all)]
     pub fn crease_for_buffer_row(&self, buffer_row: MultiBufferRow) -> Option<Crease<Point>> {
         let start =
@@ -2312,40 +2345,67 @@ impl DisplaySnapshot {
             && !self.is_line_folded(MultiBufferRow(start.row))
         {
             let start_line_indent = self.line_indent_for_buffer_row(buffer_row);
-            let max_point = self.buffer_snapshot().max_point();
-            let mut end = None;
+            let snapshot = self.buffer_snapshot();
+            let max_point = snapshot.max_point();
+            let mut closing_row = None;
+
+            // End byte of the smallest syntactic node enclosing `buffer_row`.
+            // Used to tell standalone top-level comments (which terminate the
+            // fold) apart from unindented content inside a multi-line string
+            // or block comment belonging to the folded node (which does not).
+            let foldable_node_end = {
+                let row_start = Point::new(buffer_row.0, 0);
+                let row_end = Point::new(buffer_row.0, snapshot.line_len(buffer_row));
+                snapshot
+                    .syntax_ancestor(row_start..row_end)
+                    .map(|(_, range)| range.end)
+            };
 
             for row in (buffer_row.0 + 1)..=max_point.row {
                 let line_indent = self.line_indent_for_buffer_row(MultiBufferRow(row));
                 if !line_indent.is_line_blank()
                     && line_indent.raw_len() <= start_line_indent.raw_len()
                 {
-                    let prev_row = row - 1;
-                    end = Some(Point::new(
-                        prev_row,
-                        self.buffer_snapshot().line_len(MultiBufferRow(prev_row)),
-                    ));
+                    let in_string_or_comment_scope = snapshot
+                        .language_scope_at(Point::new(row, 0))
+                        .is_some_and(|scope| {
+                            matches!(
+                                scope.override_name(),
+                                Some("string") | Some("comment") | Some("comment.inclusive")
+                            )
+                        });
+                    if in_string_or_comment_scope
+                        && let Some(end) = foldable_node_end
+                        && Point::new(row, 0).to_offset(snapshot) < end
+                    {
+                        continue;
+                    }
+
+                    closing_row = Some(row);
                     break;
                 }
             }
 
-            let mut row_before_line_breaks = end.unwrap_or(max_point);
-            while row_before_line_breaks.row > start.row
-                && self
-                    .buffer_snapshot()
-                    .is_line_blank(MultiBufferRow(row_before_line_breaks.row))
-            {
-                row_before_line_breaks.row -= 1;
-            }
+            let last_non_blank_row = |from_row: u32| -> Point {
+                let mut row = from_row;
+                while row > start.row && self.buffer_snapshot().is_line_blank(MultiBufferRow(row)) {
+                    row -= 1;
+                }
+                Point::new(row, self.buffer_snapshot().line_len(MultiBufferRow(row)))
+            };
 
-            row_before_line_breaks = Point::new(
-                row_before_line_breaks.row,
-                self.buffer_snapshot()
-                    .line_len(MultiBufferRow(row_before_line_breaks.row)),
-            );
+            let end = if let Some(row) = closing_row {
+                if let Some(indent_len) = self.closing_bracket_indent_len(row) {
+                    Point::new(row, indent_len)
+                } else {
+                    last_non_blank_row(row - 1)
+                }
+            } else {
+                last_non_blank_row(max_point.row)
+            };
 
             Some(Crease::Inline {
-                range: start..row_before_line_breaks,
+                range: start..end,
                 placeholder: self.fold_placeholder.clone(),
                 render_toggle: None,
                 render_trailer: None,
