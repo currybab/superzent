@@ -56,3 +56,4 @@ crates/docs_preprocessor/actions.json
 
 # Local context files
 .context/
+.worktrees
