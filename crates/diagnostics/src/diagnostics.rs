@@ -652,10 +652,8 @@ impl ProjectDiagnosticsEditor {
                     }
                 }
 
-                let editor_blocks = anchor_ranges
-                    .into_iter()
-                    .zip_eq(result_blocks.into_iter())
-                    .filter_map(|(anchor, block)| {
+                let editor_blocks = anchor_ranges.into_iter().zip_eq(result_blocks).filter_map(
+                    |(anchor, block)| {
                         let block = block?;
                         let editor = this.editor.downgrade();
                         Some(BlockProperties {
@@ -665,7 +663,8 @@ impl ProjectDiagnosticsEditor {
                             render: Arc::new(move |bcx| block.render_block(editor.clone(), bcx)),
                             priority: 1,
                         })
-                    });
+                    },
+                );
 
                 let block_ids = this.editor.update(cx, |editor, cx| {
                     editor.display_map.update(cx, |display_map, cx| {
