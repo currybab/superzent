@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     fmt::Display,
     rc::{Rc, Weak},
     sync::Arc,
@@ -25,6 +25,8 @@ use workspace::{
 
 actions!(dev, [OpenAcpLogs]);
 
+const MAX_BACKLOG_MESSAGES: usize = 2000;
+
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
@@ -45,6 +47,9 @@ impl Global for GlobalAcpConnectionRegistry {}
 #[derive(Default)]
 pub struct AcpConnectionRegistry {
     active_connection: RefCell<Option<ActiveConnection>>,
+    backlog: RefCell<VecDeque<acp::StreamMessage>>,
+    subscribers: RefCell<Vec<smol::channel::Sender<acp::StreamMessage>>>,
+    _capture_task: RefCell<Option<Task<()>>>,
 }
 
 struct ActiveConnection {
@@ -73,7 +78,47 @@ impl AcpConnectionRegistry {
             agent_id,
             connection: Rc::downgrade(connection),
         }));
+        self.backlog.borrow_mut().clear();
+        self.subscribers.borrow_mut().clear();
+
+        let mut receiver = connection.subscribe();
+        self._capture_task
+            .replace(Some(cx.spawn(async move |this, cx| {
+                while let Ok(message) = receiver.recv().await {
+                    this.update(cx, |this, _cx| {
+                        this.record_stream_message(message);
+                    })
+                    .ok();
+                }
+            })));
         cx.notify();
+    }
+
+    fn record_stream_message(&self, message: acp::StreamMessage) {
+        let mut backlog = self.backlog.borrow_mut();
+        if backlog.len() == MAX_BACKLOG_MESSAGES {
+            backlog.pop_front();
+        }
+        backlog.push_back(message.clone());
+        drop(backlog);
+
+        let mut subscribers = self.subscribers.borrow_mut();
+        subscribers.retain(|subscriber| !subscriber.is_closed());
+        for subscriber in subscribers.iter() {
+            subscriber.try_send(message.clone()).log_err();
+        }
+    }
+
+    fn subscribe(
+        &self,
+    ) -> (
+        Vec<acp::StreamMessage>,
+        smol::channel::Receiver<acp::StreamMessage>,
+    ) {
+        let backlog = self.backlog.borrow().iter().cloned().collect();
+        let (sender, receiver) = smol::channel::unbounded();
+        self.subscribers.borrow_mut().push(sender);
+        (backlog, receiver)
     }
 }
 
@@ -118,22 +163,34 @@ impl AcpTools {
     }
 
     fn update_connection(&mut self, cx: &mut Context<Self>) {
-        let active_connection = self.connection_registry.read(cx).active_connection.borrow();
-        let Some(active_connection) = active_connection.as_ref() else {
+        let Some((agent_id, connection_weak)) =
+            self.connection_registry.read_with(cx, |registry, _| {
+                registry
+                    .active_connection
+                    .borrow()
+                    .as_ref()
+                    .map(|active_connection| {
+                        (
+                            active_connection.agent_id.clone(),
+                            active_connection.connection.clone(),
+                        )
+                    })
+            })
+        else {
+            self.watched_connection = None;
             return;
         };
 
         if let Some(watched_connection) = self.watched_connection.as_ref() {
-            if Weak::ptr_eq(
-                &watched_connection.connection,
-                &active_connection.connection,
-            ) {
+            if Weak::ptr_eq(&watched_connection.connection, &connection_weak) {
                 return;
             }
         }
 
-        if let Some(connection) = active_connection.connection.upgrade() {
-            let mut receiver = connection.subscribe();
+        if connection_weak.upgrade().is_some() {
+            let (backlog, receiver) = self
+                .connection_registry
+                .update(cx, |registry, _| registry.subscribe());
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(message) = receiver.recv().await {
                     this.update(cx, |this, cx| {
@@ -144,14 +201,18 @@ impl AcpTools {
             });
 
             self.watched_connection = Some(WatchedConnection {
-                agent_id: active_connection.agent_id.clone(),
+                agent_id,
                 messages: vec![],
                 list_state: ListState::new(0, ListAlignment::Bottom, px(2048.)),
-                connection: active_connection.connection.clone(),
+                connection: connection_weak,
                 incoming_request_methods: HashMap::default(),
                 outgoing_request_methods: HashMap::default(),
                 _task: task,
             });
+
+            for message in backlog {
+                self.push_stream_message(message, cx);
+            }
         }
     }
 
