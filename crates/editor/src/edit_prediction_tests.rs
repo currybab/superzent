@@ -1,11 +1,14 @@
 use edit_prediction_types::{
     EditPredictionDelegate, EditPredictionIconSet, PredictedCursorPosition,
 };
+use futures::StreamExt;
 use gpui::{Entity, KeyBinding, Modifiers, prelude::*};
 use indoc::indoc;
+use language::EditPredictionsMode;
 use multi_buffer::{Anchor, MultiBufferSnapshot, ToPoint};
 use std::{
     ops::Range,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{self, AtomicUsize},
@@ -15,8 +18,9 @@ use text::{Point, ToOffset};
 use ui::prelude::*;
 
 use crate::{
-    AcceptEditPrediction, EditPrediction, MenuEditPredictionsPolicy, editor_tests::init_test,
-    test::editor_test_context::EditorTestContext,
+    AcceptEditPrediction, CodeContextMenu, EditPrediction, MenuEditPredictionsPolicy,
+    editor_tests::{init_test, update_test_language_settings},
+    test::{editor_lsp_test_context::EditorLspTestContext, editor_test_context::EditorTestContext},
 };
 use rpc::proto::PeerId;
 use workspace::CollaboratorId;
@@ -478,6 +482,199 @@ async fn test_edit_prediction_preview_cleanup_on_toggle_off(cx: &mut gpui::TestA
     });
 }
 
+#[gpui::test]
+async fn test_edit_prediction_preview_activates_when_prediction_arrives_with_modifier_held(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx, |_| {});
+    update_test_language_settings(cx, &|settings| {
+        settings.edit_predictions.get_or_insert_default().mode = Some(EditPredictionsMode::Subtle);
+    });
+    cx.update(|cx| cx.bind_keys([KeyBinding::new("ctrl-shift-a", AcceptEditPrediction, None)]));
+
+    let mut cx = EditorTestContext::new(cx).await;
+    let provider = cx.new(|_| FakeEditPredictionDelegate::default());
+    assign_editor_completion_provider(provider.clone(), &mut cx);
+    cx.set_state("let x = ˇ;");
+
+    cx.editor(|editor, _, _| {
+        assert!(!editor.has_active_edit_prediction());
+        assert!(!editor.edit_prediction_preview_is_active());
+    });
+
+    cx.simulate_modifiers_change(Modifiers::control_shift());
+    cx.run_until_parked();
+
+    cx.editor(|editor, _, _| {
+        assert!(!editor.has_active_edit_prediction());
+        assert!(editor.edit_prediction_preview_is_active());
+    });
+
+    propose_edits(&provider, vec![(8..8, "42")], &mut cx);
+    cx.update_editor(|editor, window, cx| {
+        editor.set_menu_edit_predictions_policy(MenuEditPredictionsPolicy::ByProvider);
+        editor.update_visible_edit_prediction(window, cx)
+    });
+
+    cx.editor(|editor, _, _| {
+        assert!(editor.has_active_edit_prediction());
+        assert!(
+            editor.edit_prediction_preview_is_active(),
+            "prediction preview should activate immediately when the prediction arrives while the preview modifier is still held",
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_hidden_edit_prediction_does_not_open_snippet_menu_on_word_input(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx, |_| {});
+
+    let mut cx = hidden_edit_prediction_snippet_test_context(cx).await;
+    cx.simulate_input("t");
+    cx.run_until_parked();
+
+    cx.update_editor(|editor, _, _| {
+        assert!(editor.has_active_edit_prediction());
+        assert!(editor.context_menu.borrow().is_none());
+    });
+}
+
+#[gpui::test]
+async fn test_hidden_edit_prediction_opens_snippet_menu_for_strong_prefix_match(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx, |_| {});
+
+    let mut cx = hidden_edit_prediction_snippet_test_context(cx).await;
+    cx.simulate_input("t");
+    cx.run_until_parked();
+    cx.simulate_input("h");
+    cx.run_until_parked();
+
+    cx.update_editor(|editor, _, _| {
+        let Some(CodeContextMenu::Completions(menu)) = &*editor.context_menu.borrow() else {
+            panic!("expected completions menu");
+        };
+        let entries = menu.entries.borrow();
+        assert!(entries.iter().any(|entry| entry.string == "Theta"));
+    });
+}
+
+#[gpui::test]
+async fn test_edit_prediction_preview_does_not_hide_code_actions_on_modifier_press(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx, |_| {});
+    update_test_language_settings(cx, &|settings| {
+        settings.edit_predictions.get_or_insert_default().mode = Some(EditPredictionsMode::Subtle);
+    });
+    cx.update(|cx| {
+        cx.bind_keys([KeyBinding::new(
+            "ctrl-enter",
+            AcceptEditPrediction,
+            Some("Editor && edit_prediction_conflict && !showing_completions"),
+        )]);
+    });
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            code_action_provider: Some(lsp::CodeActionProviderCapability::Simple(true)),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    cx.set_state(indoc! {"
+        fn main() {
+            let valueˇ = 1;
+        }
+    "});
+
+    let provider = cx.new(|_| FakeEditPredictionDelegate::default());
+    cx.update_editor(|editor, window, cx| {
+        editor.set_edit_prediction_provider(Some(provider.clone()), window, cx);
+    });
+
+    let snapshot = cx.buffer_snapshot();
+    let edit_position = snapshot.anchor_after(Point::new(1, 13));
+    cx.update(|_, cx| {
+        provider.update(cx, |provider, _| {
+            provider.set_edit_prediction(Some(edit_prediction_types::EditPrediction::Local {
+                id: None,
+                edits: vec![(edit_position..edit_position, " + 1".into())],
+                cursor_position: None,
+                edit_preview: None,
+            }))
+        })
+    });
+    cx.update_editor(|editor, window, cx| {
+        editor.set_menu_edit_predictions_policy(MenuEditPredictionsPolicy::ByProvider);
+        editor.update_visible_edit_prediction(window, cx);
+    });
+    cx.update_editor(|editor, _, _| {
+        assert!(editor.has_active_edit_prediction());
+        assert!(editor.stale_edit_prediction_in_menu.is_none());
+    });
+
+    let mut code_action_requests = cx.set_request_handler::<lsp::request::CodeActionRequest, _, _>(
+        move |_, _, _| async move {
+            Ok(Some(vec![lsp::CodeActionOrCommand::CodeAction(
+                lsp::CodeAction {
+                    title: "Inline value".to_string(),
+                    kind: Some(lsp::CodeActionKind::QUICKFIX),
+                    ..Default::default()
+                },
+            )]))
+        },
+    );
+
+    cx.update_editor(|editor, window, cx| {
+        editor.toggle_code_actions(
+            &crate::actions::ToggleCodeActions {
+                deployed_from: None,
+                quick_launch: false,
+            },
+            window,
+            cx,
+        );
+    });
+    code_action_requests.next().await;
+    cx.run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+
+    cx.update_editor(|editor, _, _| {
+        assert!(!editor.has_active_edit_prediction());
+        assert!(editor.stale_edit_prediction_in_menu.is_some());
+        assert!(editor.context_menu_visible());
+        assert!(matches!(
+            editor.context_menu.borrow().as_ref(),
+            Some(CodeContextMenu::CodeActions(_))
+        ));
+        assert!(!editor.edit_prediction_preview_is_active());
+    });
+
+    cx.simulate_modifiers_change(Modifiers::control());
+    cx.run_until_parked();
+
+    cx.update_editor(|editor, _, _| {
+        assert!(
+            !editor.edit_prediction_preview_is_active(),
+            "modifier-only press should not activate edit prediction preview while code actions are open"
+        );
+        assert!(
+            editor.context_menu_visible(),
+            "modifier-only press should not hide the code actions menu"
+        );
+        assert!(matches!(
+            editor.context_menu.borrow().as_ref(),
+            Some(CodeContextMenu::CodeActions(_))
+        ));
+    });
+}
+
 fn assert_editor_active_edit_completion(
     cx: &mut EditorTestContext,
     assert: impl FnOnce(MultiBufferSnapshot, &Vec<(Range<Anchor>, Arc<str>)>),
@@ -583,6 +780,37 @@ fn propose_edits_with_cursor_position_in_insertion<T: ToOffset>(
             }))
         })
     });
+}
+
+async fn hidden_edit_prediction_snippet_test_context(
+    cx: &mut gpui::TestAppContext,
+) -> EditorTestContext {
+    let mut cx = EditorTestContext::new(cx).await;
+    let provider = cx.new(|_| FakeEditPredictionDelegate::default());
+    assign_editor_completion_provider(provider.clone(), &mut cx);
+    cx.update_editor(|editor, _, cx| {
+        editor.set_menu_edit_predictions_policy(MenuEditPredictionsPolicy::Never);
+        editor.project().unwrap().update(cx, |project, cx| {
+            project.snippets().update(cx, |snippets, _cx| {
+                let snippet = project::snippet_provider::Snippet {
+                    prefix: vec!["Theta".to_string(), "turnstile".to_string()],
+                    body: "⊢".to_string(),
+                    description: Some("unicode symbol".to_string()),
+                    name: "unicode snippets".to_string(),
+                };
+                snippets.add_snippet_for_test(
+                    None,
+                    PathBuf::from("test_snippets.json"),
+                    vec![Arc::new(snippet)],
+                );
+            });
+        })
+    });
+    cx.set_state("ˇ");
+
+    propose_edits(&provider, vec![(0..0, "x")], &mut cx);
+    cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+    cx
 }
 
 fn assign_editor_completion_provider(
