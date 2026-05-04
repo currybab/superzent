@@ -14,7 +14,8 @@ severity: medium
 related_components:
   - tooling
   - testing_framework
-tags: [acp, agent-ui, agent-servers, acp-tools, stderr, close-session, lifecycle]
+tags:
+  [acp, agent-ui, agent-servers, acp-tools, stderr, close-session, lifecycle]
 ---
 
 # ACP lifecycle fixes must cover diagnostics and pending-session teardown

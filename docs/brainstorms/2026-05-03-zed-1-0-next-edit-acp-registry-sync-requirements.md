@@ -30,6 +30,7 @@ The previous upstream sync phase focused on editor, search, terminal, and picker
 ## Key Flows
 
 - F1. Candidate selection
+
   - **Trigger:** A sync pass evaluates Zed 1.0-era upstream changes.
   - **Actors:** A3
   - **Steps:** Review next-edit/provider and ACP registry/external-agent commits; classify each candidate as must, maybe, or skip; reject candidates that require upstream hosted AI or docked agent surfaces.
@@ -37,6 +38,7 @@ The previous upstream sync phase focused on editor, search, terminal, and picker
   - **Covered by:** R1, R2, R3, R4, R15
 
 - F2. Default-build next-edit validation
+
   - **Trigger:** A next-edit/provider candidate is selected.
   - **Actors:** A1, A3
   - **Steps:** Apply the candidate; verify allowed providers remain discoverable and usable in the default build; confirm unsupported Zed-hosted provider paths stay hidden or treated as unconfigured.
