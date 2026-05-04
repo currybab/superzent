@@ -255,18 +255,6 @@ impl AcpConnection {
 
         let io_task = cx.background_spawn(io_task);
 
-        let stderr_task = cx.background_spawn(async move {
-            let mut stderr = BufReader::new(stderr);
-            let mut line = String::new();
-            while let Ok(n) = stderr.read_line(&mut line).await
-                && n > 0
-            {
-                log::warn!("agent stderr: {}", line.trim());
-                line.clear();
-            }
-            Ok(())
-        });
-
         let wait_task = cx.spawn({
             let sessions = sessions.clone();
             let status_fut = child.status();
@@ -279,10 +267,32 @@ impl AcpConnection {
 
         let connection = Rc::new(connection);
 
-        cx.update(|cx| {
-            AcpConnectionRegistry::default_global(cx).update(cx, |registry, cx| {
+        let connection_registry = cx.update(|cx| {
+            let registry = AcpConnectionRegistry::default_global(cx);
+            registry.update(cx, |registry, cx| {
                 registry.set_active_connection(agent_id.clone(), &connection, cx)
             });
+            registry
+        });
+
+        let stderr_task = cx.spawn({
+            let connection_registry = connection_registry.clone();
+            let connection_weak = Rc::downgrade(&connection);
+            async move |cx| {
+                let mut stderr = BufReader::new(stderr);
+                let mut line = String::new();
+                while let Ok(n) = stderr.read_line(&mut line).await
+                    && n > 0
+                {
+                    let stderr_line = line.trim().to_string();
+                    log::warn!("agent stderr: {}", stderr_line);
+                    connection_registry.update(cx, |registry, _| {
+                        registry.record_stderr_line(&connection_weak, stderr_line)
+                    });
+                    line.clear();
+                }
+                Ok(())
+            }
         });
 
         let response = connection
