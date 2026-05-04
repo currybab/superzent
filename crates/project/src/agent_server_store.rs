@@ -21,7 +21,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{RegisterSetting, SettingsStore};
 use sha2::{Digest, Sha256};
-use task::Shell;
 use util::{ResultExt as _, debug_panic};
 
 use crate::ProjectEnvironment;
@@ -989,11 +988,7 @@ impl ExternalAgentServer for LocalExtensionArchiveAgent {
             // Get project environment
             let mut env = project_environment
                 .update(cx, |project_environment, cx| {
-                    project_environment.local_directory_environment(
-                        &Shell::System,
-                        paths::home_dir().as_path().into(),
-                        cx,
-                    )
+                    project_environment.default_environment(cx)
                 })?
                 .await
                 .unwrap_or_default();
@@ -1186,11 +1181,7 @@ impl ExternalAgentServer for LocalRegistryArchiveAgent {
         cx.spawn(async move |cx| {
             let mut env = project_environment
                 .update(cx, |project_environment, cx| {
-                    project_environment.local_directory_environment(
-                        &Shell::System,
-                        paths::home_dir().as_path().into(),
-                        cx,
-                    )
+                    project_environment.default_environment(cx)
                 })?
                 .await
                 .unwrap_or_default();
@@ -1365,11 +1356,7 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
         cx.spawn(async move |cx| {
             let mut env = project_environment
                 .update(cx, |project_environment, cx| {
-                    project_environment.local_directory_environment(
-                        &Shell::System,
-                        paths::home_dir().as_path().into(),
-                        cx,
-                    )
+                    project_environment.default_environment(cx)
                 })?
                 .await
                 .unwrap_or_default();
@@ -1426,11 +1413,7 @@ impl ExternalAgentServer for LocalCustomAgent {
         cx.spawn(async move |cx| {
             let mut env = project_environment
                 .update(cx, |project_environment, cx| {
-                    project_environment.local_directory_environment(
-                        &Shell::System,
-                        paths::home_dir().as_path().into(),
-                        cx,
-                    )
+                    project_environment.default_environment(cx)
                 })?
                 .await
                 .unwrap_or_default();

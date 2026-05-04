@@ -58,6 +58,7 @@ libc.workspace = true
 nix.workspace = true
 
 [dev-dependencies]
+async-pipe.workspace = true
 client = { workspace = true, features = ["test-support"] }
 env_logger.workspace = true
 fs.workspace = true
@@ -66,4 +67,5 @@ indoc.workspace = true
 acp_thread = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 gpui_tokio.workspace = true
+project = { workspace = true, features = ["test-support"] }
 reqwest_client = { workspace = true, features = ["test-support"] }

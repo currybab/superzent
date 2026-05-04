@@ -444,6 +444,7 @@ impl AuthState {
 
 struct LoadingView {
     session_id: Option<acp::SessionId>,
+    connection: Rc<RefCell<Option<Rc<dyn AgentConnection>>>>,
     _load_task: Task<()>,
 }
 
@@ -508,6 +509,17 @@ impl ConversationView {
         cx.on_release(|this, cx| {
             if let Some(connected) = this.as_connected() {
                 connected.close_all_sessions(cx).detach();
+            } else if let ServerState::Loading(loading) = &this.server_state {
+                loading.update(cx, |loading, cx| {
+                    if let Some(session_id) = loading.session_id.as_ref()
+                        && let Some(connection) = loading.connection.borrow().clone()
+                        && connection.supports_close_session()
+                    {
+                        connection
+                            .close_session(session_id, cx)
+                            .detach_and_log_err(cx);
+                    }
+                });
             }
             for window in this.notifications.drain(..) {
                 window
@@ -667,6 +679,8 @@ impl ConversationView {
         let connect_result = connection_entry.read(cx).wait_for_connection();
 
         let load_session_id = resume_session_id.clone();
+        let loading_connection = Rc::new(RefCell::new(None));
+        let loading_connection_for_task = loading_connection.clone();
         let load_task = cx.spawn_in(window, async move |this, cx| {
             let (connection, history) = match connect_result.await {
                 Ok(AgentConnectedState {
@@ -684,6 +698,7 @@ impl ConversationView {
             };
 
             telemetry::event!("Agent Thread Started", agent = connection.telemetry_id());
+            *loading_connection_for_task.borrow_mut() = Some(connection.clone());
 
             let mut resumed_without_history = false;
             let result = if let Some(session_id) = load_session_id.clone() {
@@ -803,6 +818,7 @@ impl ConversationView {
 
         let loading_view = cx.new(|_cx| LoadingView {
             session_id: resume_session_id,
+            connection: loading_connection,
             _load_task: load_task,
         });
 
@@ -6561,6 +6577,54 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn test_loading_view_close_closes_pending_session(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let thread_store = cx.update(|_window, cx| cx.new(|cx| ThreadStore::new(cx)));
+        let connection_store =
+            cx.update(|_window, cx| cx.new(|cx| AgentConnectionStore::new(project.clone(), cx)));
+
+        let connection = LoadingCloseConnection::new();
+        let session_id = SessionId::new("loading-session");
+        let conversation_view = cx.update(|window, cx| {
+            cx.new(|cx| {
+                ConversationView::new(
+                    Rc::new(StubAgentServer::new(connection.clone())),
+                    connection_store,
+                    Agent::Custom { id: "Test".into() },
+                    Some(session_id.clone()),
+                    Some(PathList::new(&[Path::new("/project")])),
+                    None,
+                    None,
+                    workspace.downgrade(),
+                    project,
+                    Some(thread_store),
+                    None,
+                    window,
+                    cx,
+                )
+            })
+        });
+
+        cx.run_until_parked();
+        assert!(conversation_view.read_with(cx, |view, _| view.is_loading()));
+
+        let weak_view = conversation_view.downgrade();
+        drop(conversation_view);
+        cx.update(|_window, _cx| {});
+        cx.run_until_parked();
+
+        assert!(!weak_view.is_upgradable());
+        assert_eq!(connection.closed_sessions.lock().as_slice(), &[session_id]);
+    }
+
+    #[gpui::test]
     async fn test_close_session_returns_error_when_unsupported(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -6594,6 +6658,114 @@ pub(crate) mod tests {
             result.unwrap_err().to_string().contains("not supported"),
             "Error message should indicate that closing is not supported"
         );
+    }
+
+    #[derive(Clone)]
+    struct LoadingCloseConnection {
+        closed_sessions: Arc<Mutex<Vec<acp::SessionId>>>,
+    }
+
+    impl LoadingCloseConnection {
+        fn new() -> Self {
+            Self {
+                closed_sessions: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl AgentConnection for LoadingCloseConnection {
+        fn agent_id(&self) -> AgentId {
+            AgentId::new("loading-close")
+        }
+
+        fn telemetry_id(&self) -> SharedString {
+            "loading-close".into()
+        }
+
+        fn new_session(
+            self: Rc<Self>,
+            _project: Entity<Project>,
+            _work_dirs: PathList,
+            _cx: &mut App,
+        ) -> Task<Result<Entity<AcpThread>>> {
+            panic!("test should load an existing session")
+        }
+
+        fn supports_load_session(&self) -> bool {
+            true
+        }
+
+        fn load_session(
+            self: Rc<Self>,
+            session_id: acp::SessionId,
+            project: Entity<Project>,
+            work_dirs: PathList,
+            _title: Option<SharedString>,
+            cx: &mut App,
+        ) -> Task<Result<Entity<AcpThread>>> {
+            let action_log = cx.new(|_| ActionLog::new(project.clone()));
+            let thread = cx.new(|cx| {
+                AcpThread::new(
+                    None,
+                    "LoadingCloseConnection",
+                    Some(work_dirs),
+                    self,
+                    project,
+                    action_log,
+                    session_id,
+                    watch::Receiver::constant(
+                        acp::PromptCapabilities::new()
+                            .image(true)
+                            .audio(true)
+                            .embedded_context(true),
+                    ),
+                    cx,
+                )
+            });
+
+            cx.foreground_executor().spawn(async move {
+                let (sender, receiver) = smol::channel::bounded::<()>(1);
+                let _sender = sender;
+                receiver.recv().await?;
+                Ok(thread)
+            })
+        }
+
+        fn supports_close_session(&self) -> bool {
+            true
+        }
+
+        fn close_session(
+            self: Rc<Self>,
+            session_id: &acp::SessionId,
+            _cx: &mut App,
+        ) -> Task<Result<()>> {
+            self.closed_sessions.lock().push(session_id.clone());
+            Task::ready(Ok(()))
+        }
+
+        fn auth_methods(&self) -> &[acp::AuthMethod] {
+            &[]
+        }
+
+        fn authenticate(&self, _method_id: acp::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
+            Task::ready(Ok(()))
+        }
+
+        fn prompt(
+            &self,
+            _id: Option<acp_thread::UserMessageId>,
+            _params: acp::PromptRequest,
+            _cx: &mut App,
+        ) -> Task<Result<acp::PromptResponse>> {
+            Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
+        }
+
+        fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {}
+
+        fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
+            self
+        }
     }
 
     #[derive(Clone)]
