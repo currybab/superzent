@@ -12,17 +12,23 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, list,
 };
 use language::LanguageRegistry;
+use project::search::SearchQuery;
 use settings::Settings;
 use theme::ThemeSettings;
 use ui::{WithScrollbar, prelude::*};
-use workspace::item::{Item, ItemHandle};
+use workspace::item::{Item, ItemBufferKind, ItemHandle};
+use workspace::searchable::{
+    Direction, SearchEvent, SearchOptions, SearchToken, SearchableItem, SearchableItemHandle,
+};
 use workspace::{Pane, Workspace};
 
-use crate::markdown_elements::ParsedMarkdownElement;
+use crate::markdown_elements::{
+    MarkdownParagraph, MarkdownParagraphChunk, ParsedMarkdown, ParsedMarkdownElement,
+    ParsedMarkdownTableRow,
+};
 use crate::markdown_renderer::{CheckboxClickedEvent, MermaidState};
 use crate::{
     OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, ScrollPageDown, ScrollPageUp,
-    markdown_elements::ParsedMarkdown,
     markdown_parser::parse_markdown,
     markdown_renderer::{RenderContext, render_markdown_block},
 };
@@ -42,6 +48,8 @@ pub struct MarkdownPreviewView {
     mermaid_state: MermaidState,
     parsing_markdown_task: Option<Task<Result<()>>>,
     mode: MarkdownPreviewMode,
+    search_matches: Vec<MarkdownSearchMatch>,
+    active_search_match_index: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +63,19 @@ pub enum MarkdownPreviewMode {
 struct EditorState {
     editor: Entity<Editor>,
     _subscription: Subscription,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarkdownSearchMatch {
+    pub(crate) block_index: usize,
+    pub(crate) text_source_range: Range<usize>,
+    pub(crate) text_range: Range<usize>,
+}
+
+struct MarkdownSearchSegment {
+    block_index: usize,
+    text_source_range: Range<usize>,
+    text: String,
 }
 
 impl MarkdownPreviewView {
@@ -219,6 +240,8 @@ impl MarkdownPreviewView {
                 parsing_markdown_task: None,
                 image_cache: RetainAllImageCache::new(cx),
                 mode,
+                search_matches: Vec::new(),
+                active_search_match_index: None,
             };
 
             this.set_editor(active_editor, window, cx);
@@ -361,6 +384,7 @@ impl MarkdownPreviewView {
                 view.list_state.reset(markdown_blocks_count);
                 view.list_state.scroll_to(scroll_top);
                 view.parsing_markdown_task = None;
+                cx.emit(SearchEvent::MatchesInvalidated);
                 cx.notify();
             })
         })
@@ -435,6 +459,91 @@ impl MarkdownPreviewView {
         next_block: Option<&ParsedMarkdownElement>,
     ) -> bool {
         !(current_block.is_list_item() && next_block.map(|b| b.is_list_item()).unwrap_or(false))
+    }
+
+    fn search_segments(contents: &ParsedMarkdown) -> Vec<MarkdownSearchSegment> {
+        let mut segments = Vec::new();
+        for (block_index, block) in contents.children.iter().enumerate() {
+            Self::search_segments_for_element(block, block_index, &mut segments);
+        }
+        segments
+    }
+
+    fn search_segments_for_element(
+        element: &ParsedMarkdownElement,
+        block_index: usize,
+        segments: &mut Vec<MarkdownSearchSegment>,
+    ) {
+        match element {
+            ParsedMarkdownElement::Heading(heading) => {
+                Self::search_segments_for_paragraph(&heading.contents, block_index, segments);
+            }
+            ParsedMarkdownElement::ListItem(list_item) => {
+                for child in &list_item.content {
+                    Self::search_segments_for_element(child, block_index, segments);
+                }
+            }
+            ParsedMarkdownElement::Table(table) => {
+                for row in table.header.iter().chain(table.body.iter()) {
+                    Self::search_segments_for_table_row(row, block_index, segments);
+                }
+                if let Some(caption) = &table.caption {
+                    Self::search_segments_for_paragraph(caption, block_index, segments);
+                }
+            }
+            ParsedMarkdownElement::BlockQuote(block_quote) => {
+                for child in &block_quote.children {
+                    Self::search_segments_for_element(child, block_index, segments);
+                }
+            }
+            ParsedMarkdownElement::CodeBlock(code_block) => {
+                segments.push(MarkdownSearchSegment {
+                    block_index,
+                    text_source_range: code_block.source_range.clone(),
+                    text: code_block.contents.to_string(),
+                });
+            }
+            ParsedMarkdownElement::Paragraph(paragraph) => {
+                Self::search_segments_for_paragraph(paragraph, block_index, segments);
+            }
+            ParsedMarkdownElement::MermaidDiagram(_)
+            | ParsedMarkdownElement::HorizontalRule(_)
+            | ParsedMarkdownElement::Image(_) => {}
+        }
+    }
+
+    fn search_segments_for_table_row(
+        row: &ParsedMarkdownTableRow,
+        block_index: usize,
+        segments: &mut Vec<MarkdownSearchSegment>,
+    ) {
+        for column in &row.columns {
+            Self::search_segments_for_paragraph(&column.children, block_index, segments);
+        }
+    }
+
+    fn search_segments_for_paragraph(
+        paragraph: &MarkdownParagraph,
+        block_index: usize,
+        segments: &mut Vec<MarkdownSearchSegment>,
+    ) {
+        for chunk in paragraph {
+            if let MarkdownParagraphChunk::Text(text) = chunk {
+                segments.push(MarkdownSearchSegment {
+                    block_index,
+                    text_source_range: text.source_range.clone(),
+                    text: text.contents.to_string(),
+                });
+            }
+        }
+    }
+
+    fn search_match_position(search_match: &MarkdownSearchMatch) -> (usize, usize, usize) {
+        (
+            search_match.block_index,
+            search_match.text_source_range.start,
+            search_match.text_range.start,
+        )
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, _window: &mut Window, cx: &mut Context<Self>) {
@@ -544,6 +653,7 @@ impl Focusable for MarkdownPreviewView {
 }
 
 impl EventEmitter<()> for MarkdownPreviewView {}
+impl EventEmitter<SearchEvent> for MarkdownPreviewView {}
 
 impl Item for MarkdownPreviewView {
     type Event = ();
@@ -568,6 +678,18 @@ impl Item for MarkdownPreviewView {
     }
 
     fn to_item_events(_event: &Self::Event, _f: &mut dyn FnMut(workspace::item::ItemEvent)) {}
+
+    fn buffer_kind(&self, _cx: &App) -> ItemBufferKind {
+        ItemBufferKind::Singleton
+    }
+
+    fn as_searchable(
+        &self,
+        handle: &Entity<Self>,
+        _: &App,
+    ) -> Option<Box<dyn SearchableItemHandle>> {
+        Some(Box::new(handle.clone()))
+    }
 }
 
 impl Render for MarkdownPreviewView {
@@ -605,6 +727,8 @@ impl Render for MarkdownPreviewView {
                             let mut render_cx = RenderContext::new(
                                 Some(this.workspace.clone()),
                                 &this.mermaid_state,
+                                &this.search_matches,
+                                this.active_search_match_index,
                                 window,
                                 cx,
                             )
@@ -698,5 +822,237 @@ impl Render for MarkdownPreviewView {
                 )
             }))
             .vertical_scrollbar_for(&self.list_state, window, cx)
+    }
+}
+
+impl SearchableItem for MarkdownPreviewView {
+    type Match = MarkdownSearchMatch;
+
+    fn supported_options(&self) -> SearchOptions {
+        SearchOptions {
+            case: true,
+            word: true,
+            regex: true,
+            replacement: false,
+            selection: false,
+            find_in_results: false,
+        }
+    }
+
+    fn get_matches(&self, _window: &mut Window, _cx: &mut App) -> (Vec<Self::Match>, SearchToken) {
+        (self.search_matches.clone(), SearchToken::default())
+    }
+
+    fn clear_matches(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let had_matches = !self.search_matches.is_empty();
+        let had_active_match = self.active_search_match_index.is_some();
+        self.search_matches.clear();
+        self.active_search_match_index = None;
+
+        if had_matches {
+            cx.emit(SearchEvent::MatchesInvalidated);
+        }
+        if had_matches || had_active_match {
+            cx.notify();
+        }
+    }
+
+    fn update_matches(
+        &mut self,
+        matches: &[Self::Match],
+        active_match_index: Option<usize>,
+        _token: SearchToken,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let matches_changed = self.search_matches != matches;
+        let active_match_changed = self.active_search_match_index != active_match_index;
+        self.search_matches = matches.to_vec();
+        self.active_search_match_index = active_match_index;
+        if matches_changed {
+            cx.emit(SearchEvent::MatchesInvalidated);
+        }
+        if matches_changed || active_match_changed {
+            cx.notify();
+        }
+    }
+
+    fn query_suggestion(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> String {
+        String::new()
+    }
+
+    fn activate_match(
+        &mut self,
+        index: usize,
+        matches: &[Self::Match],
+        _token: SearchToken,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(search_match) = matches.get(index) else {
+            return;
+        };
+
+        self.active_search_match_index = Some(index);
+        self.selected_block = search_match.block_index;
+        self.list_state
+            .scroll_to_reveal_item(search_match.block_index);
+        cx.emit(SearchEvent::ActiveMatchChanged);
+        cx.notify();
+    }
+
+    fn select_matches(
+        &mut self,
+        _matches: &[Self::Match],
+        _token: SearchToken,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
+    fn replace(
+        &mut self,
+        _: &Self::Match,
+        _: &SearchQuery,
+        _token: SearchToken,
+        _window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+    }
+
+    fn find_matches(
+        &mut self,
+        query: Arc<SearchQuery>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<Self::Match>> {
+        let segments = self
+            .contents
+            .as_ref()
+            .map(Self::search_segments)
+            .unwrap_or_default();
+
+        cx.background_spawn(async move {
+            let mut matches = Vec::new();
+            for segment in segments {
+                matches.extend(
+                    query
+                        .search_str(&segment.text)
+                        .into_iter()
+                        .map(|text_range| MarkdownSearchMatch {
+                            block_index: segment.block_index,
+                            text_source_range: segment.text_source_range.clone(),
+                            text_range,
+                        }),
+                );
+            }
+            matches
+        })
+    }
+
+    fn active_match_index(
+        &mut self,
+        direction: Direction,
+        matches: &[Self::Match],
+        _token: SearchToken,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        if matches.is_empty() {
+            return None;
+        }
+
+        let current_position = self
+            .active_search_match_index
+            .and_then(|index| self.search_matches.get(index))
+            .map(Self::search_match_position)
+            .unwrap_or((self.selected_block, 0, 0));
+
+        match direction {
+            Direction::Next => matches
+                .iter()
+                .position(|search_match| {
+                    Self::search_match_position(search_match) >= current_position
+                })
+                .or(Some(0)),
+            Direction::Prev => matches
+                .iter()
+                .rposition(|search_match| {
+                    Self::search_match_position(search_match) <= current_position
+                })
+                .or(Some(matches.len().saturating_sub(1))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::markdown_elements::{
+        HeadingLevel, ParsedMarkdownBlockQuote, ParsedMarkdownCodeBlock, ParsedMarkdownHeading,
+        ParsedMarkdownListItem, ParsedMarkdownListItemType, ParsedMarkdownText,
+    };
+    use ui::SharedString;
+
+    fn text(contents: &str, source_range: Range<usize>) -> MarkdownParagraphChunk {
+        MarkdownParagraphChunk::Text(ParsedMarkdownText {
+            source_range,
+            contents: SharedString::new(contents),
+            highlights: Vec::new(),
+            regions: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn search_segments_include_rendered_text_and_code_blocks() {
+        let markdown = ParsedMarkdown {
+            children: vec![
+                ParsedMarkdownElement::Heading(ParsedMarkdownHeading {
+                    source_range: 0..8,
+                    level: HeadingLevel::H1,
+                    contents: vec![text("Title", 2..7)],
+                }),
+                ParsedMarkdownElement::Paragraph(vec![text("alpha", 9..14)]),
+                ParsedMarkdownElement::CodeBlock(ParsedMarkdownCodeBlock {
+                    source_range: 16..35,
+                    language: None,
+                    contents: SharedString::new("code alpha"),
+                    highlights: None,
+                }),
+                ParsedMarkdownElement::ListItem(ParsedMarkdownListItem {
+                    source_range: 37..50,
+                    depth: 1,
+                    item_type: ParsedMarkdownListItemType::Unordered,
+                    content: vec![ParsedMarkdownElement::Paragraph(vec![text(
+                        "nested",
+                        39..45,
+                    )])],
+                    nested: false,
+                }),
+                ParsedMarkdownElement::BlockQuote(ParsedMarkdownBlockQuote {
+                    source_range: 52..61,
+                    children: vec![ParsedMarkdownElement::Paragraph(vec![text(
+                        "quote",
+                        54..59,
+                    )])],
+                }),
+            ],
+        };
+
+        let segments = MarkdownPreviewView::search_segments(&markdown)
+            .into_iter()
+            .map(|segment| (segment.block_index, segment.text_source_range, segment.text))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            segments,
+            vec![
+                (0, 2..7, "Title".to_string()),
+                (1, 9..14, "alpha".to_string()),
+                (2, 16..35, "code alpha".to_string()),
+                (3, 39..45, "nested".to_string()),
+                (4, 54..59, "quote".to_string()),
+            ]
+        );
     }
 }
