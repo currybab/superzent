@@ -989,8 +989,11 @@ impl SearchableItem for MarkdownPreviewView {
 mod tests {
     use super::*;
     use crate::markdown_elements::{
-        HeadingLevel, ParsedMarkdownBlockQuote, ParsedMarkdownCodeBlock, ParsedMarkdownHeading,
-        ParsedMarkdownListItem, ParsedMarkdownListItemType, ParsedMarkdownText,
+        HeadingLevel, Image, Link, ParsedMarkdownBlockQuote, ParsedMarkdownCodeBlock,
+        ParsedMarkdownHeading, ParsedMarkdownListItem, ParsedMarkdownListItemType,
+        ParsedMarkdownMermaidDiagram, ParsedMarkdownMermaidDiagramContents, ParsedMarkdownTable,
+        ParsedMarkdownTableAlignment, ParsedMarkdownTableColumn, ParsedMarkdownTableRow,
+        ParsedMarkdownText,
     };
     use ui::SharedString;
 
@@ -1001,6 +1004,16 @@ mod tests {
             highlights: Vec::new(),
             regions: Vec::new(),
         })
+    }
+
+    fn table_column(contents: &str, source_range: Range<usize>) -> ParsedMarkdownTableColumn {
+        ParsedMarkdownTableColumn {
+            col_span: 1,
+            row_span: 1,
+            is_header: false,
+            children: vec![text(contents, source_range)],
+            alignment: ParsedMarkdownTableAlignment::None,
+        }
     }
 
     #[test]
@@ -1036,6 +1049,33 @@ mod tests {
                         54..59,
                     )])],
                 }),
+                ParsedMarkdownElement::Table(ParsedMarkdownTable {
+                    source_range: 63..92,
+                    header: vec![ParsedMarkdownTableRow {
+                        columns: vec![table_column("header", 63..69)],
+                    }],
+                    body: vec![ParsedMarkdownTableRow {
+                        columns: vec![table_column("cell", 73..77)],
+                    }],
+                    caption: Some(vec![text("caption", 85..92)]),
+                }),
+                ParsedMarkdownElement::HorizontalRule(94..97),
+                ParsedMarkdownElement::Image(Image {
+                    link: Link::Web {
+                        url: "https://example.com/image.png".to_string(),
+                    },
+                    source_range: 99..112,
+                    alt_text: Some(SharedString::new("image alt")),
+                    width: None,
+                    height: None,
+                }),
+                ParsedMarkdownElement::MermaidDiagram(ParsedMarkdownMermaidDiagram {
+                    source_range: 114..135,
+                    contents: ParsedMarkdownMermaidDiagramContents {
+                        contents: SharedString::new("graph TD"),
+                        scale: 1,
+                    },
+                }),
             ],
         };
 
@@ -1052,6 +1092,9 @@ mod tests {
                 (2, 16..35, "code alpha".to_string()),
                 (3, 39..45, "nested".to_string()),
                 (4, 54..59, "quote".to_string()),
+                (5, 63..69, "header".to_string()),
+                (5, 73..77, "cell".to_string()),
+                (5, 85..92, "caption".to_string()),
             ]
         );
     }
