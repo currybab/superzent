@@ -32,7 +32,7 @@ external-agent reliability work that make Superzent's existing default surfaces 
 The current repo already includes:
 
 - default feature split in `crates/zed/Cargo.toml`, with `default = ["lite", "acp_tabs",
-  "next_edit"]`
+"next_edit"]`
 - build-aware edit prediction provider policy in `crates/edit_prediction_ui/src/provider_policy.rs`
 - default-build edit prediction registry tests in `crates/zed/src/zed/edit_prediction_registry.rs`
 - center-pane ACP tab support and external-agent UI under `crates/agent_ui`
