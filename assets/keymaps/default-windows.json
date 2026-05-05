@@ -1280,6 +1280,8 @@
       "down": "markdown::ScrollDown",
       "alt-up": "markdown::ScrollUpByItem",
       "alt-down": "markdown::ScrollDownByItem",
+      "find": "buffer_search::Deploy",
+      "ctrl-f": "buffer_search::Deploy",
     },
   },
   {
