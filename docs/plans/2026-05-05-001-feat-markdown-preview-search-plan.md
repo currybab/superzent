@@ -193,12 +193,12 @@ Markdown preview currently behaves like a focused item but not a searchable item
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-| --- | --- |
-| Direct upstream patch diverges from current renderer | Adapt only the behavior to current `ParsedMarkdown` and `RenderContext` structures |
-| Highlight byte ranges drift from rendered text | Store ranges relative to each extracted text segment and render highlights only when the segment source range matches |
-| Users expect text selection from search | Keep `selection: false`, document `select_matches` as out of scope, and do not present selection UI |
-| Search helper subtly diverges from buffer search semantics | Keep tests around text whole-word and regex per-line behavior |
+| Risk                                                       | Mitigation                                                                                                            |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Direct upstream patch diverges from current renderer       | Adapt only the behavior to current `ParsedMarkdown` and `RenderContext` structures                                    |
+| Highlight byte ranges drift from rendered text             | Store ranges relative to each extracted text segment and render highlights only when the segment source range matches |
+| Users expect text selection from search                    | Keep `selection: false`, document `select_matches` as out of scope, and do not present selection UI                   |
+| Search helper subtly diverges from buffer search semantics | Keep tests around text whole-word and regex per-line behavior                                                         |
 
 ## Sources & References
 
