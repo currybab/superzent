@@ -21,7 +21,7 @@ Zed PR #55500 cherry-picks upstream PR #55498, which fixed agent edit failures c
 
 ## Assumptions
 
-*This plan was authored without synchronous user confirmation. The items below are agent inferences that fill gaps in the input -- un-validated bets that should be reviewed before implementation proceeds.*
+_This plan was authored without synchronous user confirmation. The items below are agent inferences that fill gaps in the input -- un-validated bets that should be reviewed before implementation proceeds._
 
 - The requested comparison is specifically about whether Zed PR #55500's edit-tool deserialization fix applies to Superzent.
 - Superzent should accept the same stringified `mode` and `edits` inputs upstream now accepts, without broadening scope to unrelated agent tool changes.
@@ -101,21 +101,26 @@ Zed PR #55500 cherry-picks upstream PR #55498, which fixed agent edit failures c
 **Dependencies:** None
 
 **Files:**
+
 - Modify: `crates/agent/src/tools/streaming_edit_file_tool.rs`
 
 **Approach:**
+
 - Add a local untagged enum representing either a native value or a JSON string.
 - Add a generic deserializer that first accepts native values, then parses string contents with `serde_json`.
 - Annotate final `mode`, final `edits`, partial `mode`, and partial `edits` with that helper while preserving existing `default` and `skip_serializing_if` behavior.
 
 **Patterns to follow:**
+
 - The upstream Zed PR #55498 helper shape.
 - Existing local serde field annotations in `StreamingEditFileToolInput` and `StreamingEditFileToolPartialInput`.
 
 **Test scenarios:**
+
 - Covered by U2 and U3.
 
 **Verification:**
+
 - Native `mode`/`edits` inputs still deserialize.
 - Stringified `mode`/`edits` inputs deserialize to the same Rust values as native inputs.
 - Missing and `null` optional partial values remain `None`.
@@ -129,22 +134,27 @@ Zed PR #55500 cherry-picks upstream PR #55498, which fixed agent edit failures c
 **Dependencies:** U1
 
 **Files:**
+
 - Modify: `crates/agent/src/tools/streaming_edit_file_tool.rs`
 - Test: `crates/agent/src/tools/streaming_edit_file_tool.rs`
 
 **Approach:**
+
 - Add direct `serde_json::from_value` tests for final edit-tool inputs.
 - Cover double-encoded `mode`, double-encoded `edits`, omitted `edits`, and explicit `edits: null`.
 
 **Patterns to follow:**
+
 - Existing direct serde assertions and `json!` fixtures in the module's test block.
 
 **Test scenarios:**
+
 - Happy path: final input with `mode: "\"edit\""` and stringified `edits` deserializes to `Edit` mode with one edit.
 - Edge case: final edit input with double-encoded `mode` and omitted `edits` deserializes with `edits == None`.
 - Edge case: final edit input with double-encoded `mode` and `edits: null` deserializes with `edits == None`.
 
 **Verification:**
+
 - The new tests fail before U1 and pass after U1.
 
 - U3. **Cover streaming partial deserialization**
@@ -156,22 +166,27 @@ Zed PR #55500 cherry-picks upstream PR #55498, which fixed agent edit failures c
 **Dependencies:** U1
 
 **Files:**
+
 - Modify: `crates/agent/src/tools/streaming_edit_file_tool.rs`
 - Test: `crates/agent/src/tools/streaming_edit_file_tool.rs`
 
 **Approach:**
+
 - Add direct `serde_json::from_value` tests for `StreamingEditFileToolPartialInput`.
 - Cover double-encoded `mode`, stringified partial `edits`, omitted optionals, and explicit `null` optionals.
 
 **Patterns to follow:**
+
 - Existing partial-input startup behavior in `StreamingEditFileTool::run`.
 
 **Test scenarios:**
+
 - Happy path: partial input with `mode: "\"edit\""` and stringified partial edits deserializes with `Some(Edit)` and partial edit text.
 - Edge case: partial input with only path/description and no `mode` or `edits` keeps both fields `None`.
 - Edge case: partial input with `mode: null` and `edits: null` keeps both fields `None`.
 
 **Verification:**
+
 - The partial parser accepts malformed-but-recoverable snapshots instead of falling back to `DEFAULT_UI_TEXT`/ignored partial behavior.
 
 ---
@@ -189,11 +204,11 @@ Zed PR #55500 cherry-picks upstream PR #55498, which fixed agent edit failures c
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                                                                    | Mitigation                                                                                  |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | The generic helper accidentally changes native deserialization behavior | Include native and stringified cases in focused tests, and preserve existing field defaults |
-| Optional `null` handling regresses for partial inputs | Cover omitted and explicit `null` optionals in tests |
-| Error messages become less specific than the old edits-only helper | Use a clear generic parse failure message because the helper now applies to multiple fields |
+| Optional `null` handling regresses for partial inputs                   | Cover omitted and explicit `null` optionals in tests                                        |
+| Error messages become less specific than the old edits-only helper      | Use a clear generic parse failure message because the helper now applies to multiple fields |
 
 ---
 
