@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     fmt::Display,
     rc::{Rc, Weak},
     sync::Arc,
@@ -25,6 +25,8 @@ use workspace::{
 
 actions!(dev, [OpenAcpLogs]);
 
+const MAX_BACKLOG_MESSAGES: usize = 2000;
+
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
@@ -45,6 +47,15 @@ impl Global for GlobalAcpConnectionRegistry {}
 #[derive(Default)]
 pub struct AcpConnectionRegistry {
     active_connection: RefCell<Option<ActiveConnection>>,
+    backlog: RefCell<VecDeque<AcpLogEntry>>,
+    subscribers: RefCell<Vec<smol::channel::Sender<AcpLogEntry>>>,
+    _capture_task: RefCell<Option<Task<()>>>,
+}
+
+#[derive(Clone)]
+enum AcpLogEntry {
+    Stream(acp::StreamMessage),
+    Stderr { line: SharedString },
 }
 
 struct ActiveConnection {
@@ -73,7 +84,68 @@ impl AcpConnectionRegistry {
             agent_id,
             connection: Rc::downgrade(connection),
         }));
+        self.backlog.borrow_mut().clear();
+        self.subscribers.borrow_mut().clear();
+
+        let mut receiver = connection.subscribe();
+        self._capture_task
+            .replace(Some(cx.spawn(async move |this, cx| {
+                while let Ok(message) = receiver.recv().await {
+                    this.update(cx, |this, _cx| {
+                        this.record_stream_message(message);
+                    })
+                    .ok();
+                }
+            })));
         cx.notify();
+    }
+
+    fn record_stream_message(&self, message: acp::StreamMessage) {
+        self.record_entry(AcpLogEntry::Stream(message));
+    }
+
+    pub fn record_stderr_line(
+        &self,
+        connection: &Weak<acp::ClientSideConnection>,
+        line: impl Into<SharedString>,
+    ) {
+        let is_active = self
+            .active_connection
+            .borrow()
+            .as_ref()
+            .is_some_and(|active_connection| {
+                Weak::ptr_eq(&active_connection.connection, connection)
+            });
+        if !is_active {
+            return;
+        }
+        self.record_stderr_entry(line);
+    }
+
+    fn record_stderr_entry(&self, line: impl Into<SharedString>) {
+        self.record_entry(AcpLogEntry::Stderr { line: line.into() });
+    }
+
+    fn record_entry(&self, entry: AcpLogEntry) {
+        let mut backlog = self.backlog.borrow_mut();
+        if backlog.len() == MAX_BACKLOG_MESSAGES {
+            backlog.pop_front();
+        }
+        backlog.push_back(entry.clone());
+        drop(backlog);
+
+        let mut subscribers = self.subscribers.borrow_mut();
+        subscribers.retain(|subscriber| !subscriber.is_closed());
+        for subscriber in subscribers.iter() {
+            subscriber.try_send(entry.clone()).log_err();
+        }
+    }
+
+    fn subscribe(&self) -> (Vec<AcpLogEntry>, smol::channel::Receiver<AcpLogEntry>) {
+        let backlog = self.backlog.borrow().iter().cloned().collect();
+        let (sender, receiver) = smol::channel::unbounded();
+        self.subscribers.borrow_mut().push(sender);
+        (backlog, receiver)
     }
 }
 
@@ -118,40 +190,63 @@ impl AcpTools {
     }
 
     fn update_connection(&mut self, cx: &mut Context<Self>) {
-        let active_connection = self.connection_registry.read(cx).active_connection.borrow();
-        let Some(active_connection) = active_connection.as_ref() else {
+        let Some((agent_id, connection_weak)) =
+            self.connection_registry.read_with(cx, |registry, _| {
+                registry
+                    .active_connection
+                    .borrow()
+                    .as_ref()
+                    .map(|active_connection| {
+                        (
+                            active_connection.agent_id.clone(),
+                            active_connection.connection.clone(),
+                        )
+                    })
+            })
+        else {
+            self.watched_connection = None;
             return;
         };
 
         if let Some(watched_connection) = self.watched_connection.as_ref() {
-            if Weak::ptr_eq(
-                &watched_connection.connection,
-                &active_connection.connection,
-            ) {
+            if Weak::ptr_eq(&watched_connection.connection, &connection_weak) {
                 return;
             }
         }
 
-        if let Some(connection) = active_connection.connection.upgrade() {
-            let mut receiver = connection.subscribe();
+        if connection_weak.upgrade().is_some() {
+            let (backlog, receiver) = self
+                .connection_registry
+                .update(cx, |registry, _| registry.subscribe());
             let task = cx.spawn(async move |this, cx| {
-                while let Ok(message) = receiver.recv().await {
+                while let Ok(entry) = receiver.recv().await {
                     this.update(cx, |this, cx| {
-                        this.push_stream_message(message, cx);
+                        this.push_log_entry(entry, cx);
                     })
                     .ok();
                 }
             });
 
             self.watched_connection = Some(WatchedConnection {
-                agent_id: active_connection.agent_id.clone(),
+                agent_id,
                 messages: vec![],
                 list_state: ListState::new(0, ListAlignment::Bottom, px(2048.)),
-                connection: active_connection.connection.clone(),
+                connection: connection_weak,
                 incoming_request_methods: HashMap::default(),
                 outgoing_request_methods: HashMap::default(),
                 _task: task,
             });
+
+            for entry in backlog {
+                self.push_log_entry(entry, cx);
+            }
+        }
+    }
+
+    fn push_log_entry(&mut self, entry: AcpLogEntry, cx: &mut Context<Self>) {
+        match entry {
+            AcpLogEntry::Stream(message) => self.push_stream_message(message, cx),
+            AcpLogEntry::Stderr { line } => self.push_stderr_line(line, cx),
         }
     }
 
@@ -206,7 +301,7 @@ impl AcpTools {
             name: method,
             message_type,
             request_id,
-            direction: stream_message.direction,
+            direction: Some(stream_message.direction),
             collapsed_params_md: match params.as_ref() {
                 Ok(params) => params
                     .as_ref()
@@ -229,6 +324,28 @@ impl AcpTools {
         cx.notify();
     }
 
+    fn push_stderr_line(&mut self, line: SharedString, cx: &mut Context<Self>) {
+        let Some(connection) = self.watched_connection.as_mut() else {
+            return;
+        };
+        let language_registry = self.project.read(cx).languages().clone();
+        let index = connection.messages.len();
+        let params = serde_json::json!({ "line": line.to_string() });
+        let message = WatchedConnectionMessage {
+            name: "stderr".into(),
+            message_type: MessageType::Stderr,
+            request_id: None,
+            direction: None,
+            collapsed_params_md: Some(collapsed_params_md(&params, &language_registry, cx)),
+            expanded_params_md: None,
+            params: Ok(Some(params)),
+        };
+
+        connection.messages.push(message);
+        connection.list_state.splice(index..index, 1);
+        cx.notify();
+    }
+
     fn serialize_observed_messages(&self) -> Option<String> {
         let connection = self.watched_connection.as_ref()?;
 
@@ -243,8 +360,9 @@ impl AcpTools {
                 };
                 Some(serde_json::json!({
                     "_direction": match message.direction {
-                        acp::StreamMessageDirection::Incoming => "incoming",
-                        acp::StreamMessageDirection::Outgoing => "outgoing",
+                        Some(acp::StreamMessageDirection::Incoming) => "incoming",
+                        Some(acp::StreamMessageDirection::Outgoing) => "outgoing",
+                        None => "stderr",
                     },
                     "_type": message.message_type.to_string().to_lowercase(),
                     "id": message.request_id,
@@ -325,11 +443,16 @@ impl AcpTools {
                     .gap_2()
                     .flex_shrink_0()
                     .child(match message.direction {
-                        acp::StreamMessageDirection::Incoming => Icon::new(IconName::ArrowDown)
-                            .color(Color::Error)
-                            .size(IconSize::Small),
-                        acp::StreamMessageDirection::Outgoing => Icon::new(IconName::ArrowUp)
+                        Some(acp::StreamMessageDirection::Incoming) => {
+                            Icon::new(IconName::ArrowDown)
+                                .color(Color::Error)
+                                .size(IconSize::Small)
+                        }
+                        Some(acp::StreamMessageDirection::Outgoing) => Icon::new(IconName::ArrowUp)
                             .color(Color::Success)
+                            .size(IconSize::Small),
+                        None => Icon::new(IconName::Warning)
+                            .color(Color::Warning)
                             .size(IconSize::Small),
                     })
                     .child(
@@ -399,7 +522,7 @@ impl AcpTools {
 struct WatchedConnectionMessage {
     name: SharedString,
     request_id: Option<acp::RequestId>,
-    direction: acp::StreamMessageDirection,
+    direction: Option<acp::StreamMessageDirection>,
     message_type: MessageType,
     params: Result<Option<serde_json::Value>, acp::Error>,
     collapsed_params_md: Option<Entity<Markdown>>,
@@ -459,6 +582,7 @@ enum MessageType {
     Request,
     Response,
     Notification,
+    Stderr,
 }
 
 impl Display for MessageType {
@@ -467,6 +591,7 @@ impl Display for MessageType {
             MessageType::Request => write!(f, "Request"),
             MessageType::Response => write!(f, "Response"),
             MessageType::Notification => write!(f, "Notification"),
+            MessageType::Stderr => write!(f, "Stderr"),
         }
     }
 }
@@ -610,5 +735,24 @@ impl ToolbarItemView for AcpToolsToolbarItemView {
             cx.notify();
         }
         ToolbarItemLocation::Hidden
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_backlog_includes_stderr_lines() {
+        let registry = AcpConnectionRegistry::default();
+
+        registry.record_stderr_entry("agent failed to start");
+
+        let (backlog, _receiver) = registry.subscribe();
+        assert_eq!(backlog.len(), 1);
+        let AcpLogEntry::Stderr { line } = &backlog[0] else {
+            panic!("expected stderr log entry");
+        };
+        assert_eq!(line.as_ref(), "agent failed to start");
     }
 }

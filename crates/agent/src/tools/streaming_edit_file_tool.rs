@@ -22,7 +22,10 @@ use language_model::LanguageModelToolResultContent;
 use project::lsp_store::{FormatTrigger, LspFormatTarget};
 use project::{AgentLocation, Project, ProjectPath};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{DeserializeOwned, Error as _},
+};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,6 +83,7 @@ pub struct StreamingEditFileToolInput {
     /// - 'edit': Make granular edits to an existing file. Requires 'edits' field.
     ///
     /// When a file already exists or you just created it, prefer editing it as opposed to recreating it from scratch.
+    #[serde(deserialize_with = "deserialize_maybe_stringified")]
     pub mode: StreamingEditFileMode,
 
     /// The complete content for the new file (required for 'write' mode).
@@ -89,7 +93,11 @@ pub struct StreamingEditFileToolInput {
 
     /// List of edit operations to apply sequentially (required for 'edit' mode).
     /// Each edit finds `old_text` in the file and replaces it with `new_text`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_maybe_stringified"
+    )]
     pub edits: Option<Vec<Edit>>,
 }
 
@@ -124,11 +132,11 @@ struct StreamingEditFileToolPartialInput {
     display_description: Option<String>,
     #[serde(default)]
     path: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_maybe_stringified")]
     mode: Option<StreamingEditFileMode>,
     #[serde(default)]
     content: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_maybe_stringified")]
     edits: Option<Vec<PartialEdit>>,
 }
 
@@ -138,6 +146,26 @@ pub struct PartialEdit {
     pub old_text: Option<String>,
     #[serde(default)]
     pub new_text: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ValueOrJsonString<T> {
+    Value(T),
+    String(String),
+}
+
+fn deserialize_maybe_stringified<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: DeserializeOwned,
+    D: Deserializer<'de>,
+{
+    match ValueOrJsonString::<T>::deserialize(deserializer)? {
+        ValueOrJsonString::Value(value) => Ok(value),
+        ValueOrJsonString::String(string) => serde_json::from_str::<T>(&string).map_err(|error| {
+            D::Error::custom(format!("failed to parse stringified value: {error}"))
+        }),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1120,6 +1148,90 @@ mod tests {
     use settings::SettingsStore;
     use util::path;
     use util::rel_path::rel_path;
+
+    #[test]
+    fn test_input_deserializes_native_and_double_encoded_fields() {
+        let input = serde_json::from_value::<StreamingEditFileToolInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt",
+            "mode": "edit",
+            "edits": [{"old_text": "hello\nworld", "new_text": "HELLO\nWORLD"}]
+        }))
+        .expect("native input should deserialize");
+
+        assert!(matches!(input.mode, StreamingEditFileMode::Edit));
+        let edits = input.edits.expect("edits should deserialize");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].old_text, "hello\nworld");
+        assert_eq!(edits[0].new_text, "HELLO\nWORLD");
+
+        let input = serde_json::from_value::<StreamingEditFileToolInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt",
+            "mode": "\"edit\"",
+            "edits": "[{\"old_text\": \"hello\\nworld\", \"new_text\": \"HELLO\\nWORLD\"}]"
+        }))
+        .expect("double encoded input should deserialize");
+
+        assert!(matches!(input.mode, StreamingEditFileMode::Edit));
+        let edits = input.edits.expect("edits should deserialize");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].old_text, "hello\nworld");
+        assert_eq!(edits[0].new_text, "HELLO\nWORLD");
+
+        let input = serde_json::from_value::<StreamingEditFileToolInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt",
+            "mode": "\"edit\""
+        }))
+        .expect("input without edits should deserialize");
+        assert!(matches!(input.mode, StreamingEditFileMode::Edit));
+        assert!(input.edits.is_none());
+
+        let input = serde_json::from_value::<StreamingEditFileToolInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt",
+            "mode": "\"edit\"",
+            "edits": null
+        }))
+        .expect("input with null edits should deserialize");
+        assert!(input.edits.is_none());
+    }
+
+    #[test]
+    fn test_partial_input_deserializes_double_encoded_fields() {
+        let input = serde_json::from_value::<StreamingEditFileToolPartialInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt",
+            "mode": "\"edit\"",
+            "edits": "[{\"old_text\": \"hello\\nworld\", \"new_text\": \"HELLO\\nWORLD\"}]"
+        }))
+        .expect("partial input should deserialize");
+
+        assert!(matches!(input.mode, Some(StreamingEditFileMode::Edit)));
+        let edits = input.edits.expect("edits should deserialize");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].old_text.as_deref(), Some("hello\nworld"));
+        assert_eq!(edits[0].new_text.as_deref(), Some("HELLO\nWORLD"));
+
+        let input = serde_json::from_value::<StreamingEditFileToolPartialInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt"
+        }))
+        .expect("partial input without optional fields should deserialize");
+        assert!(input.mode.is_none());
+        assert!(input.edits.is_none());
+
+        let input = serde_json::from_value::<StreamingEditFileToolPartialInput>(json!({
+            "display_description": "Edit",
+            "path": "root/file.txt",
+            "mode": null,
+            "edits": null
+        }))
+        .expect("partial input with null optional fields should deserialize");
+        assert!(input.mode.is_none());
+        assert!(input.edits.is_none());
+    }
 
     #[gpui::test]
     async fn test_streaming_edit_create_file(cx: &mut TestAppContext) {

@@ -59,6 +59,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "smol",
  "theme",
  "ui",
  "util",
@@ -265,6 +266,7 @@ dependencies = [
  "action_log",
  "agent-client-protocol",
  "anyhow",
+ "async-pipe",
  "async-trait",
  "chrono",
  "client",
@@ -16733,7 +16735,7 @@ dependencies = [
 
 [[package]]
 name = "superzent"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "acp_thread",
  "acp_tools",

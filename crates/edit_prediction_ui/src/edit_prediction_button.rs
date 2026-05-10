@@ -654,6 +654,28 @@ impl EditPredictionButton {
         menu
     }
 
+    fn add_configure_providers_item(&self, menu: ContextMenu) -> ContextMenu {
+        menu.separator().item(
+            ContextMenuEntry::new("Configure Providers")
+                .icon(IconName::Settings)
+                .icon_position(IconPosition::Start)
+                .icon_color(Color::Muted)
+                .handler(move |window, cx| {
+                    telemetry::event!(
+                        "Edit Prediction Menu Action",
+                        action = "configure_providers",
+                    );
+                    window.dispatch_action(
+                        OpenSettingsAt {
+                            path: "edit_predictions.providers".to_string(),
+                        }
+                        .boxed_clone(),
+                        cx,
+                    );
+                }),
+        )
+    }
+
     pub fn build_copilot_start_menu(
         &mut self,
         window: &mut Window,
@@ -661,7 +683,7 @@ impl EditPredictionButton {
     ) -> Entity<ContextMenu> {
         let fs = self.fs.clone();
         let project = self.project.clone();
-        ContextMenu::build(window, cx, |menu, _, _| {
+        ContextMenu::build(window, cx, |menu, _, cx| {
             let menu = menu
                 .entry("Sign In to Copilot", None, move |window, cx| {
                     telemetry::event!(
@@ -689,16 +711,9 @@ impl EditPredictionButton {
                     }
                 });
 
-            if zed_hosted_provider_supported() {
-                menu.separator().entry("Use Zed AI", None, {
-                    let fs = fs.clone();
-                    move |_window, cx| {
-                        set_completion_provider(fs.clone(), cx, EditPredictionProvider::Zed)
-                    }
-                })
-            } else {
-                menu
-            }
+            let menu =
+                self.add_provider_switching_section(menu, EditPredictionProvider::Copilot, cx);
+            self.add_configure_providers_item(menu)
         })
     }
 
@@ -1038,6 +1053,7 @@ impl EditPredictionButton {
             let menu =
                 self.add_provider_switching_section(menu, EditPredictionProvider::Copilot, cx);
 
+            let menu = self.add_configure_providers_item(menu);
             menu.separator()
                 .item(
                     ContextMenuEntry::new("Copilot: Next Edit Suggestions")
@@ -1078,7 +1094,7 @@ impl EditPredictionButton {
             let menu =
                 self.add_provider_switching_section(menu, EditPredictionProvider::Codestral, cx);
 
-            menu
+            self.add_configure_providers_item(menu)
         })
     }
 
@@ -1321,27 +1337,7 @@ impl EditPredictionButton {
                 }
             }
 
-            menu = menu.separator().item(
-                ContextMenuEntry::new("Configure Providers")
-                    .icon(IconName::Settings)
-                    .icon_position(IconPosition::Start)
-                    .icon_color(Color::Muted)
-                    .handler(move |window, cx| {
-                        telemetry::event!(
-                            "Edit Prediction Menu Action",
-                            action = "configure_providers",
-                        );
-                        window.dispatch_action(
-                            OpenSettingsAt {
-                                path: "edit_predictions.providers".to_string(),
-                            }
-                            .boxed_clone(),
-                            cx,
-                        );
-                    }),
-            );
-
-            menu
+            self.add_configure_providers_item(menu)
         })
     }
 
