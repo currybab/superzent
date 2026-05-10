@@ -6,7 +6,7 @@ use crate::{
         ParsedMarkdownMermaidDiagram, ParsedMarkdownMermaidDiagramContents, ParsedMarkdownTable,
         ParsedMarkdownTableAlignment, ParsedMarkdownTableRow,
     },
-    markdown_preview_view::MarkdownPreviewView,
+    markdown_preview_view::{MarkdownPreviewView, MarkdownSearchMatch},
 };
 use collections::HashMap;
 use fs::normalize_path;
@@ -191,12 +191,18 @@ pub struct RenderContext<'a> {
     checkbox_clicked_callback: Option<CheckboxClickedCallback>,
     is_last_child: bool,
     mermaid_state: &'a MermaidState,
+    search_matches: &'a [MarkdownSearchMatch],
+    active_search_match_index: Option<usize>,
+    search_match_background_color: Hsla,
+    search_active_match_background_color: Hsla,
 }
 
 impl<'a> RenderContext<'a> {
     pub(crate) fn new(
         workspace: Option<WeakEntity<Workspace>>,
         mermaid_state: &'a MermaidState,
+        search_matches: &'a [MarkdownSearchMatch],
+        active_search_match_index: Option<usize>,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
@@ -230,6 +236,10 @@ impl<'a> RenderContext<'a> {
             checkbox_clicked_callback: None,
             is_last_child: false,
             mermaid_state,
+            search_matches,
+            active_search_match_index,
+            search_match_background_color: theme.colors().search_match_background,
+            search_active_match_background_color: theme.colors().search_active_match_background,
         }
     }
 
@@ -245,6 +255,32 @@ impl<'a> RenderContext<'a> {
         let id = format!("markdown-{}-{}-{}", self.next_id, span.start, span.end);
         self.next_id += 1;
         ElementId::from(SharedString::from(id))
+    }
+
+    fn search_highlights_for(
+        &self,
+        source_range: &Range<usize>,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        self.search_matches
+            .iter()
+            .enumerate()
+            .filter_map(|(index, search_match)| {
+                (search_match.text_source_range == *source_range).then(|| {
+                    let background_color = if Some(index) == self.active_search_match_index {
+                        self.search_active_match_background_color
+                    } else {
+                        self.search_match_background_color
+                    };
+                    (
+                        search_match.text_range.clone(),
+                        HighlightStyle {
+                            background_color: Some(background_color),
+                            ..Default::default()
+                        },
+                    )
+                })
+            })
+            .collect()
     }
 
     /// HACK: used to have rems relative to buffer font size, so that things scale appropriately as
@@ -299,7 +335,7 @@ pub fn render_parsed_markdown(
     cx: &mut App,
 ) -> Div {
     let cache = Default::default();
-    let mut cx = RenderContext::new(workspace, &cache, window, cx);
+    let mut cx = RenderContext::new(workspace, &cache, &[], None, window, cx);
 
     v_flex().gap_3().children(
         parsed
@@ -747,15 +783,20 @@ fn render_markdown_code_block(
     parsed: &ParsedMarkdownCodeBlock,
     cx: &mut RenderContext,
 ) -> AnyElement {
+    let search_highlights = cx.search_highlights_for(&parsed.source_range);
     let body = if let Some(highlights) = parsed.highlights.as_ref() {
+        let syntax_highlights = highlights.iter().filter_map(|(range, highlight_id)| {
+            highlight_id
+                .style(cx.syntax_theme.as_ref())
+                .map(|style| (range.clone(), style))
+        });
         StyledText::new(parsed.contents.clone()).with_default_highlights(
             &cx.buffer_text_style,
-            highlights.iter().filter_map(|(range, highlight_id)| {
-                highlight_id
-                    .style(cx.syntax_theme.as_ref())
-                    .map(|style| (range.clone(), style))
-            }),
+            gpui::combine_highlights(syntax_highlights, search_highlights),
         )
+    } else if !search_highlights.is_empty() {
+        StyledText::new(parsed.contents.clone())
+            .with_default_highlights(&cx.buffer_text_style, search_highlights)
     } else {
         StyledText::new(parsed.contents.clone())
     };
@@ -892,34 +933,38 @@ fn render_markdown_text(parsed_new: &MarkdownParagraph, cx: &mut RenderContext) 
         match parsed_region {
             MarkdownParagraphChunk::Text(parsed) => {
                 let element_id = cx.next_id(&parsed.source_range);
+                let search_highlights = cx.search_highlights_for(&parsed.source_range);
 
                 let highlights = gpui::combine_highlights(
-                    parsed.highlights.iter().filter_map(|(range, highlight)| {
-                        highlight
-                            .to_highlight_style(&syntax_theme)
-                            .map(|style| (range.clone(), style))
-                    }),
-                    parsed.regions.iter().filter_map(|(range, region)| {
-                        if region.code {
-                            Some((
-                                range.clone(),
-                                HighlightStyle {
-                                    background_color: Some(code_span_bg_color),
-                                    ..Default::default()
-                                },
-                            ))
-                        } else if region.link.is_some() {
-                            Some((
-                                range.clone(),
-                                HighlightStyle {
-                                    color: Some(link_color),
-                                    ..Default::default()
-                                },
-                            ))
-                        } else {
-                            None
-                        }
-                    }),
+                    gpui::combine_highlights(
+                        parsed.highlights.iter().filter_map(|(range, highlight)| {
+                            highlight
+                                .to_highlight_style(&syntax_theme)
+                                .map(|style| (range.clone(), style))
+                        }),
+                        parsed.regions.iter().filter_map(|(range, region)| {
+                            if region.code {
+                                Some((
+                                    range.clone(),
+                                    HighlightStyle {
+                                        background_color: Some(code_span_bg_color),
+                                        ..Default::default()
+                                    },
+                                ))
+                            } else if region.link.is_some() {
+                                Some((
+                                    range.clone(),
+                                    HighlightStyle {
+                                        color: Some(link_color),
+                                        ..Default::default()
+                                    },
+                                ))
+                            } else {
+                                None
+                            }
+                        }),
+                    ),
+                    search_highlights,
                 );
                 let mut links = Vec::new();
                 let mut link_ranges = Vec::new();

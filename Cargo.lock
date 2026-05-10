@@ -10260,6 +10260,7 @@ dependencies = [
  "markup5ever_rcdom",
  "mermaid-rs-renderer",
  "pretty_assertions",
+ "project",
  "pulldown-cmark 0.13.0",
  "settings",
  "stacksafe",

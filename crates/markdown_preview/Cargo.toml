@@ -28,6 +28,7 @@ log.workspace = true
 markdown.workspace = true
 markup5ever_rcdom.workspace = true
 pretty_assertions.workspace = true
+project.workspace = true
 pulldown-cmark.workspace = true
 settings.workspace = true
 stacksafe.workspace = true
