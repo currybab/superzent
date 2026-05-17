@@ -3675,6 +3675,12 @@ struct DraggedProjectRow {
     label: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectDropPosition {
+    Before,
+    After,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarRenameTarget {
     Project(String),
@@ -4169,6 +4175,29 @@ impl SuperzentSidebar {
         });
     }
 
+    fn move_project_after(
+        &mut self,
+        dragged: &DraggedProjectRow,
+        target_project_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if dragged.project_id == target_project_id {
+            return;
+        }
+
+        self.store.update(cx, |store, cx| {
+            let next_project_id = store
+                .projects()
+                .iter()
+                .skip_while(|project| project.id != target_project_id)
+                .skip(1)
+                .find(|project| project.id != dragged.project_id)
+                .map(|project| project.id.clone());
+
+            store.reorder_project(&dragged.project_id, next_project_id.as_deref(), cx);
+        });
+    }
+
     fn deploy_project_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -4424,6 +4453,49 @@ impl SuperzentSidebar {
             }))
     }
 
+    fn render_project_unit_drop_target(
+        &self,
+        target_project_id: &str,
+        position: ProjectDropPosition,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let target_project_id = target_project_id.to_string();
+        let drag_over_target_project_id = target_project_id.clone();
+        let drop_target_background = cx.theme().colors().drop_target_background;
+
+        div()
+            .id(format!(
+                "project-unit-drop-target-{target_project_id}-{position:?}"
+            ))
+            .invisible()
+            .absolute()
+            .left_0()
+            .right_0()
+            .h(DefiniteLength::Fraction(0.5))
+            .when(position == ProjectDropPosition::Before, |this| this.top_0())
+            .when(position == ProjectDropPosition::After, |this| {
+                this.bottom_0()
+            })
+            .bg(drop_target_background)
+            .drag_over::<DraggedProjectRow>(move |style, dragged, _, _| {
+                if dragged.project_id == drag_over_target_project_id {
+                    style
+                } else {
+                    style.visible()
+                }
+            })
+            .on_drop(cx.listener(
+                move |this, dragged: &DraggedProjectRow, _, cx| match position {
+                    ProjectDropPosition::Before => {
+                        this.move_project(dragged, Some(&target_project_id), cx);
+                    }
+                    ProjectDropPosition::After => {
+                        this.move_project_after(dragged, &target_project_id, cx);
+                    }
+                },
+            ))
+    }
+
     fn render_workspace_drop_zone(
         &self,
         project_id: &str,
@@ -4482,6 +4554,7 @@ impl SuperzentSidebar {
         };
 
         v_flex()
+            .relative()
             .w_full()
             .child(
                 div()
@@ -4599,6 +4672,16 @@ impl SuperzentSidebar {
                 )
                 .child(self.render_workspace_drop_zone(&project.id, None, cx))
             })
+            .child(self.render_project_unit_drop_target(
+                &project.id,
+                ProjectDropPosition::Before,
+                cx,
+            ))
+            .child(self.render_project_unit_drop_target(
+                &project.id,
+                ProjectDropPosition::After,
+                cx,
+            ))
     }
 
     fn render_workspace_row(
