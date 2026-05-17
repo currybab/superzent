@@ -4967,7 +4967,7 @@ impl GitPanel {
                                                     .child(dot_separator())
                                                 })
                                                 .child(
-                                                    Label::new(short_sha.clone())
+                                                    Label::new(short_sha)
                                                         .size(LabelSize::Small)
                                                         .color(Color::Muted),
                                                 ),
