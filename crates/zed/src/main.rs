@@ -1741,12 +1741,10 @@ async fn restore_superzent_startup_workspace(
     }
 
     match cx
-        .update(|cx| {
-            workspace::Workspace::new_local(vec![], app_state.clone(), None, None, None, true, cx)
-        })
+        .update(|cx| workspace::open_new(Default::default(), app_state.clone(), cx, |_, _, _| {}))
         .await
     {
-        Ok(_) => Ok(true),
+        Ok(()) => Ok(true),
         Err(error) => {
             log::error!("Failed to open empty startup workspace: {error:#}");
             Ok(false)
@@ -1785,7 +1783,13 @@ async fn restore_local_superzent_startup_workspace(
         })
         .await
     {
-        Ok(_) => {
+        Ok((window, _)) => {
+            window
+                .update(cx, |_, window, _cx| {
+                    window.activate_window();
+                })
+                .context("Failed to activate restored Superzent startup workspace window")
+                .log_err();
             cx.update(|cx| {
                 store.update(cx, |store: &mut superzent_model::SuperzentStore, cx| {
                     store.record_workspace_opened(&workspace_id, cx);
