@@ -5638,13 +5638,20 @@ impl SuperzentRightSidebar {
         let active = self.tab == tab;
         let compact = self.width.unwrap_or_else(|| px(320.)) < px(250.);
         let tooltip_label = label.clone();
+        let color = if active {
+            Color::Selected
+        } else {
+            Color::Default
+        };
 
         if compact && let Some(icon) = icon {
             return IconButton::new(id, icon)
                 .shape(ui::IconButtonShape::Square)
+                .icon_color(color)
                 .style(ui::ButtonStyle::Subtle)
                 .toggle_state(active)
                 .selected_style(ui::ButtonStyle::Filled)
+                .selected_icon_color(color)
                 .tooltip(move |window, cx| ui::Tooltip::text(tooltip_label.clone())(window, cx))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_active_tab(tab, cx);
@@ -5653,8 +5660,10 @@ impl SuperzentRightSidebar {
         }
 
         Button::new(id, label)
+            .color(color)
+            .selected_label_color(color)
             .when_some(icon, |button, icon| {
-                button.start_icon(Icon::new(icon).size(IconSize::Small))
+                button.start_icon(Icon::new(icon).size(IconSize::Small).color(color))
             })
             .label_size(LabelSize::Small)
             .style(ui::ButtonStyle::Subtle)
