@@ -112,6 +112,7 @@ actions!(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RightSidebarTab {
     Changes,
+    History,
     Files,
     Panel(EntityId),
 }
@@ -157,6 +158,15 @@ pub fn show_superzent_changes_sidebar(
     show_superzent_right_sidebar(workspace, Some(RightSidebarTab::Changes), focus, window, cx);
 }
 
+pub fn show_superzent_history_sidebar(
+    workspace: &mut Workspace,
+    focus: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    show_superzent_right_sidebar(workspace, Some(RightSidebarTab::History), focus, window, cx);
+}
+
 pub fn toggle_superzent_files_sidebar(
     workspace: &mut Workspace,
     window: &mut Window,
@@ -171,6 +181,14 @@ pub fn toggle_superzent_changes_sidebar(
     cx: &mut Context<Workspace>,
 ) {
     toggle_superzent_right_sidebar(workspace, RightSidebarTab::Changes, window, cx);
+}
+
+pub fn toggle_superzent_history_sidebar(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    toggle_superzent_right_sidebar(workspace, RightSidebarTab::History, window, cx);
 }
 
 fn toggle_superzent_right_sidebar(
@@ -866,7 +884,9 @@ pub fn init(cx: &mut App) {
                     };
 
                     match panel.read(cx).tab {
-                        RightSidebarTab::Changes | RightSidebarTab::Files => {
+                        RightSidebarTab::Changes
+                        | RightSidebarTab::History
+                        | RightSidebarTab::Files => {
                             if workspace.active_pane().read(cx).items_len() > 0 {
                                 window.dispatch_action(Box::new(CloseCenterPaneItem), cx);
                             }
@@ -885,7 +905,9 @@ pub fn init(cx: &mut App) {
                     };
 
                     match panel.read(cx).tab {
-                        RightSidebarTab::Changes | RightSidebarTab::Files => {
+                        RightSidebarTab::Changes
+                        | RightSidebarTab::History
+                        | RightSidebarTab::Files => {
                             let active_pane = workspace.active_pane().clone();
                             if active_pane.read(cx).items_len() > 0 {
                                 active_pane.update(cx, |pane, cx| {
@@ -5451,6 +5473,7 @@ impl SuperzentRightSidebar {
 
     fn set_active_tab(&mut self, tab: RightSidebarTab, cx: &mut Context<Self>) {
         self.tab = tab;
+        self.sync_git_panel_tab(cx);
         cx.notify();
     }
 
@@ -5461,6 +5484,7 @@ impl SuperzentRightSidebar {
     pub fn debug_active_tab(&self, cx: &App) -> String {
         match self.tab {
             RightSidebarTab::Changes => "changes".to_string(),
+            RightSidebarTab::History => "history".to_string(),
             RightSidebarTab::Files => "files".to_string(),
             RightSidebarTab::Panel(panel_id) => self
                 .right_dock
@@ -5468,6 +5492,20 @@ impl SuperzentRightSidebar {
                 .panel_for_id(panel_id)
                 .map(|panel| panel.persistent_name().to_string())
                 .unwrap_or_default(),
+        }
+    }
+
+    fn sync_git_panel_tab(&self, cx: &mut Context<Self>) {
+        match self.tab {
+            RightSidebarTab::Changes => {
+                self.git_panel
+                    .update(cx, |git_panel, cx| git_panel.show_changes_tab(cx));
+            }
+            RightSidebarTab::History => {
+                self.git_panel
+                    .update(cx, |git_panel, cx| git_panel.show_history_tab(cx));
+            }
+            RightSidebarTab::Files | RightSidebarTab::Panel(_) => {}
         }
     }
 
@@ -5494,6 +5532,7 @@ impl SuperzentRightSidebar {
     fn sync_active_tab(&mut self, active_panel_exists: bool, cx: &mut Context<Self>) {
         if matches!(self.tab, RightSidebarTab::Panel(_)) && !active_panel_exists {
             self.tab = RightSidebarTab::Changes;
+            self.sync_git_panel_tab(cx);
             cx.notify();
         }
     }
@@ -5535,6 +5574,7 @@ impl SuperzentRightSidebar {
         self.external_panel_tabs.retain(|id| *id != panel_id);
         if self.tab == RightSidebarTab::Panel(panel_id) {
             self.tab = RightSidebarTab::Changes;
+            self.sync_git_panel_tab(cx);
         }
         if previous_len != self.external_panel_tabs.len() {
             cx.notify();
@@ -5555,7 +5595,7 @@ impl SuperzentRightSidebar {
 
         let active_tab_exists = match self.tab {
             RightSidebarTab::Panel(panel_id) => dock.read(cx).panel_for_id(panel_id).is_some(),
-            RightSidebarTab::Changes | RightSidebarTab::Files => true,
+            RightSidebarTab::Changes | RightSidebarTab::History | RightSidebarTab::Files => true,
         };
         self.sync_external_tabs(cx);
         self.sync_active_tab(active_tab_exists, cx);
@@ -5681,6 +5721,7 @@ impl Render for SuperzentRightSidebar {
         let external_tabs = self.visible_external_tabs(window, cx);
         let content = match self.tab {
             RightSidebarTab::Changes => self.git_panel.clone().into_any_element(),
+            RightSidebarTab::History => self.git_panel.clone().into_any_element(),
             RightSidebarTab::Files => self.project_panel.clone().into_any_element(),
             RightSidebarTab::Panel(panel_id) => self
                 .right_dock
@@ -5692,6 +5733,13 @@ impl Render for SuperzentRightSidebar {
 
         v_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &git_ui::git_panel::ToggleFocus, window, cx| {
+                    this.set_active_tab(RightSidebarTab::Changes, cx);
+                    window.focus(&this.focus_handle, cx);
+                }),
+            )
             .child(
                 v_flex()
                     .border_b_1()
@@ -5708,6 +5756,13 @@ impl Render for SuperzentRightSidebar {
                                 "Changes".into(),
                                 Some(IconName::GitBranchAlt),
                                 RightSidebarTab::Changes,
+                                cx,
+                            ))
+                            .child(self.render_tab_button(
+                                "superzent-right-tab-history",
+                                "History".into(),
+                                Some(IconName::HistoryRerun),
+                                RightSidebarTab::History,
                                 cx,
                             ))
                             .child(self.render_tab_button(
