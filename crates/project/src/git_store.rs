@@ -4692,17 +4692,18 @@ impl Repository {
 
     pub fn fetch_commit_data(&mut self, sha: Oid, cx: &mut Context<Self>) -> &CommitDataState {
         if !self.commit_data.contains_key(&sha) {
-            match &self.graph_commit_data_handler {
-                GraphCommitHandlerState::Open(handler) => {
-                    if handler.commit_data_request.try_send(sha).is_ok() {
-                        let old_value = self.commit_data.insert(sha, CommitDataState::Loading);
-                        debug_assert!(old_value.is_none(), "We should never overwrite commit data");
-                    }
-                }
-                GraphCommitHandlerState::Closed => {
-                    self.open_graph_commit_data_handler(cx);
-                }
-                GraphCommitHandlerState::Starting => {}
+            if matches!(
+                self.graph_commit_data_handler,
+                GraphCommitHandlerState::Closed
+            ) {
+                self.open_graph_commit_data_handler(cx);
+            }
+
+            if let GraphCommitHandlerState::Open(handler) = &self.graph_commit_data_handler
+                && handler.commit_data_request.try_send(sha).is_ok()
+            {
+                let old_value = self.commit_data.insert(sha, CommitDataState::Loading);
+                debug_assert!(old_value.is_none(), "We should never overwrite commit data");
             }
         }
 
@@ -7178,5 +7179,54 @@ fn tracked_status_to_proto(code: StatusCode) -> i32 {
         StatusCode::TypeChanged => proto::GitStatus::TypeChanged as _,
         StatusCode::Copied => proto::GitStatus::Copied as _,
         StatusCode::Unmodified => proto::GitStatus::Unmodified as _,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    async fn test_fetch_commit_data_enqueues_initial_request(cx: &mut gpui::TestAppContext) {
+        let sha = Oid::from_bytes(&[1; 20]).unwrap();
+        let repository = cx.update(|cx| {
+            cx.new(|cx| {
+                let (job_sender, _jobs_rx) = futures::channel::mpsc::unbounded();
+                Repository {
+                    this: cx.weak_entity(),
+                    snapshot: RepositorySnapshot::empty(
+                        RepositoryId(0),
+                        Arc::from(Path::new("/repo")),
+                        None,
+                        PathStyle::local(),
+                    ),
+                    commit_message_buffer: None,
+                    git_store: WeakEntity::new_invalid(),
+                    paths_needing_status_update: Vec::new(),
+                    job_sender,
+                    active_jobs: HashMap::default(),
+                    pending_ops: SumTree::default(),
+                    job_id: 0,
+                    askpass_delegates: Arc::default(),
+                    latest_askpass_id: 0,
+                    repository_state: Task::ready(Err("repository unavailable".to_string()))
+                        .shared(),
+                    initial_graph_data: HashMap::default(),
+                    graph_commit_data_handler: GraphCommitHandlerState::Closed,
+                    commit_data: HashMap::default(),
+                }
+            })
+        });
+
+        repository.update(cx, |repository, cx| {
+            assert!(matches!(
+                repository.fetch_commit_data(sha, cx),
+                CommitDataState::Loading
+            ));
+            assert!(matches!(
+                repository.commit_data.get(&sha),
+                Some(CommitDataState::Loading)
+            ));
+        });
     }
 }

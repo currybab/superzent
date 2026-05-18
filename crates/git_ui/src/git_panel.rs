@@ -3414,7 +3414,6 @@ impl GitPanel {
     fn schedule_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = cx.entity().downgrade();
         self.reopen_commit_buffer(window, cx);
-        self.preload_commit_history(cx);
         if self.active_tab == GitPanelTab::History {
             self.load_commit_history(cx);
         }
@@ -4605,23 +4604,6 @@ impl GitPanel {
             }
         }
         cx.notify();
-    }
-
-    fn preload_commit_history(&mut self, cx: &mut Context<Self>) {
-        let Some(active_repository) = self.active_repository.as_ref() else {
-            return;
-        };
-
-        let Some(branch) = active_repository.read(cx).branch.as_ref() else {
-            return;
-        };
-
-        let log_source = LogSource::Branch(branch.name().to_string().into());
-        let log_order = LogOrder::DateOrder;
-
-        active_repository.update(cx, |repository, cx| {
-            repository.graph_data(log_source, log_order, 0..0, cx);
-        });
     }
 
     fn load_commit_history(&mut self, cx: &mut Context<Self>) {
@@ -6942,6 +6924,21 @@ mod tests {
         });
         cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
         handle.await;
+
+        panel.read_with(cx, |panel, cx| {
+            let repository = panel.active_repository.as_ref().unwrap();
+            let branch = repository.read(cx).branch.as_ref().unwrap().name();
+            assert!(
+                repository
+                    .read(cx)
+                    .get_graph_data(
+                        LogSource::Branch(branch.to_string().into()),
+                        LogOrder::DateOrder
+                    )
+                    .is_none(),
+                "Changes tab should not start the commit history graph job"
+            );
+        });
 
         panel.update(cx, |panel, cx| panel.show_history_tab(cx));
         cx.executor().run_until_parked();
