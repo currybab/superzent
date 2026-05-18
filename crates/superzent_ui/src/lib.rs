@@ -132,7 +132,7 @@ fn show_superzent_right_sidebar(
     if let Some(panel) = workspace.panel::<SuperzentRightSidebar>(cx) {
         panel.update(cx, |panel, cx| {
             if let Some(tab) = tab {
-                panel.set_active_tab(tab, cx);
+                panel.set_active_tab(tab, focus, window, cx);
             } else {
                 cx.notify();
             }
@@ -5471,10 +5471,25 @@ impl SuperzentRightSidebar {
         }
     }
 
-    fn set_active_tab(&mut self, tab: RightSidebarTab, cx: &mut Context<Self>) {
+    fn set_active_tab(
+        &mut self,
+        tab: RightSidebarTab,
+        focus_content: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.tab = tab;
         self.sync_git_panel_tab(cx);
+        if focus_content {
+            self.focus_active_tab_content(window, cx);
+        }
         cx.notify();
+    }
+
+    fn focus_active_tab_content(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab == RightSidebarTab::History {
+            self.git_panel.focus_handle(cx).focus(window, cx);
+        }
     }
 
     fn is_tab_active(&self, tab: RightSidebarTab) -> bool {
@@ -5653,8 +5668,8 @@ impl SuperzentRightSidebar {
                 .selected_style(ui::ButtonStyle::Filled)
                 .selected_icon_color(color)
                 .tooltip(move |window, cx| ui::Tooltip::text(tooltip_label.clone())(window, cx))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.set_active_tab(tab, cx);
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.set_active_tab(tab, true, window, cx);
                 }))
                 .into_any_element();
         }
@@ -5669,8 +5684,8 @@ impl SuperzentRightSidebar {
             .style(ui::ButtonStyle::Subtle)
             .toggle_state(active)
             .selected_style(ui::ButtonStyle::Filled)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.set_active_tab(tab, cx);
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.set_active_tab(tab, true, window, cx);
             }))
             .into_any_element()
     }
@@ -5745,7 +5760,7 @@ impl Render for SuperzentRightSidebar {
             .track_focus(&self.focus_handle)
             .on_action(
                 cx.listener(|this, _: &git_ui::git_panel::ToggleFocus, window, cx| {
-                    this.set_active_tab(RightSidebarTab::Changes, cx);
+                    this.set_active_tab(RightSidebarTab::Changes, false, window, cx);
                     window.focus(&this.focus_handle, cx);
                 }),
             )

@@ -294,6 +294,12 @@ enum GitPanelTab {
     History,
 }
 
+struct CommitHistorySnapshot {
+    shas: Vec<Oid>,
+    is_loading: bool,
+    error: Option<SharedString>,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 enum Section {
     Conflict,
@@ -683,6 +689,9 @@ pub struct GitPanel {
     stash_entries: GitStash,
     active_tab: GitPanelTab,
     commit_history_key: Option<(LogSource, LogOrder)>,
+    commit_history_load_finished: bool,
+    commit_history_is_loading: bool,
+    commit_history_error: Option<SharedString>,
     commit_history_scroll_handle: UniformListScrollHandle,
     commit_history_shas: Vec<Oid>,
     focused_history_entry: Option<usize>,
@@ -830,11 +839,11 @@ impl GitPanel {
                 &git_store,
                 window,
                 move |this, _git_store, event, window, cx| match event {
-                    GitStoreEvent::RepositoryUpdated(
-                        _,
-                        RepositoryEvent::StatusesChanged | RepositoryEvent::BranchChanged,
-                        true,
-                    )
+                    GitStoreEvent::RepositoryUpdated(_, RepositoryEvent::BranchChanged, true) => {
+                        this.invalidate_commit_history();
+                        this.schedule_update(window, cx);
+                    }
+                    GitStoreEvent::RepositoryUpdated(_, RepositoryEvent::StatusesChanged, true)
                     | GitStoreEvent::RepositoryAdded
                     | GitStoreEvent::RepositoryRemoved(_)
                     | GitStoreEvent::ActiveRepositoryChanged(_) => {
@@ -893,6 +902,9 @@ impl GitPanel {
                 stash_entries: Default::default(),
                 active_tab: GitPanelTab::Changes,
                 commit_history_key: None,
+                commit_history_load_finished: false,
+                commit_history_is_loading: false,
+                commit_history_error: None,
                 commit_history_scroll_handle: UniformListScrollHandle::new(),
                 commit_history_shas: Vec::new(),
                 focused_history_entry: None,
@@ -3490,9 +3502,7 @@ impl GitPanel {
                 .as_ref()
                 .map(|repository| repository.entity_id())
         {
-            self.commit_history_shas.clear();
-            self.focused_history_entry = None;
-            self.history_keyboard_nav = false;
+            self.clear_commit_history();
             self.commit_history_key = None;
             self._repo_subscriptions.clear();
         }
@@ -4597,9 +4607,7 @@ impl GitPanel {
         self.active_tab = tab;
         match tab {
             GitPanelTab::Changes => {
-                self.commit_history_shas.clear();
-                self.focused_history_entry = None;
-                self.history_keyboard_nav = false;
+                self.clear_commit_history();
                 self.commit_history_key = None;
                 self._repo_subscriptions.clear();
             }
@@ -4620,13 +4628,12 @@ impl GitPanel {
         };
         let Some(commit_history_key) = self.commit_history_key(cx) else {
             self.reset_commit_history();
+            self.commit_history_load_finished = true;
             return;
         };
 
         if self.commit_history_key.as_ref() != Some(&commit_history_key) {
-            self.commit_history_shas.clear();
-            self.focused_history_entry = None;
-            self.history_keyboard_nav = false;
+            self.clear_commit_history();
             self.commit_history_key = Some(commit_history_key);
         }
 
@@ -4648,16 +4655,30 @@ impl GitPanel {
                             cx.notify();
                         }
                     }
-                    RepositoryEvent::GraphEvent(
-                        (source, order),
-                        GitGraphEvent::FullyLoaded | GitGraphEvent::LoadingError,
-                    ) if this.active_tab == GitPanelTab::History
-                        && this.commit_history_key.as_ref().is_some_and(
-                            |(current_source, current_order)| {
-                                current_source == source && current_order == order
-                            },
-                        ) =>
+                    RepositoryEvent::GraphEvent((source, order), GitGraphEvent::FullyLoaded)
+                        if this.active_tab == GitPanelTab::History
+                            && this.commit_history_key.as_ref().is_some_and(
+                                |(current_source, current_order)| {
+                                    current_source == source && current_order == order
+                                },
+                            ) =>
                     {
+                        this.replace_commit_history_shas(cx);
+                        this.commit_history_is_loading = false;
+                        this.commit_history_load_finished = true;
+                        cx.notify();
+                    }
+                    RepositoryEvent::GraphEvent((source, order), GitGraphEvent::LoadingError)
+                        if this.active_tab == GitPanelTab::History
+                            && this.commit_history_key.as_ref().is_some_and(
+                                |(current_source, current_order)| {
+                                    current_source == source && current_order == order
+                                },
+                            ) =>
+                    {
+                        this.replace_commit_history_shas(cx);
+                        this.commit_history_is_loading = false;
+                        this.commit_history_load_finished = true;
                         cx.notify();
                     }
                     _ => {}
@@ -4671,16 +4692,27 @@ impl GitPanel {
             ));
         }
 
-        if self.commit_history_shas.is_empty() {
+        if self.commit_history_shas.is_empty() && !self.commit_history_load_finished {
             self.replace_commit_history_shas(cx);
         }
     }
 
-    fn reset_commit_history(&mut self) {
-        self.commit_history_key = None;
+    fn clear_commit_history(&mut self) {
+        self.commit_history_load_finished = false;
+        self.commit_history_is_loading = false;
+        self.commit_history_error = None;
         self.commit_history_shas.clear();
         self.focused_history_entry = None;
         self.history_keyboard_nav = false;
+    }
+
+    fn invalidate_commit_history(&mut self) {
+        self.clear_commit_history();
+        self.commit_history_key = None;
+    }
+
+    fn reset_commit_history(&mut self) {
+        self.invalidate_commit_history();
         self._repo_subscriptions.clear();
     }
 
@@ -4696,27 +4728,31 @@ impl GitPanel {
         Some((LogSource::Branch(branch_name.into()), LogOrder::DateOrder))
     }
 
-    fn load_commit_history_shas(
+    fn load_commit_history_snapshot(
         &self,
         range: Range<usize>,
         cx: &mut Context<Self>,
-    ) -> Option<Vec<Oid>> {
+    ) -> Option<CommitHistorySnapshot> {
         let active_repository = self.active_repository.as_ref()?;
         let (log_source, log_order) = self.commit_history_key.clone()?;
         Some(active_repository.update(cx, |repository, cx| {
-            repository
-                .graph_data(log_source, log_order, range, cx)
-                .commits
-                .iter()
-                .map(|commit| commit.sha)
-                .collect()
+            let graph_data = repository.graph_data(log_source, log_order, range, cx);
+            CommitHistorySnapshot {
+                shas: graph_data.commits.iter().map(|commit| commit.sha).collect(),
+                is_loading: graph_data.is_loading,
+                error: graph_data.error.clone(),
+            }
         }))
     }
 
     fn replace_commit_history_shas(&mut self, cx: &mut Context<Self>) {
-        self.commit_history_shas = self
-            .load_commit_history_shas(0..usize::MAX, cx)
-            .unwrap_or_default();
+        let Some(snapshot) = self.load_commit_history_snapshot(0..usize::MAX, cx) else {
+            self.clear_commit_history();
+            return;
+        };
+
+        self.commit_history_shas = snapshot.shas;
+        self.update_commit_history_load_state(snapshot.is_loading, snapshot.error);
         self.normalize_focused_history_entry();
     }
 
@@ -4726,16 +4762,25 @@ impl GitPanel {
             return false;
         }
 
-        let Some(mut new_shas) = self.load_commit_history_shas(old_len..commit_count, cx) else {
+        let Some(mut snapshot) = self.load_commit_history_snapshot(old_len..commit_count, cx)
+        else {
             return false;
         };
-        if new_shas.is_empty() {
+        self.update_commit_history_load_state(snapshot.is_loading, snapshot.error);
+        if snapshot.shas.is_empty() {
             return false;
         }
 
-        self.commit_history_shas.append(&mut new_shas);
+        self.commit_history_shas.append(&mut snapshot.shas);
         self.normalize_focused_history_entry();
         true
+    }
+
+    fn update_commit_history_load_state(&mut self, is_loading: bool, error: Option<SharedString>) {
+        self.commit_history_is_loading = is_loading;
+        self.commit_history_error = error;
+        self.commit_history_load_finished =
+            !self.commit_history_is_loading || self.commit_history_error.is_some();
     }
 
     fn normalize_focused_history_entry(&mut self) {
@@ -4851,6 +4896,22 @@ impl GitPanel {
                 )
             } else if let Some(history) = self.render_commit_history(window, cx) {
                 this.child(history)
+            } else if self.commit_history_error.is_some() {
+                this.child(
+                    v_flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .child(Label::new("Unable to load commit history").color(Color::Muted)),
+                )
+            } else if self.commit_history_load_finished {
+                this.child(
+                    v_flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .child(Label::new("No commits yet").color(Color::Muted)),
+                )
             } else {
                 this.child(
                     v_flex()
@@ -7028,7 +7089,12 @@ mod tests {
         });
 
         panel.update(cx, |panel, cx| panel.show_history_tab(cx));
-        cx.executor().run_until_parked();
+        for _ in 0..10 {
+            cx.executor().run_until_parked();
+            if panel.read_with(cx, |panel, _| panel.commit_history_load_finished) {
+                break;
+            }
+        }
 
         panel.update_in(cx, |panel, window, cx| {
             panel.focus_handle.focus(window, cx);
@@ -7044,6 +7110,87 @@ mod tests {
                 commits.iter().map(|commit| commit.sha).collect::<Vec<_>>()
             );
             assert_eq!(panel.focused_history_entry, Some(0));
+            assert!(panel.commit_history_load_finished);
+            assert!(!panel.commit_history_is_loading);
+            assert!(panel.commit_history_error.is_none());
+        });
+
+        let repository = panel.read_with(cx, |panel, _| panel.active_repository.clone().unwrap());
+        repository.update(cx, |_repository, cx| {
+            cx.emit(RepositoryEvent::BranchChanged);
+        });
+        cx.executor().run_until_parked();
+
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.commit_history_key.is_none());
+            assert!(panel.commit_history_shas.is_empty());
+            assert_eq!(panel.focused_history_entry, None);
+            assert!(!panel.commit_history_load_finished);
+            assert!(!panel.commit_history_is_loading);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_history_tab_finishes_loading_for_empty_history(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/root/project"),
+            json!({
+                ".git": {},
+                "a.txt": "hello",
+            }),
+        )
+        .await;
+
+        fs.set_branch_name(Path::new(path!("/root/project/.git")), Some("main"));
+        fs.set_graph_commits(Path::new(path!("/root/project/.git")), Vec::new());
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/root/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        let handle = cx.update_window_entity(&panel, |panel, _, _| {
+            std::mem::replace(&mut panel.update_visible_entries_task, Task::ready(()))
+        });
+        cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
+        handle.await;
+
+        panel.update(cx, |panel, cx| panel.show_history_tab(cx));
+        for _ in 0..10 {
+            cx.executor().run_until_parked();
+            if panel.read_with(cx, |panel, _| panel.commit_history_load_finished) {
+                break;
+            }
+        }
+
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.debug_active_tab(), "history");
+            assert!(panel.commit_history_shas.is_empty());
+            assert!(panel.commit_history_load_finished);
+            assert!(!panel.commit_history_is_loading);
+            assert!(panel.commit_history_error.is_none());
+            assert_eq!(panel.focused_history_entry, None);
         });
     }
 

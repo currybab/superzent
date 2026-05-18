@@ -4598,22 +4598,28 @@ impl Repository {
                         Err(e) => Err(SharedString::from(e)),
                     };
 
-                    if let Err(fetch_task_error) = result {
-                        repository
-                            .update(cx, |repository, _| {
-                                if let Some(data) = repository
-                                    .initial_graph_data
-                                    .get_mut(&(log_source, log_order))
-                                {
-                                    data.error = Some(fetch_task_error);
-                                } else {
-                                    debug_panic!(
-                                        "This task would be dropped if this entry doesn't exist"
-                                    );
+                    repository
+                        .update(cx, |repository, cx| {
+                            let graph_data_key = (log_source, log_order);
+                            let graph_event = match result {
+                                Ok(()) => GitGraphEvent::FullyLoaded,
+                                Err(fetch_task_error) => {
+                                    if let Some(data) =
+                                        repository.initial_graph_data.get_mut(&graph_data_key)
+                                    {
+                                        data.error = Some(fetch_task_error);
+                                    } else {
+                                        debug_panic!(
+                                            "This task would be dropped if this entry doesn't exist"
+                                        );
+                                    }
+                                    GitGraphEvent::LoadingError
                                 }
-                            })
-                            .ok();
-                    }
+                            };
+
+                            cx.emit(RepositoryEvent::GraphEvent(graph_data_key, graph_event));
+                        })
+                        .ok();
                 });
 
                 InitialGitGraphData {
