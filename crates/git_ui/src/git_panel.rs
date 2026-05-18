@@ -61,7 +61,8 @@ use panel::{PanelHeader, panel_button, panel_filled_button, panel_icon_button};
 use project::{
     Fs, Project, ProjectPath,
     git_store::{
-        CommitDataState, GitStoreEvent, Repository, RepositoryEvent, RepositoryId, pending_op,
+        CommitDataState, GitGraphEvent, GitStoreEvent, Repository, RepositoryEvent, RepositoryId,
+        pending_op,
     },
     project_settings::{GitPathStyle, ProjectSettings},
 };
@@ -681,6 +682,7 @@ pub struct GitPanel {
     bulk_staging: Option<BulkStaging>,
     stash_entries: GitStash,
     active_tab: GitPanelTab,
+    commit_history_key: Option<(LogSource, LogOrder)>,
     commit_history_scroll_handle: UniformListScrollHandle,
     commit_history_shas: Vec<Oid>,
     focused_history_entry: Option<usize>,
@@ -890,6 +892,7 @@ impl GitPanel {
                 bulk_staging: None,
                 stash_entries: Default::default(),
                 active_tab: GitPanelTab::Changes,
+                commit_history_key: None,
                 commit_history_scroll_handle: UniformListScrollHandle::new(),
                 commit_history_shas: Vec::new(),
                 focused_history_entry: None,
@@ -3416,9 +3419,6 @@ impl GitPanel {
     fn schedule_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = cx.entity().downgrade();
         self.reopen_commit_buffer(window, cx);
-        if self.active_tab == GitPanelTab::History {
-            self.load_commit_history(cx);
-        }
         self.update_visible_entries_task = cx.spawn_in(window, async move |_, cx| {
             cx.background_executor().timer(UPDATE_DEBOUNCE).await;
             if let Some(git_panel) = handle.upgrade() {
@@ -3493,7 +3493,11 @@ impl GitPanel {
             self.commit_history_shas.clear();
             self.focused_history_entry = None;
             self.history_keyboard_nav = false;
+            self.commit_history_key = None;
             self._repo_subscriptions.clear();
+        }
+        if self.active_tab == GitPanelTab::History {
+            self.load_commit_history(cx);
         }
         self.entries.clear();
         self.entries_indices.clear();
@@ -4596,6 +4600,7 @@ impl GitPanel {
                 self.commit_history_shas.clear();
                 self.focused_history_entry = None;
                 self.history_keyboard_nav = false;
+                self.commit_history_key = None;
                 self._repo_subscriptions.clear();
             }
             GitPanelTab::History => {
@@ -4609,57 +4614,131 @@ impl GitPanel {
     }
 
     fn load_commit_history(&mut self, cx: &mut Context<Self>) {
-        let Some(active_repository) = self.active_repository.as_ref() else {
+        let Some(active_repository) = self.active_repository.clone() else {
+            self.reset_commit_history();
+            return;
+        };
+        let Some(commit_history_key) = self.commit_history_key(cx) else {
+            self.reset_commit_history();
             return;
         };
 
+        if self.commit_history_key.as_ref() != Some(&commit_history_key) {
+            self.commit_history_shas.clear();
+            self.focused_history_entry = None;
+            self.history_keyboard_nav = false;
+            self.commit_history_key = Some(commit_history_key);
+        }
+
         if self._repo_subscriptions.is_empty() {
             self._repo_subscriptions.push(cx.subscribe(
-                active_repository,
-                |this, _repository, event, cx| {
-                    if let RepositoryEvent::GraphEvent(_, _) = event
-                        && this.active_tab == GitPanelTab::History
+                &active_repository,
+                |this, _repository, event, cx| match event {
+                    RepositoryEvent::GraphEvent(
+                        (source, order),
+                        GitGraphEvent::CountUpdated(commit_count),
+                    ) if this.active_tab == GitPanelTab::History
+                        && this.commit_history_key.as_ref().is_some_and(
+                            |(current_source, current_order)| {
+                                current_source == source && current_order == order
+                            },
+                        ) =>
                     {
-                        this.fetch_commit_history_shas(cx);
+                        if this.append_commit_history_shas(*commit_count, cx) {
+                            cx.notify();
+                        }
                     }
+                    RepositoryEvent::GraphEvent(
+                        (source, order),
+                        GitGraphEvent::FullyLoaded | GitGraphEvent::LoadingError,
+                    ) if this.active_tab == GitPanelTab::History
+                        && this.commit_history_key.as_ref().is_some_and(
+                            |(current_source, current_order)| {
+                                current_source == source && current_order == order
+                            },
+                        ) =>
+                    {
+                        cx.notify();
+                    }
+                    _ => {}
                 },
             ));
             self._repo_subscriptions.push(cx.observe(
-                active_repository,
+                &active_repository,
                 |_this, _repository, cx| {
                     cx.notify();
                 },
             ));
         }
 
-        self.fetch_commit_history_shas(cx);
+        if self.commit_history_shas.is_empty() {
+            self.replace_commit_history_shas(cx);
+        }
     }
 
-    fn fetch_commit_history_shas(&mut self, cx: &mut Context<Self>) {
-        let Some(active_repository) = self.active_repository.as_ref() else {
-            self.commit_history_shas.clear();
-            self.focused_history_entry = None;
-            return;
-        };
+    fn reset_commit_history(&mut self) {
+        self.commit_history_key = None;
+        self.commit_history_shas.clear();
+        self.focused_history_entry = None;
+        self.history_keyboard_nav = false;
+        self._repo_subscriptions.clear();
+    }
 
-        let Some(branch) = active_repository.read(cx).branch.as_ref() else {
-            self.commit_history_shas.clear();
-            self.focused_history_entry = None;
-            return;
-        };
+    fn commit_history_key(&self, cx: &App) -> Option<(LogSource, LogOrder)> {
+        let branch_name = self
+            .active_repository
+            .as_ref()?
+            .read(cx)
+            .branch
+            .as_ref()?
+            .name()
+            .to_string();
+        Some((LogSource::Branch(branch_name.into()), LogOrder::DateOrder))
+    }
 
-        let log_source = LogSource::Branch(branch.name().to_string().into());
-        let log_order = LogOrder::DateOrder;
-
-        self.commit_history_shas = active_repository.update(cx, |repository, cx| {
+    fn load_commit_history_shas(
+        &self,
+        range: Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Oid>> {
+        let active_repository = self.active_repository.as_ref()?;
+        let (log_source, log_order) = self.commit_history_key.clone()?;
+        Some(active_repository.update(cx, |repository, cx| {
             repository
-                .graph_data(log_source, log_order, 0..usize::MAX, cx)
+                .graph_data(log_source, log_order, range, cx)
                 .commits
                 .iter()
                 .map(|commit| commit.sha)
                 .collect()
-        });
+        }))
+    }
 
+    fn replace_commit_history_shas(&mut self, cx: &mut Context<Self>) {
+        self.commit_history_shas = self
+            .load_commit_history_shas(0..usize::MAX, cx)
+            .unwrap_or_default();
+        self.normalize_focused_history_entry();
+    }
+
+    fn append_commit_history_shas(&mut self, commit_count: usize, cx: &mut Context<Self>) -> bool {
+        let old_len = self.commit_history_shas.len();
+        if commit_count <= old_len {
+            return false;
+        }
+
+        let Some(mut new_shas) = self.load_commit_history_shas(old_len..commit_count, cx) else {
+            return false;
+        };
+        if new_shas.is_empty() {
+            return false;
+        }
+
+        self.commit_history_shas.append(&mut new_shas);
+        self.normalize_focused_history_entry();
+        true
+    }
+
+    fn normalize_focused_history_entry(&mut self) {
         if self
             .focused_history_entry
             .is_none_or(|index| index >= self.commit_history_shas.len())
