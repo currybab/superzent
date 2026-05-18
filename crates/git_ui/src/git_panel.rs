@@ -1033,7 +1033,9 @@ impl GitPanel {
             .is_some_and(|focused| self.focus_handle == focused)
         {
             dispatch_context.add("menu");
-            dispatch_context.add("ChangesList");
+            if self.active_tab == GitPanelTab::Changes {
+                dispatch_context.add("ChangesList");
+            }
         }
 
         if self.commit_editor.read(cx).is_focused(window) {
@@ -6925,6 +6927,12 @@ mod tests {
         cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
         handle.await;
 
+        panel.update_in(cx, |panel, window, cx| {
+            panel.focus_handle.focus(window, cx);
+            let context = panel.dispatch_context(window, cx);
+            assert!(context.contains("ChangesList"));
+        });
+
         panel.read_with(cx, |panel, cx| {
             let repository = panel.active_repository.as_ref().unwrap();
             let branch = repository.read(cx).branch.as_ref().unwrap().name();
@@ -6942,6 +6950,13 @@ mod tests {
 
         panel.update(cx, |panel, cx| panel.show_history_tab(cx));
         cx.executor().run_until_parked();
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.focus_handle.focus(window, cx);
+            let context = panel.dispatch_context(window, cx);
+            assert!(context.contains("menu"));
+            assert!(!context.contains("ChangesList"));
+        });
 
         panel.read_with(cx, |panel, _| {
             assert_eq!(panel.debug_active_tab(), "history");
