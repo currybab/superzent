@@ -1,5 +1,5 @@
 use crate::{
-    CloseWindow, NewCenterTerminal, NewFile, NewTerminal, OpenInTerminal, OpenOptions,
+    CloseWindow, NewCenterTerminal, NewFile, NewTerminalInPanel, OpenInTerminal, OpenOptions,
     OpenTerminal, OpenVisible, SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom,
     Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
     invalid_item_view::InvalidItemView,
@@ -4172,7 +4172,7 @@ fn default_render_tab_bar_buttons(
                             )
                             .action(
                                 "New Terminal in Panel",
-                                NewTerminal::default().boxed_clone(),
+                                NewTerminalInPanel::default().boxed_clone(),
                             )
                     }))
                 }),

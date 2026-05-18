@@ -55,6 +55,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _: &mut Context<Workspace>| {
             workspace.register_action(TerminalPanel::new_terminal);
+            workspace.register_action(TerminalPanel::new_terminal_in_panel);
             workspace.register_action(TerminalPanel::open_terminal);
             workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
                 if is_enabled_in_workspace(workspace, cx) {
@@ -659,6 +660,49 @@ impl TerminalPanel {
     ) -> Option<Task<Result<WeakEntity<Terminal>>>> {
         let local = action.local;
         let working_directory = default_working_directory(workspace, cx);
+        let center_pane = workspace.active_pane();
+        let center_pane_has_focus = center_pane.focus_handle(cx).contains_focused(window, cx);
+        let active_center_item_is_terminal = center_pane
+            .read(cx)
+            .active_item()
+            .is_some_and(|item| item.downcast::<TerminalView>().is_some());
+
+        if center_pane_has_focus && active_center_item_is_terminal {
+            return Some(Self::add_center_terminal(
+                workspace,
+                window,
+                cx,
+                move |project, cx| {
+                    if local {
+                        project.create_local_terminal(cx)
+                    } else {
+                        project.create_terminal_shell(working_directory, cx)
+                    }
+                },
+            ));
+        }
+
+        Self::new_terminal_in_panel_task_internal(workspace, local, working_directory, window, cx)
+    }
+
+    fn new_terminal_in_panel_task(
+        workspace: &mut Workspace,
+        action: &workspace::NewTerminalInPanel,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Option<Task<Result<WeakEntity<Terminal>>>> {
+        let local = action.local;
+        let working_directory = default_working_directory(workspace, cx);
+        Self::new_terminal_in_panel_task_internal(workspace, local, working_directory, window, cx)
+    }
+
+    fn new_terminal_in_panel_task_internal(
+        workspace: &mut Workspace,
+        local: bool,
+        working_directory: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Option<Task<Result<WeakEntity<Terminal>>>> {
         let terminal_panel = workspace.panel::<Self>(cx)?;
 
         Some(terminal_panel.update(cx, |terminal_panel, cx| {
@@ -681,6 +725,19 @@ impl TerminalPanel {
         cx: &mut Context<Workspace>,
     ) {
         let Some(task) = Self::new_terminal_task(workspace, action, window, cx) else {
+            return;
+        };
+
+        task.detach_and_log_err(cx);
+    }
+
+    fn new_terminal_in_panel(
+        workspace: &mut Workspace,
+        action: &workspace::NewTerminalInPanel,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(task) = Self::new_terminal_in_panel_task(workspace, action, window, cx) else {
             return;
         };
 
@@ -1954,6 +2011,228 @@ mod tests {
         });
         terminal_panel.read_with(cx, |terminal_panel, cx| {
             assert_eq!(terminal_panel.active_pane.read(cx).items_len(), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_new_terminal_actions_when_center_terminal_focused(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+        let (workspace, terminal_panel) = window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().clone();
+                let terminal_panel = workspace.update(cx, |workspace, cx| {
+                    let terminal_panel = cx.new(|cx| TerminalPanel::new(workspace, window, cx));
+                    workspace.add_panel(terminal_panel.clone(), window, cx);
+                    terminal_panel
+                });
+                (workspace, terminal_panel)
+            })
+            .unwrap();
+
+        let task = window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    TerminalView::deploy_task(
+                        workspace,
+                        &workspace::NewCenterTerminal { local: true },
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap();
+        task.await.unwrap();
+        cx.run_until_parked();
+
+        window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let terminal_view = workspace
+                        .active_pane()
+                        .read(cx)
+                        .active_item()
+                        .and_then(|item| item.downcast::<TerminalView>())
+                        .expect("center pane should have an active terminal");
+                    window.focus(&terminal_view.focus_handle(cx), cx);
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let center_items_before = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_pane().read(cx).items_len()
+        });
+        let panel_items_before = terminal_panel.read_with(cx, |terminal_panel, cx| {
+            terminal_panel.active_pane.read(cx).items_len()
+        });
+
+        let task = window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    TerminalPanel::new_terminal_task(
+                        workspace,
+                        &workspace::NewTerminal { local: true },
+                        window,
+                        cx,
+                    )
+                    .expect("new terminal should create a task")
+                })
+            })
+            .unwrap();
+        task.await.unwrap();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_pane().read(cx).items_len(),
+                center_items_before + 1
+            );
+        });
+        terminal_panel.read_with(cx, |terminal_panel, cx| {
+            assert_eq!(
+                terminal_panel.active_pane.read(cx).items_len(),
+                panel_items_before
+            );
+        });
+
+        let center_items_before = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_pane().read(cx).items_len()
+        });
+        let panel_items_before = terminal_panel.read_with(cx, |terminal_panel, cx| {
+            terminal_panel.active_pane.read(cx).items_len()
+        });
+
+        let task = window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    TerminalPanel::new_terminal_in_panel_task(
+                        workspace,
+                        &workspace::NewTerminalInPanel { local: true },
+                        window,
+                        cx,
+                    )
+                    .expect("terminal panel should be registered")
+                })
+            })
+            .unwrap();
+        task.await.unwrap();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_pane().read(cx).items_len(),
+                center_items_before
+            );
+        });
+        terminal_panel.read_with(cx, |terminal_panel, cx| {
+            assert_eq!(
+                terminal_panel.active_pane.read(cx).items_len(),
+                panel_items_before + 1
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_new_terminal_action_opens_in_panel_when_terminal_panel_focused(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+        let (workspace, terminal_panel) = window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().clone();
+                let terminal_panel = workspace.update(cx, |workspace, cx| {
+                    let terminal_panel = cx.new(|cx| TerminalPanel::new(workspace, window, cx));
+                    workspace.add_panel(terminal_panel.clone(), window, cx);
+                    terminal_panel
+                });
+                (workspace, terminal_panel)
+            })
+            .unwrap();
+
+        let task = window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    TerminalView::deploy_task(
+                        workspace,
+                        &workspace::NewCenterTerminal { local: true },
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap();
+        task.await.unwrap();
+        cx.run_until_parked();
+
+        let task = window_handle
+            .update(cx, |_, window, cx| {
+                terminal_panel.update(cx, |terminal_panel, cx| {
+                    terminal_panel.add_local_terminal_shell(RevealStrategy::Always, window, cx)
+                })
+            })
+            .unwrap();
+        task.await.unwrap();
+        cx.run_until_parked();
+
+        window_handle
+            .update(cx, |_, window, cx| {
+                let terminal_view = terminal_panel
+                    .read(cx)
+                    .active_pane
+                    .read(cx)
+                    .active_item()
+                    .and_then(|item| item.downcast::<TerminalView>())
+                    .expect("terminal panel should have an active terminal");
+                window.focus(&terminal_view.focus_handle(cx), cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let center_items_before = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_pane().read(cx).items_len()
+        });
+        let panel_items_before = terminal_panel.read_with(cx, |terminal_panel, cx| {
+            terminal_panel.active_pane.read(cx).items_len()
+        });
+
+        let task = window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    TerminalPanel::new_terminal_task(
+                        workspace,
+                        &workspace::NewTerminal { local: true },
+                        window,
+                        cx,
+                    )
+                    .expect("terminal panel should be registered")
+                })
+            })
+            .unwrap();
+        task.await.unwrap();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_pane().read(cx).items_len(),
+                center_items_before
+            );
+        });
+        terminal_panel.read_with(cx, |terminal_panel, cx| {
+            assert_eq!(
+                terminal_panel.active_pane.read(cx).items_len(),
+                panel_items_before + 1
+            );
         });
     }
 
