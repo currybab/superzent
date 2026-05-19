@@ -689,6 +689,8 @@ pub struct GitPanel {
     stash_entries: GitStash,
     active_tab: GitPanelTab,
     commit_history_key: Option<(LogSource, LogOrder)>,
+    commit_history_unpushed_key: Option<(LogSource, LogOrder)>,
+    commit_history_unpushed_shas: HashSet<Oid>,
     commit_history_load_finished: bool,
     commit_history_is_loading: bool,
     commit_history_error: Option<SharedString>,
@@ -902,6 +904,8 @@ impl GitPanel {
                 stash_entries: Default::default(),
                 active_tab: GitPanelTab::Changes,
                 commit_history_key: None,
+                commit_history_unpushed_key: None,
+                commit_history_unpushed_shas: HashSet::default(),
                 commit_history_load_finished: false,
                 commit_history_is_loading: false,
                 commit_history_error: None,
@@ -3504,6 +3508,7 @@ impl GitPanel {
         {
             self.clear_commit_history();
             self.commit_history_key = None;
+            self.commit_history_unpushed_key = None;
             self._repo_subscriptions.clear();
         }
         if self.active_tab == GitPanelTab::History {
@@ -4609,6 +4614,7 @@ impl GitPanel {
             GitPanelTab::Changes => {
                 self.clear_commit_history();
                 self.commit_history_key = None;
+                self.commit_history_unpushed_key = None;
                 self._repo_subscriptions.clear();
             }
             GitPanelTab::History => {
@@ -4636,6 +4642,11 @@ impl GitPanel {
             self.clear_commit_history();
             self.commit_history_key = Some(commit_history_key);
         }
+        let commit_history_unpushed_key = self.commit_history_unpushed_key(cx);
+        if self.commit_history_unpushed_key != commit_history_unpushed_key {
+            self.commit_history_unpushed_shas.clear();
+            self.commit_history_unpushed_key = commit_history_unpushed_key;
+        }
 
         if self._repo_subscriptions.is_empty() {
             self._repo_subscriptions.push(cx.subscribe(
@@ -4655,7 +4666,45 @@ impl GitPanel {
                             cx.notify();
                         }
                     }
+                    RepositoryEvent::GraphEvent(
+                        (source, order),
+                        GitGraphEvent::CountUpdated(commit_count),
+                    ) if this.active_tab == GitPanelTab::History
+                        && this.commit_history_unpushed_key.as_ref().is_some_and(
+                            |(current_source, current_order)| {
+                                current_source == source && current_order == order
+                            },
+                        ) =>
+                    {
+                        if this.append_commit_history_unpushed_shas(*commit_count, cx) {
+                            cx.notify();
+                        }
+                    }
                     RepositoryEvent::GraphEvent((source, order), GitGraphEvent::FullyLoaded)
+                        if this.active_tab == GitPanelTab::History
+                            && this.commit_history_key.as_ref().is_some_and(
+                                |(current_source, current_order)| {
+                                    current_source == source && current_order == order
+                                },
+                            ) =>
+                    {
+                        this.replace_commit_history_shas(cx);
+                        this.commit_history_is_loading = false;
+                        this.commit_history_load_finished = true;
+                        cx.notify();
+                    }
+                    RepositoryEvent::GraphEvent((source, order), GitGraphEvent::FullyLoaded)
+                        if this.active_tab == GitPanelTab::History
+                            && this.commit_history_unpushed_key.as_ref().is_some_and(
+                                |(current_source, current_order)| {
+                                    current_source == source && current_order == order
+                                },
+                            ) =>
+                    {
+                        this.replace_commit_history_unpushed_shas(cx);
+                        cx.notify();
+                    }
+                    RepositoryEvent::GraphEvent((source, order), GitGraphEvent::LoadingError)
                         if this.active_tab == GitPanelTab::History
                             && this.commit_history_key.as_ref().is_some_and(
                                 |(current_source, current_order)| {
@@ -4670,15 +4719,13 @@ impl GitPanel {
                     }
                     RepositoryEvent::GraphEvent((source, order), GitGraphEvent::LoadingError)
                         if this.active_tab == GitPanelTab::History
-                            && this.commit_history_key.as_ref().is_some_and(
+                            && this.commit_history_unpushed_key.as_ref().is_some_and(
                                 |(current_source, current_order)| {
                                     current_source == source && current_order == order
                                 },
                             ) =>
                     {
-                        this.replace_commit_history_shas(cx);
-                        this.commit_history_is_loading = false;
-                        this.commit_history_load_finished = true;
+                        this.commit_history_unpushed_shas.clear();
                         cx.notify();
                     }
                     _ => {}
@@ -4695,6 +4742,11 @@ impl GitPanel {
         if self.commit_history_shas.is_empty() && !self.commit_history_load_finished {
             self.replace_commit_history_shas(cx);
         }
+        if self.commit_history_unpushed_shas.is_empty()
+            && self.commit_history_unpushed_key.is_some()
+        {
+            self.replace_commit_history_unpushed_shas(cx);
+        }
     }
 
     fn clear_commit_history(&mut self) {
@@ -4702,6 +4754,7 @@ impl GitPanel {
         self.commit_history_is_loading = false;
         self.commit_history_error = None;
         self.commit_history_shas.clear();
+        self.commit_history_unpushed_shas.clear();
         self.focused_history_entry = None;
         self.history_keyboard_nav = false;
     }
@@ -4709,6 +4762,7 @@ impl GitPanel {
     fn invalidate_commit_history(&mut self) {
         self.clear_commit_history();
         self.commit_history_key = None;
+        self.commit_history_unpushed_key = None;
     }
 
     fn reset_commit_history(&mut self) {
@@ -4717,24 +4771,37 @@ impl GitPanel {
     }
 
     fn commit_history_key(&self, cx: &App) -> Option<(LogSource, LogOrder)> {
-        let branch_name = self
+        let branch_ref_name = self
             .active_repository
             .as_ref()?
             .read(cx)
             .branch
             .as_ref()?
-            .name()
+            .ref_name
+            .as_ref()
             .to_string();
-        Some((LogSource::Branch(branch_name.into()), LogOrder::DateOrder))
+        Some((
+            LogSource::Branch(branch_ref_name.into()),
+            LogOrder::DateOrder,
+        ))
     }
 
-    fn load_commit_history_snapshot(
+    fn commit_history_unpushed_key(&self, cx: &App) -> Option<(LogSource, LogOrder)> {
+        let active_repository = self.active_repository.as_ref()?;
+        let branch = active_repository.read(cx).branch.as_ref()?.clone();
+        let upstream = branch.upstream.as_ref()?;
+        let log_source = format!("{}..{}", upstream.ref_name, branch.ref_name);
+        Some((LogSource::Branch(log_source.into()), LogOrder::DateOrder))
+    }
+
+    fn load_graph_snapshot(
         &self,
+        key: &(LogSource, LogOrder),
         range: Range<usize>,
         cx: &mut Context<Self>,
     ) -> Option<CommitHistorySnapshot> {
         let active_repository = self.active_repository.as_ref()?;
-        let (log_source, log_order) = self.commit_history_key.clone()?;
+        let (log_source, log_order) = key.clone();
         Some(active_repository.update(cx, |repository, cx| {
             let graph_data = repository.graph_data(log_source, log_order, range, cx);
             CommitHistorySnapshot {
@@ -4746,7 +4813,11 @@ impl GitPanel {
     }
 
     fn replace_commit_history_shas(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.load_commit_history_snapshot(0..usize::MAX, cx) else {
+        let Some(commit_history_key) = self.commit_history_key.as_ref() else {
+            self.clear_commit_history();
+            return;
+        };
+        let Some(snapshot) = self.load_graph_snapshot(commit_history_key, 0..usize::MAX, cx) else {
             self.clear_commit_history();
             return;
         };
@@ -4762,7 +4833,11 @@ impl GitPanel {
             return false;
         }
 
-        let Some(mut snapshot) = self.load_commit_history_snapshot(old_len..commit_count, cx)
+        let Some(commit_history_key) = self.commit_history_key.as_ref() else {
+            return false;
+        };
+        let Some(mut snapshot) =
+            self.load_graph_snapshot(commit_history_key, old_len..commit_count, cx)
         else {
             return false;
         };
@@ -4774,6 +4849,48 @@ impl GitPanel {
         self.commit_history_shas.append(&mut snapshot.shas);
         self.normalize_focused_history_entry();
         true
+    }
+
+    fn replace_commit_history_unpushed_shas(&mut self, cx: &mut Context<Self>) {
+        let Some(commit_history_unpushed_key) = self.commit_history_unpushed_key.as_ref() else {
+            self.commit_history_unpushed_shas.clear();
+            return;
+        };
+        let Some(snapshot) =
+            self.load_graph_snapshot(commit_history_unpushed_key, 0..usize::MAX, cx)
+        else {
+            self.commit_history_unpushed_shas.clear();
+            return;
+        };
+
+        self.commit_history_unpushed_shas = snapshot.shas.into_iter().collect();
+    }
+
+    fn append_commit_history_unpushed_shas(
+        &mut self,
+        commit_count: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let old_len = self.commit_history_unpushed_shas.len();
+        if commit_count <= old_len {
+            return false;
+        }
+
+        let Some(commit_history_unpushed_key) = self.commit_history_unpushed_key.as_ref() else {
+            return false;
+        };
+        let Some(snapshot) =
+            self.load_graph_snapshot(commit_history_unpushed_key, old_len..commit_count, cx)
+        else {
+            return false;
+        };
+        if snapshot.shas.is_empty() {
+            return false;
+        }
+
+        let old_len = self.commit_history_unpushed_shas.len();
+        self.commit_history_unpushed_shas.extend(snapshot.shas);
+        self.commit_history_unpushed_shas.len() != old_len
     }
 
     fn update_commit_history_load_state(&mut self, is_loading: bool, error: Option<SharedString>) {
@@ -4943,15 +5060,7 @@ impl GitPanel {
         let focused_history_entry = self.focused_history_entry;
         let show_focus_border = self.history_keyboard_nav;
         let is_panel_focused = self.focus_handle.is_focused(window);
-
-        let ahead_count = active_repository
-            .read(cx)
-            .branch
-            .as_ref()
-            .and_then(|branch| branch.upstream.as_ref())
-            .and_then(|upstream| upstream.tracking.status())
-            .map(|status| status.ahead as usize)
-            .unwrap_or(0);
+        let unpushed_shas = self.commit_history_unpushed_shas.clone();
 
         Some(
             v_flex()
@@ -5026,7 +5135,7 @@ impl GitPanel {
                                     .size(px(14.))
                                     .render(window, cx);
 
-                                    let is_unpushed = index < ahead_count;
+                                    let is_unpushed = unpushed_shas.contains(sha);
                                     let is_focused = focused_history_entry == Some(index);
                                     let workspace = workspace.clone();
                                     let repository = repository.clone();
@@ -7075,7 +7184,13 @@ mod tests {
 
         panel.read_with(cx, |panel, cx| {
             let repository = panel.active_repository.as_ref().unwrap();
-            let branch = repository.read(cx).branch.as_ref().unwrap().name();
+            let branch = repository
+                .read(cx)
+                .branch
+                .as_ref()
+                .unwrap()
+                .ref_name
+                .clone();
             assert!(
                 repository
                     .read(cx)
@@ -7105,6 +7220,10 @@ mod tests {
 
         panel.read_with(cx, |panel, _| {
             assert_eq!(panel.debug_active_tab(), "history");
+            assert_eq!(
+                panel.commit_history_key.as_ref().map(|(source, _)| source),
+                Some(&LogSource::Branch("refs/heads/main".into()))
+            );
             assert_eq!(
                 panel.commit_history_shas,
                 commits.iter().map(|commit| commit.sha).collect::<Vec<_>>()
