@@ -5487,8 +5487,21 @@ impl SuperzentRightSidebar {
     }
 
     fn focus_active_tab_content(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tab == RightSidebarTab::History {
-            self.git_panel.focus_handle(cx).focus(window, cx);
+        match self.tab {
+            RightSidebarTab::Changes | RightSidebarTab::History => {
+                self.git_panel.focus_handle(cx).focus(window, cx);
+            }
+            RightSidebarTab::Files => {
+                self.project_panel.focus_handle(cx).focus(window, cx);
+            }
+            RightSidebarTab::Panel(panel_id) => {
+                let panel = self.right_dock.read(cx).panel_for_id(panel_id).cloned();
+                if let Some(panel) = panel {
+                    panel.panel_focus_handle(cx).focus(window, cx);
+                } else {
+                    self.focus_handle.focus(window, cx);
+                }
+            }
         }
     }
 
