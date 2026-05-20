@@ -4808,7 +4808,7 @@ impl GitPanel {
             CommitHistorySnapshot {
                 shas: graph_data.commits.iter().map(|commit| commit.sha).collect(),
                 is_loading: graph_data.is_loading,
-                error: graph_data.error.clone(),
+                error: graph_data.error,
             }
         }))
     }
