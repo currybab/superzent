@@ -5773,8 +5773,7 @@ impl Render for SuperzentRightSidebar {
             .track_focus(&self.focus_handle)
             .on_action(
                 cx.listener(|this, _: &git_ui::git_panel::ToggleFocus, window, cx| {
-                    this.set_active_tab(RightSidebarTab::Changes, false, window, cx);
-                    window.focus(&this.focus_handle, cx);
+                    this.set_active_tab(RightSidebarTab::Changes, true, window, cx);
                 }),
             )
             .child(
