@@ -511,6 +511,7 @@ impl AcpTools {
                                     } else {
                                         CopyButtonVisibility::Hidden
                                     },
+                                    wrap_button_visibility: markdown::WrapButtonVisibility::Hidden,
                                     border: false,
                                 },
                             ),
