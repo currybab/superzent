@@ -4771,15 +4771,15 @@ impl GitPanel {
     }
 
     fn commit_history_key(&self, cx: &App) -> Option<(LogSource, LogOrder)> {
-        let branch_ref_name = self
+        let branch = self
             .active_repository
             .as_ref()?
             .read(cx)
             .branch
             .as_ref()?
-            .ref_name
-            .as_ref()
-            .to_string();
+            .clone();
+        branch.most_recent_commit.as_ref()?;
+        let branch_ref_name = branch.ref_name.as_ref().to_string();
         Some((
             LogSource::Branch(branch_ref_name.into()),
             LogOrder::DateOrder,
@@ -4789,6 +4789,7 @@ impl GitPanel {
     fn commit_history_unpushed_key(&self, cx: &App) -> Option<(LogSource, LogOrder)> {
         let active_repository = self.active_repository.as_ref()?;
         let branch = active_repository.read(cx).branch.as_ref()?.clone();
+        branch.most_recent_commit.as_ref()?;
         let upstream = branch.upstream.as_ref()?;
         let log_source = format!("{}..{}", upstream.ref_name, branch.ref_name);
         Some((LogSource::Branch(log_source.into()), LogOrder::DateOrder))
@@ -7305,11 +7306,26 @@ mod tests {
 
         panel.read_with(cx, |panel, _| {
             assert_eq!(panel.debug_active_tab(), "history");
+            assert_eq!(panel.commit_history_key, None);
+            assert_eq!(panel.commit_history_unpushed_key, None);
             assert!(panel.commit_history_shas.is_empty());
             assert!(panel.commit_history_load_finished);
             assert!(!panel.commit_history_is_loading);
             assert!(panel.commit_history_error.is_none());
             assert_eq!(panel.focused_history_entry, None);
+        });
+        panel.read_with(cx, |panel, cx| {
+            let repository = panel.active_repository.as_ref().unwrap();
+            assert!(
+                repository
+                    .read(cx)
+                    .get_graph_data(
+                        LogSource::Branch("refs/heads/main".into()),
+                        LogOrder::DateOrder
+                    )
+                    .is_none(),
+                "Unborn branches should not start a commit history graph job"
+            );
         });
     }
 

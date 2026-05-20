@@ -6,9 +6,10 @@ use git::{
     Oid, RunHook,
     blame::Blame,
     repository::{
-        AskPassDelegate, Branch, CommitDataReader, CommitDetails, CommitOptions, FetchOptions,
-        GRAPH_CHUNK_SIZE, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder,
-        LogSource, PushOptions, Remote, RepoPath, ResetMode, Worktree,
+        AskPassDelegate, Branch, CommitDataReader, CommitDetails, CommitOptions, CommitSummary,
+        FetchOptions, GRAPH_CHUNK_SIZE, GitRepository, GitRepositoryCheckpoint,
+        InitialGraphCommitData, LogOrder, LogSource, PushOptions, Remote, RepoPath, ResetMode,
+        Worktree,
     },
     status::{
         DiffTreeType, FileStatus, GitStatus, StatusCode, TrackedStatus, TreeDiff, TreeDiffStatus,
@@ -398,7 +399,15 @@ impl GitRepository for FakeGitRepository {
                     Branch {
                         is_head: Some(branch_name) == current_branch.as_ref(),
                         ref_name,
-                        most_recent_commit: None,
+                        most_recent_commit: state.graph_commits.first().map(|commit| {
+                            CommitSummary {
+                                sha: commit.sha.to_string().into(),
+                                subject: SharedString::default(),
+                                commit_timestamp: 0,
+                                author_name: SharedString::default(),
+                                has_parent: !commit.parents.is_empty(),
+                            }
+                        }),
                         upstream: None,
                     }
                 })
