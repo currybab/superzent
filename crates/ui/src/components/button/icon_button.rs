@@ -203,10 +203,10 @@ impl RenderOnce for IconButton {
 
         let icon_color = if is_disabled {
             Color::Disabled
-        } else if self.selected_style.is_some() && is_selected {
-            self.selected_style.unwrap().into()
         } else if is_selected {
-            self.selected_icon_color.unwrap_or(Color::Selected)
+            self.selected_icon_color
+                .or_else(|| self.selected_style.map(Into::into))
+                .unwrap_or(Color::Selected)
         } else {
             let base_color = self.icon_color.color(cx);
             Color::Custom(base_color.opacity(self.alpha.unwrap_or(1.0)))
