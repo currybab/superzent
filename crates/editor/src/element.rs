@@ -12808,7 +12808,7 @@ mod tests {
         let point = state
             .position_map
             .point_for_position(point(click_x, px(0.)));
-        assert_eq!(point.nearest_valid, target_point);
+        assert_eq!(point.next_valid, target_point);
     }
 
     #[gpui::test]
