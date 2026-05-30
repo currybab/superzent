@@ -6970,7 +6970,9 @@ async fn compute_snapshot(
     backend: Arc<dyn GitRepository>,
 ) -> Result<(RepositorySnapshot, Vec<RepositoryEvent>)> {
     let mut events = Vec::new();
-    let branches = backend.branches().await?;
+    // Degrade gracefully: a failure fetching any individual piece of git state should not
+    // abort the whole snapshot and leave the git UI stuck with stale state indefinitely.
+    let branches = backend.branches().await.log_err().unwrap_or_default();
     let branch = branches.into_iter().find(|branch| branch.is_head);
 
     // Useful when branch is None in detached head state
@@ -6982,19 +6984,25 @@ async fn compute_snapshot(
     let diff_stat_future: BoxFuture<'_, Result<status::GitDiffStat>> = if head_commit.is_some() {
         backend.diff_stat(&[])
     } else {
-        future::ready(Ok(status::GitDiffStat {
-            entries: Arc::default(),
-        }))
-        .boxed()
+        future::ready(Ok(status::GitDiffStat::default())).boxed()
     };
-    let (statuses, diff_stats, all_worktrees) = futures::future::try_join3(
+    let (statuses, diff_stats, all_worktrees) = futures::future::join3(
         backend.status(&[RepoPath::from_rel_path(
             &RelPath::new(".".as_ref(), PathStyle::local()).unwrap(),
         )]),
         diff_stat_future,
         backend.worktrees(),
     )
-    .await?;
+    .await;
+    // If reading the working-tree status failed (for example because the work
+    // directory was renamed or removed out from under us), keep the previous
+    // snapshot instead of clobbering it with an empty status set. Auxiliary
+    // commands below still degrade individually when the status read succeeds.
+    let Some(statuses) = statuses.log_err() else {
+        return Ok((prev_snapshot, events));
+    };
+    let diff_stats = diff_stats.log_err().unwrap_or_default();
+    let all_worktrees = all_worktrees.log_err().unwrap_or_default();
 
     let linked_worktrees: Arc<[GitWorktree]> = all_worktrees
         .into_iter()
@@ -7003,7 +7011,7 @@ async fn compute_snapshot(
 
     let diff_stat_map: HashMap<&RepoPath, DiffStat> =
         diff_stats.entries.iter().map(|(p, s)| (p, *s)).collect();
-    let stash_entries = backend.stash_entries().await?;
+    let stash_entries = backend.stash_entries().await.log_err().unwrap_or_default();
     let mut conflicted_paths = Vec::new();
     let statuses_by_path = SumTree::from_iter(
         statuses.entries.iter().map(|(repo_path, status)| {
@@ -7019,7 +7027,11 @@ async fn compute_snapshot(
         (),
     );
     let mut merge_details = prev_snapshot.merge;
-    let conflicts_changed = merge_details.update(&backend, conflicted_paths).await?;
+    let conflicts_changed = merge_details
+        .update(&backend, conflicted_paths)
+        .await
+        .log_err()
+        .unwrap_or(false);
     log::debug!("new merge details: {merge_details:?}");
 
     if conflicts_changed || statuses_by_path != prev_snapshot.statuses_by_path {

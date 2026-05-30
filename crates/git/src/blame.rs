@@ -63,6 +63,8 @@ async fn run_git_blame(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // These tasks are replaced often, so kill the process when the task is dropped.
+            .kill_on_drop(true)
             .spawn()
             .context("starting git blame process")?
     };

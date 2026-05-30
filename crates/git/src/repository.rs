@@ -3124,6 +3124,9 @@ impl GitBinary {
         let mut command = new_command(&self.git_binary_path);
         command.current_dir(&self.working_directory);
         command.args(["-c", "core.fsmonitor=false"]);
+        // Prepended signature verification lines would corrupt our null-separated
+        // `--format` parsers (e.g. the git graph), so disable them for internal commands.
+        command.args(["-c", "log.showSignature=false"]);
         command.arg("--no-pager");
 
         if !self.is_trusted {
@@ -3453,6 +3456,33 @@ mod tests {
             "/dev/null",
             "hooksPath should be /dev/null for untrusted repos"
         );
+    }
+
+    #[gpui::test]
+    async fn test_build_command_disables_log_show_signature(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+
+        for is_trusted in [true, false] {
+            let git = GitBinary::new(
+                PathBuf::from("git"),
+                dir.path().to_path_buf(),
+                cx.executor(),
+                is_trusted,
+            );
+            let output = git
+                .build_command(&["config", "--get", "log.showSignature"])
+                .output()
+                .await
+                .expect("git config should run");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                stdout.trim(),
+                "false",
+                "log.showSignature should be disabled (is_trusted={is_trusted})"
+            );
+        }
     }
 
     #[gpui::test]
