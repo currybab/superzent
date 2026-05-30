@@ -1851,7 +1851,7 @@ mod tests {
             .unbounded_send(rewrite_tool_use("tool_1", &text[..chunk_len], false))
             .unwrap();
         events_tx
-            .unbounded_send(rewrite_tool_use("tool_2", &text, true))
+            .unbounded_send(rewrite_tool_use("tool_1", &text, true))
             .unwrap();
         events_tx
             .unbounded_send(LanguageModelCompletionEvent::Stop(StopReason::EndTurn))
