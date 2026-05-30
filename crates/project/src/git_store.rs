@@ -6994,7 +6994,13 @@ async fn compute_snapshot(
         backend.worktrees(),
     )
     .await;
-    let statuses = statuses.log_err().unwrap_or_default();
+    // If reading the working-tree status failed (for example because the work
+    // directory was renamed or removed out from under us), keep the previous
+    // snapshot instead of clobbering it with an empty status set. Auxiliary
+    // commands below still degrade individually when the status read succeeds.
+    let Some(statuses) = statuses.log_err() else {
+        return Ok((prev_snapshot, events));
+    };
     let diff_stats = diff_stats.log_err().unwrap_or_default();
     let all_worktrees = all_worktrees.log_err().unwrap_or_default();
 
