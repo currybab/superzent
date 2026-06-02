@@ -198,7 +198,7 @@ dependencies = [
  "smol",
  "sqlez",
  "streaming_diff",
- "strsim",
+ "strsim 0.11.1",
  "task",
  "telemetry",
  "tempfile",
@@ -667,6 +667,15 @@ name = "anyhow"
 version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+
+[[package]]
+name = "approx"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f2a05fd1bd10b2527e20a2cd32d8873d115b8b39fe219ee25f42a8aca6ba278"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "approx"
@@ -2816,6 +2825,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cgmath"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a98d30140e3296250832bbaaff83b27dcd6fa3cc70fb6f1f3e5c9c0023b5317"
+dependencies = [
+ "approx 0.4.0",
+ "num-traits",
+]
+
+[[package]]
 name = "chacha20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2954,7 +2973,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "clap_lex",
- "strsim",
+ "strsim 0.11.1",
  "terminal_size",
 ]
 
@@ -4563,6 +4582,16 @@ dependencies = [
 
 [[package]]
 name = "darling"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b750cb3417fd1b327431a470f388520309479ab0bf5e323505daf0290cd3850"
+dependencies = [
+ "darling_core 0.14.4",
+ "darling_macro 0.14.4",
+]
+
+[[package]]
+name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
@@ -4583,6 +4612,20 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "109c1ca6e6b7f82cc233a97004ea8ed7ca123a9af07a8230878fcfda9b158bf0"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim 0.10.0",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "darling_core"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
@@ -4591,7 +4634,7 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim",
+ "strsim 0.11.1",
  "syn 2.0.117",
 ]
 
@@ -4605,8 +4648,19 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim",
+ "strsim 0.11.1",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4aab4dbc9f7611d8b55048a3a16d2d010c2c8334e46304b40ac1cc14bf3b48e"
+dependencies = [
+ "darling_core 0.14.4",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4861,6 +4915,37 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_builder"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d67778784b508018359cbc8696edb3db78160bab2c2a28ba7f56ef6932997f8"
+dependencies = [
+ "derive_builder_macro",
+]
+
+[[package]]
+name = "derive_builder_core"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c11bdc11a0c47bc7d37d582b5285da6849c96681023680b906673c5707af7b0f"
+dependencies = [
+ "darling 0.14.4",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "derive_builder_macro"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebcda35c7a396850a55ffeac740804b40ffec779b98fffbb1738f4033f0ee79e"
+dependencies = [
+ "derive_builder_core",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -5233,9 +5318,8 @@ checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
 
 [[package]]
 name = "dugong"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b335d7dacfc821a68ff43e052c289205e86a0eac6462bb7830b7f7f827c864d"
+version = "0.4.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
  "dugong-graphlib",
  "rustc-hash 2.1.1",
@@ -5245,9 +5329,8 @@ dependencies = [
 
 [[package]]
 name = "dugong-graphlib"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d286c1a2130b3de86fff03737c7dd53e4e7d15c9a1118a7ba6c959b52ad82af5"
+version = "0.4.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
  "hashbrown 0.16.1",
  "rustc-hash 2.1.1",
@@ -9590,18 +9673,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kurbo"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
-dependencies = [
- "arrayvec",
- "euclid",
- "polycool",
- "smallvec",
-]
-
-[[package]]
 name = "kv-log-macro"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9679,7 +9750,7 @@ dependencies = [
  "smallvec",
  "smol",
  "streaming-iterator",
- "strsim",
+ "strsim 0.11.1",
  "sum_tree",
  "task",
  "text",
@@ -10579,9 +10650,8 @@ dependencies = [
 
 [[package]]
 name = "manatee"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "003bb0266de3bec001462e41561f5cef61819fc7ef1887cbf671c4a5ae818898"
+version = "0.4.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
  "indexmap",
  "nalgebra",
@@ -10867,9 +10937,8 @@ dependencies = [
 
 [[package]]
 name = "merman"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16083df38d6dbc9546253b967b85b9c686f0ae39c7a16de7d690f98f18a68a5e"
+version = "0.4.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
  "merman-core",
  "merman-render",
@@ -10878,9 +10947,8 @@ dependencies = [
 
 [[package]]
 name = "merman-core"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f5ddeb809d1212a3e1cec975cc62006035f4e6d37ee4f43a44ebfcf56e7f00b"
+version = "0.4.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
  "chrono",
  "euclid",
@@ -10905,9 +10973,8 @@ dependencies = [
 
 [[package]]
 name = "merman-render"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce556eb30d1ac5a5234b7854c27f435598bc8728f369c6ba89ea6b2ef0331c53"
+version = "0.4.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -11255,7 +11322,7 @@ version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df76ea0ff5c7e6b88689085804d6132ded0ddb9de5ca5b8aeb9eeadc0508a70a"
 dependencies = [
- "approx",
+ "approx 0.5.1",
  "glam 0.14.0",
  "glam 0.15.2",
  "glam 0.16.0",
@@ -12336,9 +12403,10 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cbf71184cc5ecc2e4e1baccdb21026c20e5fc3dcf63028a086131b3ab00b6e6"
 dependencies = [
- "approx",
+ "approx 0.5.1",
  "fast-srgb8",
  "palette_derive",
+ "phf 0.11.3",
 ]
 
 [[package]]
@@ -13403,6 +13471,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "points_on_curve"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca77ae128f56aad518f82cf0af3dcda13b874e59a608dbb287c7887fec97b505"
+dependencies = [
+ "euclid",
+ "num-traits",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13427,15 +13505,6 @@ name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
-
-[[package]]
-name = "polycool"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
-dependencies = [
- "arrayvec",
-]
 
 [[package]]
 name = "pori"
@@ -15290,17 +15359,17 @@ dependencies = [
 
 [[package]]
 name = "roughr-merman"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a1b0137cf48e915300be3fe4cf9f8f9a2af242ebf41b6f8fa716c2fd482f00b"
+version = "0.12.0"
+source = "git+https://github.com/zed-industries/merman?rev=1c765dcca2ef5092fcde7bebe8374819563623ef#1c765dcca2ef5092fcde7bebe8374819563623ef"
 dependencies = [
+ "derive_builder",
  "euclid",
- "getrandom 0.2.16",
  "num-traits",
  "palette",
+ "points_on_curve",
  "rand 0.8.5",
+ "svg_path_ops",
  "svgtypes 0.11.0",
- "svgtypes 0.16.1",
 ]
 
 [[package]]
@@ -16651,7 +16720,7 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c99284beb21666094ba2b75bbceda012e610f5479dfcc2d6e2426f53197ffd95"
 dependencies = [
- "approx",
+ "approx 0.5.1",
  "num-complex",
  "num-traits",
  "paste",
@@ -17359,6 +17428,12 @@ dependencies = [
 
 [[package]]
 name = "strsim"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
+
+[[package]]
+name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
@@ -17788,6 +17863,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0193cc4331cfd2f3d2011ef287590868599a2f33c3e69bc22c1a3d3acf9e02fb"
 
 [[package]]
+name = "svg_path_ops"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffd07a0764bc93f3909710a68bb9ca3e8b04d9e97ab5e48b65009e0cbd11eb0d"
+dependencies = [
+ "cgmath",
+ "svgtypes 0.11.0",
+]
+
+[[package]]
 name = "svg_preview"
 version = "0.1.0"
 dependencies = [
@@ -17817,16 +17902,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68c7541fff44b35860c1a7a47a7cadf3e4a304c457b58f9870d9706ece028afc"
 dependencies = [
  "kurbo 0.11.3",
- "siphasher 1.0.1",
-]
-
-[[package]]
-name = "svgtypes"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
-dependencies = [
- "kurbo 0.13.1",
  "siphasher 1.0.1",
 ]
 
