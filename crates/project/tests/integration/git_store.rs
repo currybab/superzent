@@ -1071,6 +1071,84 @@ mod git_traversal {
         );
     }
 
+    #[gpui::test]
+    async fn test_open_uncommitted_diff_skips_symlinks(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "target.txt": "rule one\nrule two\n",
+            }),
+        )
+        .await;
+        fs.insert_symlink(
+            path!("/project/agents.md"),
+            std::path::PathBuf::from("target.txt"),
+        )
+        .await;
+
+        fs.set_head_and_index_for_repo(
+            path!("/project/.git").as_ref(),
+            &[
+                // git stores the symlink's target path as the blob for `agents.md`
+                ("agents.md", "target.txt".into()),
+                ("target.txt", "rule one\n".into()),
+            ],
+        );
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+
+        let worktree_id = project.read_with(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+
+        // symlink file should not produce a base diff
+        let symlink_buffer = project
+            .update(cx, |project, cx| {
+                project.open_buffer((worktree_id, rel_path("agents.md")), cx)
+            })
+            .await
+            .unwrap();
+        let symlink_diff = project
+            .update(cx, |project, cx| {
+                project.open_uncommitted_diff(symlink_buffer, cx)
+            })
+            .await
+            .unwrap();
+        symlink_diff.read_with(cx, |diff, _| {
+            assert!(
+                !diff.base_text_exists(),
+                "symlinked buffer should not have a git diff base"
+            );
+        });
+
+        // regular file should still produce a base diff
+        let regular_buffer = project
+            .update(cx, |project, cx| {
+                project.open_buffer((worktree_id, rel_path("target.txt")), cx)
+            })
+            .await
+            .unwrap();
+        let regular_diff = project
+            .update(cx, |project, cx| {
+                project.open_uncommitted_diff(regular_buffer, cx)
+            })
+            .await
+            .unwrap();
+        regular_diff.read_with(cx, |diff, _| {
+            assert!(
+                diff.base_text_exists(),
+                "regular file should have a git diff base"
+            );
+        });
+    }
+
     fn init_test(cx: &mut gpui::TestAppContext) {
         zlog::init_test();
 
