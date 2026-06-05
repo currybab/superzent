@@ -21893,6 +21893,7 @@ dependencies = [
  "tempfile",
  "theme",
  "ui",
+ "url",
  "util",
  "uuid",
  "windows 0.61.3",
