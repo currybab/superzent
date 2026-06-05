@@ -512,6 +512,7 @@ impl LanguageServerState {
                                             HashSet::from_iter([LanguageServerSelector::Name(
                                                 server_name_for_restart.clone(),
                                             )]),
+                                            true,
                                             cx,
                                         );
                                     })
