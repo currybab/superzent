@@ -2538,6 +2538,11 @@ fn apply_heading_style(
         pulldown_cmark::HeadingLevel::H6 => heading.text_sm(),
     };
 
+    heading = match level {
+        pulldown_cmark::HeadingLevel::H1 => heading,
+        _ => heading.mt_6(),
+    };
+
     if let Some(border_color) = border_color
         && matches!(
             level,
