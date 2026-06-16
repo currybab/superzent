@@ -10280,6 +10280,7 @@ name = "markdown_preview"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "db",
  "editor",
  "fs",
  "gpui",
