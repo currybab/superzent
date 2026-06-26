@@ -2424,6 +2424,11 @@ impl Element for MarkdownElement {
                     builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
                     builder.pop_text_style();
                 }
+                MarkdownEvent::SubstitutedCode(text) => {
+                    builder.push_text_style(self.style.inline_code.clone());
+                    builder.push_text(text, range.clone());
+                    builder.pop_text_style();
+                }
                 MarkdownEvent::Html => {
                     let html = &parsed_markdown.source[range.clone()];
                     if html.starts_with("<!--") {
@@ -4146,6 +4151,33 @@ mod tests {
                 "expected `[x]`/`[X]`/`[ ]`, got {slice:?} at {marker_range:?}"
             );
         }
+    }
+
+    #[gpui::test]
+    fn test_escaped_pipes_in_inline_code_inside_tables(cx: &mut TestAppContext) {
+        let markdown = "\
+| Pattern | What it does |
+| --- | --- |
+| `^echo(\\s\\|$)` | command pattern |
+| `a\\|b` | alternation |
+| `(a\\|b)` | grouped alternation |
+| `a\\|\\|b` | empty middle alternative |";
+        let rendered = render_markdown(markdown, cx);
+        let text = rendered.text_for_range(0..markdown.len());
+
+        assert_eq!(
+            text,
+            "Pattern\n\
+             What it does\n\
+             ^echo(\\s|$)\n\
+             command pattern\n\
+             a|b\n\
+             alternation\n\
+             (a|b)\n\
+             grouped alternation\n\
+             a||b\n\
+             empty middle alternative"
+        );
     }
 
     #[test]
