@@ -2965,7 +2965,7 @@ impl BackgroundScannerState {
         self.snapshot.check_invariants(false);
     }
 
-    fn remove_path(&mut self, path: &RelPath, watcher: &dyn Watcher) {
+    fn remove_path(&mut self, path: &RelPath, watcher: &dyn Watcher, prune_repositories: bool) {
         log::trace!("background scanner removing path {path:?}");
         let mut new_entries;
         let removed_entries;
@@ -3023,9 +3023,19 @@ impl BackgroundScannerState {
         self.snapshot
             .entries_by_id
             .edit(removed_ids.iter().map(|&id| Edit::Remove(id)).collect(), ());
-        self.snapshot
-            .git_repositories
-            .retain(|id, _| removed_ids.binary_search(id).is_err());
+
+        // Only prune git repositories when the entries are being genuinely
+        // removed. During a recursive refresh (e.g. a watcher-forced rescan),
+        // the subtree is removed and immediately re-scanned; dropping the
+        // repositories here would make them flap, causing the GitStore to
+        // tear them down and re-create them with fresh `RepositoryId`s. Stale
+        // repositories are instead reaped authoritatively (against the actual
+        // filesystem) in `update_git_repositories`.
+        if prune_repositories {
+            self.snapshot
+                .git_repositories
+                .retain(|id, _| removed_ids.binary_search(id).is_err());
+        }
 
         for removed_dir_abs_path in removed_dir_abs_paths {
             watcher.remove(&removed_dir_abs_path).log_err();
@@ -4677,7 +4687,7 @@ impl BackgroundScanner {
                 self.state
                     .lock()
                     .await
-                    .remove_path(&child_path, self.watcher.as_ref());
+                    .remove_path(&child_path, self.watcher.as_ref(), true);
                 continue;
             }
 
@@ -4888,8 +4898,9 @@ impl BackgroundScanner {
         // refreshed. Do this before adding any new entries, so that renames can be
         // detected regardless of the order of the paths.
         for (path, metadata) in relative_paths.iter().zip(metadata.iter()) {
-            if matches!(metadata, Ok(None)) || doing_recursive_update {
-                state.remove_path(path, self.watcher.as_ref());
+            let path_was_removed = matches!(metadata, Ok(None));
+            if path_was_removed || doing_recursive_update {
+                state.remove_path(path, self.watcher.as_ref(), path_was_removed);
             }
         }
 
@@ -5333,12 +5344,20 @@ impl BackgroundScanner {
                             .is_some()
                     });
 
-            if exists_in_snapshot
-                || matches!(
-                    self.fs.metadata(&entry.repository_dir_abs_path).await,
-                    Ok(Some(_))
-                )
-            {
+            // Only drop a repository when we can positively confirm that its git
+            // directory is gone. `metadata` returns `Ok(None)` for a confirmed
+            // absence, but `Err(_)` for a transient failure (which can happen
+            // under heavy filesystem churn). Treating an error as a deletion
+            // makes the repository flap out of and back into the snapshot,
+            // causing the GitStore to repeatedly tear it down and re-create it
+            // with a fresh `RepositoryId`. So preserve the repository unless the
+            // git directory is confirmed absent.
+            let repository_dir_present = !matches!(
+                self.fs.metadata(&entry.repository_dir_abs_path).await,
+                Ok(None)
+            );
+
+            if exists_in_snapshot || repository_dir_present {
                 ids_to_preserve.insert(work_directory_id);
             }
         }
