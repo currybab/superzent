@@ -21,10 +21,10 @@ use editor::{Editor, EditorEvent, actions::SelectAll};
 use git::repository::validate_worktree_directory;
 use git_ui::git_panel::GitPanel;
 use gpui::{
-    Action, App, AsyncWindowContext, ClickEvent, ClipboardItem, Corner,
-    DismissEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, PathPromptOptions, Point, PromptLevel, ScrollHandle, SharedString,
-    Subscription, Task, WeakEntity, WindowHandle, actions, anchored, deferred, px,
+    Action, App, AsyncWindowContext, ClickEvent, ClipboardItem, Corner, DismissEvent, Entity,
+    EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, PathPromptOptions,
+    Point, PromptLevel, ScrollHandle, SharedString, Subscription, Task, WeakEntity, WindowHandle,
+    actions, anchored, deferred, px,
 };
 use menu;
 use notifications::status_toast::{StatusToast, ToastIcon};
