@@ -1271,6 +1271,7 @@ fn subscribe_for_terminal_events(
                 Event::Wakeup => {
                     terminal_view.resume_pending_agent_once_settled(cx);
                     cx.notify();
+                    window.invalidate_character_coordinates();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
                     cx.emit(SearchEvent::MatchesInvalidated);
