@@ -21,10 +21,10 @@ use editor::{Editor, EditorEvent, actions::SelectAll};
 use git::repository::validate_worktree_directory;
 use git_ui::git_panel::GitPanel;
 use gpui::{
-    Action, Animation, AnimationExt, App, AsyncWindowContext, ClickEvent, ClipboardItem, Corner,
-    DismissEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, PathPromptOptions, Point, PromptLevel, ScrollHandle, SharedString,
-    Subscription, Task, WeakEntity, WindowHandle, actions, anchored, deferred, px,
+    Action, App, AsyncWindowContext, ClickEvent, ClipboardItem, Corner, DismissEvent, Entity,
+    EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, PathPromptOptions,
+    Point, PromptLevel, ScrollHandle, SharedString, Subscription, Task, WeakEntity, WindowHandle,
+    actions, anchored, deferred, px,
 };
 use menu;
 use notifications::status_toast::{StatusToast, ToastIcon};
@@ -51,7 +51,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 #[cfg(target_os = "macos")]
 use std::{
@@ -8481,38 +8481,164 @@ fn render_workspace_attention_indicator(
             .justify_center()
             .child(Indicator::dot().color(Color::Success))
             .into_any_element(),
-        WorkspaceAttentionStatus::Working => div()
-            .w_3()
-            .items_center()
-            .justify_center()
-            .child(Indicator::dot().color(Color::Warning))
-            .with_animation(
-                gpui::ElementId::from(SharedString::from(format!(
-                    "superzent-working-indicator-{workspace_id}"
-                ))),
-                Animation::new(Duration::from_millis(900)).repeat(),
-                |indicator: gpui::Div, delta: f32| {
-                    let alpha = 0.35 + (delta * std::f32::consts::PI).sin().abs() * 0.65;
-                    indicator.opacity(alpha)
-                },
-            )
-            .into_any_element(),
-        WorkspaceAttentionStatus::Permission => div()
-            .w_3()
-            .items_center()
-            .justify_center()
-            .child(Indicator::dot().color(Color::Error))
-            .with_animation(
-                gpui::ElementId::from(SharedString::from(format!(
-                    "superzent-permission-indicator-{workspace_id}"
-                ))),
-                Animation::new(Duration::from_millis(650)).repeat(),
-                |indicator: gpui::Div, delta: f32| {
-                    let alpha = 0.4 + (delta * std::f32::consts::PI).sin().abs() * 0.6;
-                    indicator.opacity(alpha)
-                },
-            )
-            .into_any_element(),
+        WorkspaceAttentionStatus::Working => PulsingDot::new(
+            SharedString::from(format!("superzent-working-indicator-{workspace_id}")),
+            Duration::from_millis(900),
+            div()
+                .w_3()
+                .items_center()
+                .justify_center()
+                .child(Indicator::dot().color(Color::Warning)),
+            |indicator: Div, delta: f32| {
+                let alpha = 0.35 + (delta * std::f32::consts::PI).sin().abs() * 0.65;
+                indicator.opacity(alpha)
+            },
+        )
+        .into_any_element(),
+        WorkspaceAttentionStatus::Permission => PulsingDot::new(
+            SharedString::from(format!("superzent-permission-indicator-{workspace_id}")),
+            Duration::from_millis(650),
+            div()
+                .w_3()
+                .items_center()
+                .justify_center()
+                .child(Indicator::dot().color(Color::Error)),
+            |indicator: Div, delta: f32| {
+                let alpha = 0.4 + (delta * std::f32::consts::PI).sin().abs() * 0.6;
+                indicator.opacity(alpha)
+            },
+        )
+        .into_any_element(),
+    }
+}
+
+/// A self-contained pulsing wrapper for the workspace attention dot.
+///
+/// `gpui::with_animation` calls `request_animation_frame` on every frame, which
+/// drives a full-window relayout at the display refresh rate (120Hz on ProMotion)
+/// for as long as the animated element is on screen. A tiny attention dot only
+/// needs a low frame rate to read as a smooth pulse, so this element schedules its
+/// own redraw on a fixed interval instead, keeping the whole window from re-laying
+/// out at the display rate while an agent is working.
+struct PulsingDot {
+    id: ElementId,
+    period: Duration,
+    interval: Duration,
+    element: Option<Div>,
+    animator: Box<dyn Fn(Div, f32) -> Div + 'static>,
+}
+
+impl PulsingDot {
+    fn new(
+        id: impl Into<ElementId>,
+        period: Duration,
+        element: Div,
+        animator: impl Fn(Div, f32) -> Div + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            period,
+            interval: Duration::from_millis(50),
+            element: Some(element),
+            animator: Box::new(animator),
+        }
+    }
+}
+
+struct PulsingDotState {
+    start: Instant,
+    // Holds the scheduled redraw alive; dropping it cancels the wake-up, so the
+    // pulse stops automatically once the element leaves the tree.
+    _redraw: Option<Task<()>>,
+}
+
+impl IntoElement for PulsingDot {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for PulsingDot {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        global_id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        window.with_element_state(
+            global_id.expect("PulsingDot reports an id, so it is always stateful"),
+            |state, window| {
+                let state = state.unwrap_or_else(|| PulsingDotState {
+                    start: Instant::now(),
+                    _redraw: None,
+                });
+                let delta =
+                    (state.start.elapsed().as_secs_f32() / self.period.as_secs_f32()).fract();
+
+                let element = self
+                    .element
+                    .take()
+                    .expect("PulsingDot::request_layout is called once");
+                let mut element = (self.animator)(element, delta).into_any_element();
+
+                // Wake this view after a fixed interval rather than on the next
+                // frame, decoupling the pulse cadence from the display refresh rate.
+                let view = window.current_view();
+                let interval = self.interval;
+                let redraw = cx.spawn(async move |cx| {
+                    cx.background_executor().timer(interval).await;
+                    cx.update(|cx| cx.notify(view));
+                });
+
+                let layout_id = element.request_layout(window, cx);
+                (
+                    (layout_id, element),
+                    PulsingDotState {
+                        start: state.start,
+                        _redraw: Some(redraw),
+                    },
+                )
+            },
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: gpui::Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: gpui::Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
     }
 }
 
