@@ -4764,7 +4764,7 @@ impl ThreadView {
                                     AssistantMessageChunk::Message { block } => block.markdown(),
                                     AssistantMessageChunk::Thought { block } => block.markdown(),
                                 };
-                                md.map_or(false, |m| m.read(cx).selected_text().is_some())
+                                md.map_or(false, |m| m.read(cx).has_selection())
                             })
                         })
                         .unwrap_or(false);
