@@ -954,9 +954,8 @@ fn main() {
         }
 
         match open_rx
-            .try_next()
+            .try_recv()
             .ok()
-            .flatten()
             .and_then(|request| OpenRequest::parse(request, cx).log_err())
         {
             Some(request) => {

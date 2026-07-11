@@ -99,12 +99,17 @@ impl ShellBuilder {
             });
             if self.redirect_stdin {
                 match self.kind {
+                    ShellKind::Posix => {
+                        combined_command.insert_str(0, "exec </dev/null; ");
+                    }
+                    // Fish's `exec` requires a command and does not support the
+                    // POSIX fd-only form: `exec </dev/null` prints help text and
+                    // leaves stdin connected to the PTY.
                     ShellKind::Fish => {
                         combined_command.insert_str(0, "begin; ");
                         combined_command.push_str("; end </dev/null");
                     }
-                    ShellKind::Posix
-                    | ShellKind::Nushell
+                    ShellKind::Nushell
                     | ShellKind::Csh
                     | ShellKind::Tcsh
                     | ShellKind::Rc
@@ -145,12 +150,15 @@ impl ShellBuilder {
             });
             if self.redirect_stdin {
                 match self.kind {
+                    ShellKind::Posix => {
+                        combined_command.insert_str(0, "exec </dev/null; ");
+                    }
+                    // See the comment in `build` about Fish's `exec`.
                     ShellKind::Fish => {
                         combined_command.insert_str(0, "begin; ");
                         combined_command.push_str("; end </dev/null");
                     }
-                    ShellKind::Posix
-                    | ShellKind::Nushell
+                    ShellKind::Nushell
                     | ShellKind::Csh
                     | ShellKind::Tcsh
                     | ShellKind::Rc
@@ -302,7 +310,7 @@ mod test {
         assert_eq!(program, "sh");
         assert_eq!(
             args,
-            vec!["-i", "-c", "(cat <<EOF\nhello\nEOF\n) </dev/null"]
+            vec!["-i", "-c", "exec </dev/null; cat <<EOF\nhello\nEOF"]
         );
     }
 
