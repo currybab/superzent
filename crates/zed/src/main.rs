@@ -2134,7 +2134,13 @@ fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
 
         while let Some(paths) = events.next().await {
             for event in paths {
-                if fs.metadata(&event.path).await.ok().flatten().is_some() {
+                if fs
+                    .metadata(&event.path)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|m| !m.is_dir)
+                {
                     let theme_registry = cx.update(|cx| ThemeRegistry::global(cx));
                     if theme_registry
                         .load_user_theme(&event.path, fs.clone())
