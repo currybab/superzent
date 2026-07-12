@@ -3,13 +3,15 @@ use collections::HashMap;
 use serde::Deserialize;
 use std::{
     fs,
+    io::{BufRead, BufReader, Read, Write},
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
     thread,
+    time::Duration,
 };
 use superzent_model::{AgentPreset, AgentSession, PresetLaunchMode, WorkspaceEntry};
 use task::{HideStrategy, RevealStrategy, RevealTarget, Shell, SpawnInTerminal, TaskId};
-use tiny_http::{Response, Server};
 use url::Url;
 use uuid::Uuid;
 
@@ -195,16 +197,15 @@ impl AgentHookRuntime {
     fn new() -> Result<Self> {
         let bin_dir = ensure_agent_hook_wrapper_files()?;
 
-        let server = Server::http("127.0.0.1:0")
-            .map_err(|error| anyhow!(error).context("bind hook port"))?;
+        let listener = TcpListener::bind("127.0.0.1:0").context("bind hook port")?;
         let hook_url = format!(
             "http://127.0.0.1:{}{}",
-            server.server_addr().port(),
+            listener.local_addr().context("read hook port")?.port(),
             HOOK_ENDPOINT_PATH
         );
 
         let subscribers = Arc::new(Mutex::new(Vec::new()));
-        spawn_hook_server(server, subscribers.clone());
+        spawn_hook_server(listener, subscribers.clone());
 
         Ok(Self {
             paths: AgentHookPaths { bin_dir, hook_url },
@@ -235,54 +236,113 @@ fn ensure_agent_hook_wrapper_files() -> Result<PathBuf> {
     Ok(bin_dir)
 }
 
+// This server intentionally avoids an HTTP library: hook notifications arrive from
+// short-lived `curl --max-time` invocations that routinely disconnect mid-request when
+// the app is busy, and tiny_http panicked (aborting the whole app) on such connections.
 fn spawn_hook_server(
-    server: Server,
+    listener: TcpListener,
     subscribers: Arc<Mutex<Vec<smol::channel::Sender<AgentHookEvent>>>>,
 ) {
     thread::Builder::new()
         .name("superzent-agent-hooks".to_string())
         .spawn(move || {
             loop {
-                let Ok(request) = server.recv() else {
-                    break;
-                };
-
-                let response = match parse_request(request.url()) {
-                    Ok(Some(event)) => {
-                        if debug_hooks_enabled() {
-                            log::info!(
-                                "superzent hook server accepted event: type={:?} terminal_id={} workspace_id={:?} session_id={:?} cwd={:?}",
-                                event.event_type,
-                                event.terminal_id,
-                                event.workspace_id,
-                                event.session_id,
-                                event.cwd,
-                            );
-                        }
-                        if let Ok(mut subscribers) = subscribers.lock() {
-                            subscribers
-                                .retain(|sender| sender.send_blocking(event.clone()).is_ok());
-                        }
-                        Response::empty(204)
-                    }
-                    Ok(None) => {
-                        if debug_hooks_enabled() {
-                            log::info!("superzent hook server ignored request: url={}", request.url());
-                        }
-                        Response::empty(204)
-                    }
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
                     Err(error) => {
-                        log::warn!("failed to parse agent hook request: {error:#}");
-                        Response::empty(400)
+                        log::debug!("agent hook server failed to accept connection: {error}");
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
                 };
-
-                if let Err(error) = request.respond(response) {
-                    log::debug!("failed to respond to agent hook request: {error}");
-                }
+                let subscribers = subscribers.clone();
+                thread::Builder::new()
+                    .name("superzent-agent-hook-conn".to_string())
+                    .spawn(move || {
+                        if let Err(error) = handle_hook_connection(&stream, &subscribers) {
+                            log::debug!("failed to handle agent hook connection: {error:#}");
+                        }
+                    })
+                    .ok();
             }
         })
         .ok();
+}
+
+fn handle_hook_connection(
+    stream: &TcpStream,
+    subscribers: &Mutex<Vec<smol::channel::Sender<AgentHookEvent>>>,
+) -> Result<()> {
+    const MAX_REQUEST_HEAD_BYTES: u64 = 16 * 1024;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .context("set hook connection read timeout")?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .context("set hook connection write timeout")?;
+
+    let mut reader = BufReader::new(stream.take(MAX_REQUEST_HEAD_BYTES));
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .context("read hook request line")?;
+    let url = request_line
+        .split_whitespace()
+        .nth(1)
+        .context("malformed hook request line")?
+        .to_string();
+
+    // Drain the remaining headers so curl finishes sending before we respond and close.
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) if line == "\r\n" || line == "\n" => break,
+            Ok(_) => {}
+            Err(error) => {
+                log::debug!("failed to read agent hook request headers: {error}");
+                break;
+            }
+        }
+    }
+
+    let status_line = match parse_request(&url) {
+        Ok(Some(event)) => {
+            if debug_hooks_enabled() {
+                log::info!(
+                    "superzent hook server accepted event: type={:?} terminal_id={} workspace_id={:?} session_id={:?} cwd={:?}",
+                    event.event_type,
+                    event.terminal_id,
+                    event.workspace_id,
+                    event.session_id,
+                    event.cwd,
+                );
+            }
+            if let Ok(mut subscribers) = subscribers.lock() {
+                subscribers.retain(|sender| sender.send_blocking(event.clone()).is_ok());
+            }
+            "204 No Content"
+        }
+        Ok(None) => {
+            if debug_hooks_enabled() {
+                log::info!("superzent hook server ignored request: url={url}");
+            }
+            "204 No Content"
+        }
+        Err(error) => {
+            log::warn!("failed to parse agent hook request: {error:#}");
+            "400 Bad Request"
+        }
+    };
+
+    let mut stream = stream;
+    stream
+        .write_all(format!("HTTP/1.1 {status_line}\r\nConnection: close\r\n\r\n").as_bytes())
+        .context("respond to hook request")?;
+    stream.flush().context("flush hook response")?;
+    Ok(())
 }
 
 fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
@@ -863,5 +923,87 @@ mod tests {
             error.to_string(),
             "ACP presets cannot be launched in a terminal"
         );
+    }
+
+    fn spawn_test_hook_server() -> (
+        std::net::SocketAddr,
+        smol::channel::Receiver<AgentHookEvent>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("read test listener addr");
+        let (sender, receiver) = smol::channel::unbounded();
+        let subscribers = Arc::new(Mutex::new(vec![sender]));
+        spawn_hook_server(listener, subscribers);
+        (addr, receiver)
+    }
+
+    fn read_response(stream: &mut TcpStream) -> String {
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("read hook response");
+        response
+    }
+
+    #[test]
+    fn hook_server_dispatches_events_and_survives_aborted_connections() {
+        let (addr, receiver) = spawn_test_hook_server();
+
+        // A client that connects and disconnects mid-request (like `curl --max-time`
+        // under load) must not take the server down.
+        let mut aborted = TcpStream::connect(addr).expect("connect aborted client");
+        aborted
+            .write_all(b"GET /agent-hook?event_type=Stop")
+            .expect("write partial request");
+        drop(aborted);
+
+        // Garbage that isn't HTTP at all must not take the server down either.
+        let mut garbage = TcpStream::connect(addr).expect("connect garbage client");
+        garbage.write_all(b"\r\n\r\n").expect("write garbage");
+        drop(garbage);
+
+        let mut stream = TcpStream::connect(addr).expect("connect valid client");
+        stream
+            .write_all(
+                format!(
+                    "GET /agent-hook?event_type=Stop&terminal_id=terminal-1&version={AGENT_HOOK_VERSION} HTTP/1.1\r\n\
+                     Host: 127.0.0.1\r\n\
+                     \r\n"
+                )
+                .as_bytes(),
+            )
+            .expect("write valid request");
+
+        let response = read_response(&mut stream);
+        assert!(
+            response.starts_with("HTTP/1.1 204 No Content"),
+            "unexpected response: {response}"
+        );
+
+        let event = receiver.recv_blocking().expect("receive hook event");
+        assert_eq!(event.event_type, AgentHookEventType::Stop);
+        assert_eq!(event.terminal_id, "terminal-1");
+    }
+
+    #[test]
+    fn hook_server_rejects_unparseable_requests() {
+        let (addr, receiver) = spawn_test_hook_server();
+
+        let mut stream = TcpStream::connect(addr).expect("connect client");
+        stream
+            .write_all(
+                format!(
+                    "GET /agent-hook?event_type=Stop&version={AGENT_HOOK_VERSION} HTTP/1.1\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .expect("write request");
+
+        let response = read_response(&mut stream);
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request"),
+            "unexpected response: {response}"
+        );
+        assert!(receiver.is_empty());
     }
 }

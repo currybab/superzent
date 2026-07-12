@@ -1399,7 +1399,11 @@ impl Client {
                     // Start an HTTP server to receive the redirect from Zed's sign-in page.
                     let server = tiny_http::Server::http("127.0.0.1:0")
                         .map_err(|e| anyhow!(e).context("failed to bind callback port"))?;
-                    let port = server.server_addr().port();
+                    let port = server
+                        .server_addr()
+                        .to_ip()
+                        .context("callback server is not listening on an ip address")?
+                        .port();
 
                     // Open the Zed sign-in page in the user's browser, with query parameters that indicate
                     // that the user is signing in from a Zed app running on the same device.
