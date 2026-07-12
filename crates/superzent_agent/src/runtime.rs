@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn hook_server_rejects_unparseable_requests() {
+    fn hook_server_rejects_unparsable_requests() {
         let (addr, receiver) = spawn_test_hook_server();
 
         let mut stream = TcpStream::connect(addr).expect("connect client");
