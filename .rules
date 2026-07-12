@@ -147,6 +147,15 @@ Other entities can then register a callback to handle these events by doing `cx.
 
 * Superzent uses a single-window model. `workspace::CloseWindow` (Cmd+W) is intentionally intercepted so it never closes the OS window — users quit with Cmd+Q instead. When there are no tabs in the center pane, Cmd+W does nothing. When the right sidebar is focused, Cmd+W closes the active sidebar item rather than the window.
 
+# Porting from zed upstream
+
+Before porting an upstream fix, verify the bug actually exists in this fork — in practice roughly half of candidate fixes turn out not to apply. The fork froze at merge-base `be3a5e2c06` (2026-03-18) and skipped many later upstream refactors, so their regressions often never landed here.
+
+- If the fix repairs a regression from a named upstream PR, check whether the regression-introducing commit is in our history: `git merge-base --is-ancestor <regression-sha> HEAD` (exit 0 = we have it). Example: the libgit2 removal (#53453) never landed here, so fixes for its regressions (e.g. #58359) don't apply.
+- Grep fork HEAD for the upstream diff's pre-fix pattern (its `-` lines). If the file or function was rewritten in the fork (e.g. git graph lives in `crates/git_graph`, not upstream's `git_ui/src/git_graph.rs`), the fix may be moot or need adaptation rather than a cherry-pick.
+- Deprioritize bugs only reachable through features this fork doesn't use (remote/SSH/collab projects).
+- To judge cherry-pick conflicts, simulate with the commit's parent as base: `git merge-tree --write-tree --merge-base=<sha>^ HEAD <sha>`. Using the fork merge-base as base gives false "clean" reads.
+
 # Pull request hygiene
 
 When an agent opens or updates a pull request, it must:
