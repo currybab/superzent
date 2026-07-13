@@ -1582,3 +1582,87 @@ mod trust_tests {
         });
     }
 }
+
+mod stash_tests {
+    use std::{str::FromStr as _, sync::mpsc};
+
+    use fs::FakeFs;
+    use git::stash::{GitStash, StashEntry};
+    use gpui::TestAppContext;
+    use project::git_store::RepositoryEvent;
+    use serde_json::json;
+    use settings::SettingsStore;
+    use util::path;
+
+    use crate::Project;
+
+    fn init_test(cx: &mut TestAppContext) {
+        zlog::init_test();
+
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_stash_list_refreshes_on_git_event(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "a.txt": "hello",
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let repository = project.read_with(cx, |project, cx| {
+            project.repositories(cx).values().next().unwrap().clone()
+        });
+        repository.read_with(cx, |repo, _| {
+            assert!(repo.cached_stash().entries.is_empty());
+        });
+
+        let (events_tx, events_rx) = mpsc::channel::<RepositoryEvent>();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&repository, move |_, event: &RepositoryEvent, _| {
+                events_tx.send(event.clone()).ok();
+            })
+        });
+
+        fs.with_git_state(path!("/project/.git").as_ref(), true, |state| {
+            state.stash_entries = GitStash {
+                entries: vec![StashEntry {
+                    index: 0,
+                    oid: git::Oid::from_str("1234567890abcdef1234567890abcdef12345678")
+                        .expect("valid oid"),
+                    message: "WIP on main".to_string(),
+                    branch: Some("main".to_string()),
+                    timestamp: 0,
+                }]
+                .into(),
+            };
+        })
+        .expect("update fake git state");
+        cx.executor().run_until_parked();
+
+        repository.read_with(cx, |repo, _| {
+            assert_eq!(
+                repo.cached_stash().entries.len(),
+                1,
+                "stash list should be refreshed after a .git event"
+            );
+        });
+        assert!(
+            events_rx
+                .try_iter()
+                .any(|event| event == RepositoryEvent::StashEntriesChanged),
+            "a stash list change should emit StashEntriesChanged"
+        );
+    }
+}

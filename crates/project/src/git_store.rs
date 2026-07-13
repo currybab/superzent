@@ -7111,6 +7111,10 @@ async fn compute_snapshot(
         events.push(RepositoryEvent::GitWorktreeListChanged);
     }
 
+    if stash_entries != prev_snapshot.stash_entries {
+        events.push(RepositoryEvent::StashEntriesChanged);
+    }
+
     let remote_origin_url = backend.remote_url("origin").await;
     let remote_upstream_url = backend.remote_url("upstream").await;
 
