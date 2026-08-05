@@ -5318,22 +5318,25 @@ checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
 
 [[package]]
 name = "dugong"
-version = "0.6.2"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+version = "0.7.0"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
  "dugong-graphlib",
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
 name = "dugong-graphlib"
-version = "0.6.2"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+version = "0.7.0"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
  "hashbrown 0.16.1",
  "rustc-hash 2.1.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -10662,13 +10665,14 @@ dependencies = [
 
 [[package]]
 name = "manatee"
-version = "0.6.2"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+version = "0.7.0"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
  "indexmap",
  "nalgebra",
  "rustc-hash 2.1.1",
  "thiserror 2.0.17",
+ "web-time",
 ]
 
 [[package]]
@@ -10952,9 +10956,10 @@ dependencies = [
 
 [[package]]
 name = "merman"
-version = "0.6.2"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+version = "0.7.0"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
+ "chrono",
  "merman-core",
  "merman-render",
  "thiserror 2.0.17",
@@ -10962,8 +10967,8 @@ dependencies = [
 
 [[package]]
 name = "merman-core"
-version = "0.6.2"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+version = "0.7.0"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
  "chrono",
  "euclid",
@@ -10984,12 +10989,13 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
 name = "merman-render"
-version = "0.6.2"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+version = "0.7.0"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -10998,7 +11004,6 @@ dependencies = [
  "manatee",
  "merman-core",
  "pulldown-cmark 0.12.2",
- "regex",
  "roughr-merman",
  "rustc-hash 2.1.1",
  "ryu-js",
@@ -11008,6 +11013,7 @@ dependencies = [
  "thiserror 2.0.17",
  "unicode-width",
  "url",
+ "web-time",
 ]
 
 [[package]]
@@ -15384,10 +15390,11 @@ dependencies = [
 [[package]]
 name = "roughr-merman"
 version = "0.12.0"
-source = "git+https://github.com/zed-industries/merman?tag=v0.6.2-with-patches#06094471f97acb10d0eebf8b92bac19ba2928eea"
+source = "git+https://github.com/zed-industries/merman?tag=v0.7.0-with-patches#a3ed8d9f3fd1d74c802f25ed9edd501743796504"
 dependencies = [
  "derive_builder",
  "euclid",
+ "getrandom 0.2.16",
  "num-traits",
  "palette",
  "points_on_curve",
