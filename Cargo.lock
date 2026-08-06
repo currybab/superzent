@@ -10260,6 +10260,7 @@ dependencies = [
  "gpui_platform",
  "html5ever 0.27.0",
  "image",
+ "indoc",
  "language",
  "languages",
  "linkify",
