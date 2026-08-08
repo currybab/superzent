@@ -6430,6 +6430,7 @@ fn is_known_binary_header(bytes: &[u8]) -> bool {
 // ranges or form unpaired surrogates, which real text almost never contains.
 fn is_plausible_utf16_text(bytes: &[u8], little_endian: bool) -> bool {
     let mut suspicious_count = 0usize;
+    let mut word_like_count = 0usize;
     let mut total = 0usize;
 
     let mut i = 0;
@@ -6438,6 +6439,9 @@ fn is_plausible_utf16_text(bytes: &[u8], little_endian: bool) -> bool {
 
         match code_unit {
             0x0009 | 0x000A | 0x000C | 0x000D => {}
+            0x0020 | 0x0030..=0x0039 | 0x0041..=0x005A | 0x0061..=0x007A => {
+                word_like_count += 1;
+            }
             // C0/C1 control characters and non-characters
             0x0000..=0x001F | 0x007F..=0x009F | 0xFFFE | 0xFFFF => suspicious_count += 1,
             0xD800..=0xDBFF => {
@@ -6446,6 +6450,7 @@ fn is_plausible_utf16_text(bytes: &[u8], little_endian: bool) -> bool {
                     .is_some_and(|next| (0xDC00..=0xDFFF).contains(&next));
                 if has_low_surrogate {
                     total += 1;
+                    word_like_count += 2;
                     i += 2;
                 } else {
                     suspicious_count += 1;
@@ -6453,6 +6458,7 @@ fn is_plausible_utf16_text(bytes: &[u8], little_endian: bool) -> bool {
             }
             // Lone low surrogate without a preceding high surrogate
             0xDC00..=0xDFFF => suspicious_count += 1,
+            0x0100.. => word_like_count += 1,
             _ => {}
         }
 
@@ -6465,7 +6471,21 @@ fn is_plausible_utf16_text(bytes: &[u8], little_endian: bool) -> bool {
 
     // Real UTF-16 text has near-zero control characters; binary data with
     // small 16-bit values typically exceeds 5%. 2% provides a safe margin.
-    suspicious_count * 100 < total * 2
+    let low_control_ratio = suspicious_count * 100 < total * 2;
+
+    // Binary formats that interleave short ASCII fragments with small
+    // length/type fields (e.g. game asset formats) can dodge the control
+    // character check above while barely containing any real words: their
+    // code units land on ASCII punctuation and Latin-1 symbol values rather
+    // than letters, digits, or spaces. Real text is overwhelmingly made of
+    // word characters, so require a minimum share of them. Code units above
+    // the Latin-1 range (and surrogate pairs) also count as word-like so
+    // that scripts such as Cyrillic or Greek, whose letters are non-ASCII,
+    // are still recognized -- tag bytes paired with a zero byte can never
+    // land there.
+    let enough_word_chars = word_like_count * 100 >= total * 30;
+
+    low_control_ratio && enough_word_chars
 }
 
 fn read_u16(bytes: &[u8], offset: usize, little_endian: bool) -> Option<u16> {
@@ -6572,6 +6592,38 @@ mod tests {
         );
     }
 
+    // Mimics binary formats that interleave short ASCII fragments with small
+    // length/type fields (as seen in some game/asset binary formats, e.g.
+    // Tibia-style OTBM maps): most high bytes are zero, matching UTF-16LE's
+    // null-byte pattern for ASCII, but the low bytes are mostly non-word
+    // "tag" values rather than real letters/digits/spaces.
+    fn build_tag_interleaved_binary_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let tags: [u8; 6] = [0xFE, 0xFF, 0x25, 0x2B, 0xA3, 0xC5];
+        let mut i = 0;
+        while bytes.len() < FILE_ANALYSIS_BYTES {
+            bytes.push(tags[i % tags.len()]);
+            bytes.push(0x00);
+            i += 1;
+        }
+        bytes.truncate(FILE_ANALYSIS_BYTES);
+        bytes
+    }
+
+    #[test]
+    fn test_tag_interleaved_binary_not_misdetected_as_utf16le() {
+        let bytes = build_tag_interleaved_binary_bytes();
+        assert_eq!(bytes.len(), FILE_ANALYSIS_BYTES);
+
+        let result = analyze_byte_content(&bytes);
+        assert_eq!(
+            result,
+            ByteContent::Binary,
+            "binary data with sparse non-word low bytes and null high bytes \
+             should not be misdetected as UTF-16LE text"
+        );
+    }
+
     #[test]
     fn test_utf16le_text_detected_as_utf16le() {
         let text = "Hello, world! This is a UTF-16 test string. ";
@@ -6587,6 +6639,30 @@ mod tests {
     #[test]
     fn test_utf16be_text_detected_as_utf16be() {
         let text = "Hello, world! This is a UTF-16 test string. ";
+        let mut bytes = Vec::new();
+        while bytes.len() < FILE_ANALYSIS_BYTES {
+            bytes.extend(text.encode_utf16().flat_map(|u| u.to_be_bytes()));
+        }
+        bytes.truncate(FILE_ANALYSIS_BYTES);
+
+        assert_eq!(analyze_byte_content(&bytes), ByteContent::Utf16Be);
+    }
+
+    #[test]
+    fn test_utf16le_cyrillic_text_detected_as_utf16le() {
+        let text = "Привет, мир! Это тестовая строка в UTF-16. ";
+        let mut bytes = Vec::new();
+        while bytes.len() < FILE_ANALYSIS_BYTES {
+            bytes.extend(text.encode_utf16().flat_map(|u| u.to_le_bytes()));
+        }
+        bytes.truncate(FILE_ANALYSIS_BYTES);
+
+        assert_eq!(analyze_byte_content(&bytes), ByteContent::Utf16Le);
+    }
+
+    #[test]
+    fn test_utf16be_greek_text_detected_as_utf16be() {
+        let text = "Γεια σου κόσμε! Αυτή είναι μια δοκιμαστική συμβολοσειρά. ";
         let mut bytes = Vec::new();
         while bytes.len() < FILE_ANALYSIS_BYTES {
             bytes.extend(text.encode_utf16().flat_map(|u| u.to_be_bytes()));
