@@ -669,7 +669,7 @@ impl Room {
         log::trace!(
             "client {:?}. room update: {:?}",
             self.client.user_id(),
-            &room
+            room
         );
 
         self.pending_room_update = Some(self.start_room_connection(room, cx));
@@ -951,7 +951,7 @@ impl Room {
         log::trace!(
             "client {:?}. livekit event: {:?}",
             self.client.user_id(),
-            &event
+            event
         );
 
         match event {

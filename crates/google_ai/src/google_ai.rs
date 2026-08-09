@@ -458,7 +458,7 @@ impl Serialize for ModelName {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&format!("{MODEL_NAME_PREFIX}{}", &self.model_id))
+        serializer.serialize_str(&format!("{MODEL_NAME_PREFIX}{}", self.model_id))
     }
 }
 
