@@ -706,6 +706,17 @@ impl GitStore {
             .map(|id| self.repositories[id].clone())
     }
 
+    fn file_is_symlink(file: &File, cx: &App) -> bool {
+        file.worktree
+            .read(cx)
+            .entry_for_path(&file.path)
+            .is_some_and(|entry| entry.canonical_path.is_some())
+    }
+
+    fn buffer_is_symlink(buffer: &Entity<Buffer>, cx: &App) -> bool {
+        File::from_dyn(buffer.read(cx).file()).is_some_and(|file| Self::file_is_symlink(file, cx))
+    }
+
     pub fn open_unstaged_diff(
         &mut self,
         buffer: Entity<Buffer>,
@@ -736,13 +747,18 @@ impl GitStore {
             return Task::ready(Err(anyhow!("failed to find git repository for buffer")));
         };
 
+        let is_symlink = Self::buffer_is_symlink(&buffer, cx);
         let task = self
             .loading_diffs
             .entry((buffer_id, DiffKind::Unstaged))
             .or_insert_with(|| {
-                let staged_text = repo.update(cx, |repo, cx| {
-                    repo.load_staged_text(buffer_id, repo_path, cx)
-                });
+                let staged_text = if is_symlink {
+                    Task::ready(Ok(None))
+                } else {
+                    repo.update(cx, |repo, cx| {
+                        repo.load_staged_text(buffer_id, repo_path, cx)
+                    })
+                };
                 cx.spawn(async move |this, cx| {
                     Self::open_diff_internal(
                         this,
@@ -894,13 +910,18 @@ impl GitStore {
             return Task::ready(Err(anyhow!("failed to find git repository for buffer")));
         };
 
+        let is_symlink = Self::buffer_is_symlink(&buffer, cx);
         let task = self
             .loading_diffs
             .entry((buffer_id, DiffKind::Uncommitted))
             .or_insert_with(|| {
-                let changes = repo.update(cx, |repo, cx| {
-                    repo.load_committed_text(buffer_id, repo_path, cx)
-                });
+                let changes = if is_symlink {
+                    Task::ready(Ok(DiffBasesChange::SetBoth(None)))
+                } else {
+                    repo.update(cx, |repo, cx| {
+                        repo.load_committed_text(buffer_id, repo_path, cx)
+                    })
+                };
 
                 // todo(lw): hot foreground spawn
                 cx.spawn(async move |this, cx| {
@@ -1018,8 +1039,7 @@ impl GitStore {
         &mut self,
         buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
-    ) -> Entity<ConflictSet> {
-        log::debug!("open conflict set");
+    ) -> Task<Entity<ConflictSet>> {
         let buffer_id = buffer.read(cx).remote_id();
 
         if let Some(git_state) = self.diffs.get(&buffer_id)
@@ -1032,11 +1052,14 @@ impl GitStore {
             let conflict_set = conflict_set;
             let buffer_snapshot = buffer.read(cx).text_snapshot();
 
-            git_state.update(cx, |state, cx| {
-                let _ = state.reparse_conflict_markers(buffer_snapshot, cx);
+            let rx = git_state.update(cx, |state, cx| {
+                state.reparse_conflict_markers(buffer_snapshot, cx)
             });
 
-            return conflict_set;
+            return cx.spawn(async move |_, _| {
+                rx.await.ok();
+                conflict_set
+            });
         }
 
         let is_unmerged = self
@@ -1054,13 +1077,16 @@ impl GitStore {
                 cx.emit(GitStoreEvent::ConflictsUpdated);
             }));
 
-        buffer_git_state.update(cx, |state, cx| {
+        let rx = buffer_git_state.update(cx, |state, cx| {
             state.conflict_set = Some(conflict_set.downgrade());
             let buffer_snapshot = buffer.read(cx).text_snapshot();
-            let _ = state.reparse_conflict_markers(buffer_snapshot, cx);
+            state.reparse_conflict_markers(buffer_snapshot, cx)
         });
 
-        conflict_set
+        cx.spawn(async move |_, _| {
+            rx.await.ok();
+            conflict_set
+        })
     }
 
     pub fn project_path_git_status(
@@ -1675,14 +1701,18 @@ impl GitStore {
                 {
                     let buffer = buffer.clone();
                     let diff_state = diff_state.clone();
+                    let is_symlink = Self::buffer_is_symlink(&buffer, cx);
 
                     cx.spawn(async move |_git_store, cx| {
                         async {
-                            let diff_bases_change = repo
-                                .update(cx, |repo, cx| {
+                            let diff_bases_change = if is_symlink {
+                                DiffBasesChange::SetBoth(None)
+                            } else {
+                                repo.update(cx, |repo, cx| {
                                     repo.load_committed_text(buffer_id, repo_path, cx)
                                 })
-                                .await?;
+                                .await?
+                            };
 
                             diff_state.update(cx, |diff_state, cx| {
                                 let buffer_snapshot = buffer.read(cx).text_snapshot();
@@ -3057,6 +3087,23 @@ impl GitStore {
             .collect()
     }
 
+    fn coalesce_repo_paths(mut paths: Vec<RepoPath>) -> Vec<RepoPath> {
+        paths.sort();
+
+        let mut coalesced = Vec::with_capacity(paths.len());
+        for path in paths {
+            if coalesced
+                .last()
+                .is_some_and(|ancestor: &RepoPath| path.starts_with(ancestor))
+            {
+                continue;
+            }
+            coalesced.push(path);
+        }
+
+        coalesced
+    }
+
     fn process_updated_entries(
         &self,
         worktree: &Entity<Worktree>,
@@ -3184,39 +3231,35 @@ impl BufferGitState {
             return rx;
         };
 
-        let old_snapshot = conflict_set.read_with(cx, |conflict_set, _| {
-            if conflict_set.has_conflict {
-                Some(conflict_set.snapshot())
-            } else {
-                None
-            }
-        });
-
-        if let Some(old_snapshot) = old_snapshot {
-            self.conflict_updated_futures.push(tx);
-            self.reparse_conflict_markers_task = Some(cx.spawn(async move |this, cx| {
-                let (snapshot, changed_range) = cx
-                    .background_spawn(async move {
-                        let new_snapshot = ConflictSet::parse(&buffer);
-                        let changed_range = old_snapshot.compare(&new_snapshot, &buffer);
-                        (new_snapshot, changed_range)
-                    })
-                    .await;
-                this.update(cx, |this, cx| {
-                    if let Some(conflict_set) = &this.conflict_set {
-                        conflict_set
-                            .update(cx, |conflict_set, cx| {
-                                conflict_set.set_snapshot(snapshot, changed_range, cx);
-                            })
-                            .ok();
-                    }
-                    let futures = std::mem::take(&mut this.conflict_updated_futures);
-                    for tx in futures {
-                        tx.send(()).ok();
-                    }
-                })
-            }))
+        let has_conflict = conflict_set.read_with(cx, |conflict_set, _| conflict_set.has_conflict);
+        if !has_conflict {
+            return rx;
         }
+
+        let old_snapshot = conflict_set.read_with(cx, |conflict_set, _| conflict_set.snapshot());
+        self.conflict_updated_futures.push(tx);
+        self.reparse_conflict_markers_task = Some(cx.spawn(async move |this, cx| {
+            let (snapshot, changed_range) = cx
+                .background_spawn(async move {
+                    let new_snapshot = ConflictSet::parse(&buffer);
+                    let changed_range = old_snapshot.compare(&new_snapshot, &buffer);
+                    (new_snapshot, changed_range)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(conflict_set) = &this.conflict_set {
+                    conflict_set
+                        .update(cx, |conflict_set, cx| {
+                            conflict_set.set_snapshot(snapshot, changed_range, cx);
+                        })
+                        .ok();
+                }
+                let futures = std::mem::take(&mut this.conflict_updated_futures);
+                for tx in futures {
+                    tx.send(()).ok();
+                }
+            })
+        }));
 
         rx
     }
@@ -4024,6 +4067,7 @@ impl Repository {
                                 let file = File::from_dyn(buffer.read(cx).file())?;
                                 let abs_path = file.worktree.read(cx).absolutize(&file.path);
                                 let repo_path = this.abs_path_to_repo_path(&abs_path)?;
+                                let is_symlink = GitStore::file_is_symlink(file, cx);
                                 log::debug!(
                                     "start reload diff bases for repo path {}",
                                     repo_path.as_unix_str()
@@ -4041,6 +4085,7 @@ impl Repository {
                                     Some((
                                         buffer,
                                         repo_path,
+                                        is_symlink,
                                         has_unstaged_diff.then(|| diff_state.index_text.clone()),
                                         has_uncommitted_diff.then(|| diff_state.head_text.clone()),
                                     ))
@@ -4053,15 +4098,20 @@ impl Repository {
                 let buffer_diff_base_changes = cx
                     .background_spawn(async move {
                         let mut changes = Vec::new();
-                        for (buffer, repo_path, current_index_text, current_head_text) in
-                            &repo_diff_state_updates
+                        for (
+                            buffer,
+                            repo_path,
+                            is_symlink,
+                            current_index_text,
+                            current_head_text,
+                        ) in &repo_diff_state_updates
                         {
-                            let index_text = if current_index_text.is_some() {
+                            let index_text = if current_index_text.is_some() && !*is_symlink {
                                 backend.load_index_text(repo_path.clone()).await
                             } else {
                                 None
                             };
-                            let head_text = if current_head_text.is_some() {
+                            let head_text = if current_head_text.is_some() && !*is_symlink {
                                 backend.load_committed_text(repo_path.clone()).await
                             } else {
                                 None
@@ -6572,11 +6622,16 @@ impl Repository {
 
                 let has_head = prev_snapshot.head_commit.is_some();
 
-                let stash_entries = backend.stash_entries().await?;
                 let changed_path_statuses = cx
                     .background_spawn(async move {
-                        let mut changed_paths =
-                            changed_paths.into_iter().flatten().collect::<BTreeSet<_>>();
+                        let changed_paths = GitStore::coalesce_repo_paths(
+                            changed_paths
+                                .into_iter()
+                                .flatten()
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect(),
+                        );
                         let changed_paths_vec = changed_paths.iter().cloned().collect::<Vec<_>>();
 
                         let status_task = backend.status(&changed_paths_vec);
@@ -6597,12 +6652,34 @@ impl Repository {
 
                         let mut changed_path_statuses = Vec::new();
                         let prev_statuses = prev_snapshot.statuses_by_path.clone();
+                        let current_status_paths = statuses
+                            .entries
+                            .iter()
+                            .map(|(repo_path, _)| repo_path.clone())
+                            .collect::<BTreeSet<_>>();
+
+                        for path in &changed_paths {
+                            let mut cursor = prev_statuses.cursor::<PathProgress>(());
+                            cursor.seek_forward(&PathTarget::Path(path), Bias::Left);
+                            while let Some(entry) = cursor.item() {
+                                if !entry.repo_path.starts_with(path) {
+                                    break;
+                                }
+
+                                if !current_status_paths.contains(&entry.repo_path) {
+                                    changed_path_statuses.push(Edit::Remove(PathKey(
+                                        entry.repo_path.as_ref().clone(),
+                                    )));
+                                }
+                                cursor.next();
+                            }
+                        }
+
                         let mut cursor = prev_statuses.cursor::<PathProgress>(());
 
                         for (repo_path, status) in &*statuses.entries {
                             let current_diff_stat = diff_stats.get(repo_path).copied();
 
-                            changed_paths.remove(repo_path);
                             if cursor.seek_forward(&PathTarget::Path(repo_path), Bias::Left)
                                 && cursor.item().is_some_and(|entry| {
                                     entry.status == *status && entry.diff_stat == current_diff_stat
@@ -6617,23 +6694,11 @@ impl Repository {
                                 diff_stat: current_diff_stat,
                             }));
                         }
-                        let mut cursor = prev_statuses.cursor::<PathProgress>(());
-                        for path in changed_paths.into_iter() {
-                            if cursor.seek_forward(&PathTarget::Path(&path), Bias::Left) {
-                                changed_path_statuses
-                                    .push(Edit::Remove(PathKey(path.as_ref().clone())));
-                            }
-                        }
                         anyhow::Ok(changed_path_statuses)
                     })
                     .await?;
 
                 this.update(&mut cx, |this, cx| {
-                    if this.snapshot.stash_entries != stash_entries {
-                        cx.emit(RepositoryEvent::StashEntriesChanged);
-                        this.snapshot.stash_entries = stash_entries;
-                    }
-
                     if !changed_path_statuses.is_empty() {
                         cx.emit(RepositoryEvent::StatusesChanged);
                         this.snapshot
@@ -7046,6 +7111,10 @@ async fn compute_snapshot(
         events.push(RepositoryEvent::GitWorktreeListChanged);
     }
 
+    if stash_entries != prev_snapshot.stash_entries {
+        events.push(RepositoryEvent::StashEntriesChanged);
+    }
+
     let remote_origin_url = backend.remote_url("origin").await;
     let remote_upstream_url = backend.remote_url("upstream").await;
 
@@ -7246,5 +7315,42 @@ mod tests {
                 Some(CommitDataState::Loading)
             ));
         });
+    }
+
+    fn repo_paths(paths: &[&str]) -> Vec<RepoPath> {
+        paths.iter().map(git::repository::repo_path).collect()
+    }
+
+    #[test]
+    fn coalesce_repo_paths_keeps_root_only() {
+        let coalesced = GitStore::coalesce_repo_paths(repo_paths(&["", "src", "src/lib.rs"]));
+
+        assert_eq!(coalesced, repo_paths(&[""]));
+    }
+
+    #[test]
+    fn coalesce_repo_paths_keeps_existing_ancestors() {
+        let coalesced = GitStore::coalesce_repo_paths(repo_paths(&[
+            "src",
+            "src/lib.rs",
+            "src/nested/file.rs",
+            "tests/test.rs",
+        ]));
+
+        assert_eq!(coalesced, repo_paths(&["src", "tests/test.rs"]));
+    }
+
+    #[test]
+    fn coalesce_repo_paths_does_not_invent_missing_parents() {
+        let coalesced = GitStore::coalesce_repo_paths(repo_paths(&[
+            "submodule/a.txt",
+            "submodule/nested/b.txt",
+            "top_level.rs",
+        ]));
+
+        assert_eq!(
+            coalesced,
+            repo_paths(&["submodule/a.txt", "submodule/nested/b.txt", "top_level.rs"])
+        );
     }
 }

@@ -1359,6 +1359,14 @@ impl GitPanel {
         }
     }
 
+    fn select_last_entry_if_out_of_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(idx) = self.selected_entry
+            && idx >= self.entries.len()
+        {
+            self.select_last(&menu::SelectLast, window, cx);
+        }
+    }
+
     fn focus_changes_list(
         &mut self,
         _: &FocusChanges,
@@ -1861,17 +1869,14 @@ impl GitPanel {
         cx.spawn({
             async move |this, cx| {
                 let result = this
-                    .update(cx, |this, cx| {
-                        let task = active_repository.update(cx, |repo, cx| {
+                    .update(cx, |_this, cx| {
+                        active_repository.update(cx, |repo, cx| {
                             if stage {
                                 repo.stage_all(cx)
                             } else {
                                 repo.unstage_all(cx)
                             }
-                        });
-                        this.update_counts(active_repository.read(cx));
-                        cx.notify();
-                        task
+                        })
                     })?
                     .await;
 
@@ -1879,6 +1884,7 @@ impl GitPanel {
                     if let Err(err) = result {
                         this.show_error_toast(if stage { "add" } else { "reset" }, err, cx);
                     }
+                    this.update_counts(active_repository.read(cx));
                     cx.notify()
                 })
             }
@@ -3732,6 +3738,7 @@ impl GitPanel {
         }
 
         self.select_first_entry_if_none(window, cx);
+        self.select_last_entry_if_out_of_bounds(window, cx);
 
         let suggested_commit_message = self.suggest_commit_message(cx);
         let placeholder_text = suggested_commit_message.unwrap_or("Enter commit message".into());

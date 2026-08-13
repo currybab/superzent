@@ -55,6 +55,7 @@ pub struct FakeGitRepositoryState {
     pub refs: HashMap<String, String>,
     pub graph_commits: Vec<Arc<InitialGraphCommitData>>,
     pub worktrees: Vec<Worktree>,
+    pub stash_entries: git::stash::GitStash,
 }
 
 impl FakeGitRepositoryState {
@@ -75,6 +76,7 @@ impl FakeGitRepositoryState {
             remotes: HashMap::default(),
             graph_commits: Vec::new(),
             worktrees: Vec::new(),
+            stash_entries: Default::default(),
         }
     }
 }
@@ -381,7 +383,7 @@ impl GitRepository for FakeGitRepository {
     }
 
     fn stash_entries(&self) -> BoxFuture<'_, Result<git::stash::GitStash>> {
-        async { Ok(git::stash::GitStash::default()) }.boxed()
+        self.with_state_async(false, |state| Ok(state.stash_entries.clone()))
     }
 
     fn branches(&self) -> BoxFuture<'_, Result<Vec<Branch>>> {

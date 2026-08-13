@@ -2734,6 +2734,109 @@ fn check_worktree_entries(
     }
 }
 
+#[gpui::test]
+async fn test_noisy_dot_git_events_do_not_emit_git_repo_update(cx: &mut TestAppContext) {
+    // Events for object database writes, hook files, lock files, and the
+    // reflogs of HEAD/branches/remote-tracking branches carry no git state
+    // changes that Zed cares about beyond what the accompanying ref or index
+    // events already convey, so they must not trigger a git metadata rescan.
+    // The stash reflog and ref updates themselves must still trigger one.
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.background_executor.clone());
+
+    fs.insert_tree(
+        path!("/repo"),
+        json!({
+            ".git": {},
+            "file.txt": "content",
+        }),
+    )
+    .await;
+
+    let tree = Worktree::local(
+        path!("/repo").as_ref(),
+        true,
+        fs.clone(),
+        Arc::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    tree.update(cx, |tree, _| tree.as_local().unwrap().scan_complete())
+        .await;
+    cx.run_until_parked();
+
+    let repo_update_count: std::rc::Rc<std::cell::Cell<usize>> =
+        std::rc::Rc::new(std::cell::Cell::new(0));
+    tree.update(cx, {
+        let repo_update_count = repo_update_count.clone();
+        |_, cx| {
+            cx.subscribe(&cx.entity(), move |_, _, event, _| {
+                if matches!(event, Event::UpdatedGitRepositories(_)) {
+                    repo_update_count.set(repo_update_count.get() + 1);
+                }
+            })
+            .detach();
+        }
+    });
+
+    let skipped_paths = [
+        path!("/repo/.git/objects/aa/bbccddee"),
+        path!("/repo/.git/objects/pack/pack-1234.pack"),
+        path!("/repo/.git/hooks/pre-commit"),
+        path!("/repo/.git/logs/HEAD"),
+        path!("/repo/.git/logs/refs/heads/main"),
+        path!("/repo/.git/logs/refs/remotes/origin/main"),
+        path!("/repo/.git/logs/refs/tags/v1.0"),
+        path!("/repo/.git/rebase-merge/done"),
+        path!("/repo/.git/rebase-apply/onto"),
+        path!("/repo/.git/sequencer/todo"),
+        path!("/repo/.git/index.lock"),
+        path!("/repo/.git/refs/heads/main.lock"),
+        path!("/repo/.git/COMMIT_EDITMSG"),
+        path!("/repo/.git/packed-refs.new"),
+        path!("/repo/.git/config.new"),
+        path!("/repo/.git/index.new"),
+        path!("/repo/.git/index-abc123.tmp"),
+        path!("/repo/.git/FETCH_HEAD"),
+        path!("/repo/.git/ORIG_HEAD"),
+        path!("/repo/.git/BISECT_LOG"),
+        path!("/repo/.git/info/refs"),
+        path!("/repo/.git/info/refs_lzOf51"),
+        path!("/repo/.git/gc.pid"),
+    ];
+    for path in skipped_paths {
+        fs.emit_fs_event(path, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        assert_eq!(
+            repo_update_count.get(),
+            0,
+            "event for {path} should not emit UpdatedGitRepositories"
+        );
+    }
+
+    let rescan_paths = [
+        path!("/repo/.git/logs/refs/stash"),
+        path!("/repo/.git/refs/heads/main"),
+        path!("/repo/.git/info/exclude"),
+        path!("/repo/.git/refs/heads/branch.new"),
+        path!("/repo/.git/refs/heads/branch.tmp"),
+        path!("/repo/.git/index"),
+    ];
+    for path in rescan_paths {
+        let count_before = repo_update_count.get();
+        fs.emit_fs_event(path, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        assert!(
+            repo_update_count.get() > count_before,
+            "event for {path} should emit UpdatedGitRepositories"
+        );
+    }
+}
+
 fn init_test(cx: &mut gpui::TestAppContext) {
     zlog::init_test();
 
