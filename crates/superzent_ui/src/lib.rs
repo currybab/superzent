@@ -20,6 +20,11 @@ use cocoa::base::{id, nil};
 use editor::{Editor, EditorEvent, actions::SelectAll};
 use git::repository::validate_worktree_directory;
 use git_ui::git_panel::GitPanel;
+#[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+use global_hotkey::{
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+    hotkey::{Code, HotKey, Modifiers},
+};
 use gpui::{
     Action, App, AsyncWindowContext, ClickEvent, ClipboardItem, Corner, DismissEvent, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, PathPromptOptions,
@@ -105,7 +110,11 @@ actions!(
         CloseWorkspace,
         DeleteWorkspace,
         CollapseWorkspaceSection,
-        ExpandWorkspaceSection
+        ExpandWorkspaceSection,
+        /// Opens the workspace referenced by the visible agent notification popup.
+        OpenNotificationWorkspace,
+        /// Dismisses the visible agent notification popup.
+        DismissNotification
     ]
 );
 
@@ -223,6 +232,13 @@ struct LiveTerminalAttention {
     status: WorkspaceAttentionStatus,
 }
 
+#[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+struct NotificationHotkeys {
+    manager: GlobalHotKeyManager,
+    open: HotKey,
+    dismiss: HotKey,
+}
+
 struct WorkspaceAttentionController {
     store: Entity<SuperzentStore>,
     terminal_ids_by_entity: BTreeMap<EntityId, String>,
@@ -232,8 +248,14 @@ struct WorkspaceAttentionController {
     notifications: Vec<WindowHandle<AgentNotification>>,
     #[cfg(feature = "acp_tabs")]
     notification_subscriptions: Vec<Subscription>,
+    #[cfg(feature = "acp_tabs")]
+    active_notification_workspace_id: Option<String>,
+    #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+    notification_hotkeys: Option<NotificationHotkeys>,
     _hook_task: Task<Result<()>>,
     _notification_activation_task: Task<Result<()>>,
+    #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+    _notification_hotkey_task: Task<Result<()>>,
 }
 
 fn debug_terminal_notifications_enabled() -> bool {
@@ -278,6 +300,24 @@ impl WorkspaceAttentionController {
                 None => Task::ready(Ok(())),
             };
 
+        #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+        let notification_hotkey_task = {
+            let (sender, receiver) = smol::channel::unbounded();
+            GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+                if event.state() == HotKeyState::Pressed && sender.try_send(event.id()).is_err() {
+                    log::warn!("dropping notification hotkey event: channel closed");
+                }
+            }));
+            cx.spawn(async move |this, cx| {
+                while let Ok(hotkey_id) = receiver.recv().await {
+                    this.update(cx, |this, cx| {
+                        this.handle_notification_hotkey(hotkey_id, cx);
+                    })?;
+                }
+                Ok(())
+            })
+        };
+
         Self {
             store,
             terminal_ids_by_entity: BTreeMap::new(),
@@ -287,8 +327,14 @@ impl WorkspaceAttentionController {
             notifications: Vec::new(),
             #[cfg(feature = "acp_tabs")]
             notification_subscriptions: Vec::new(),
+            #[cfg(feature = "acp_tabs")]
+            active_notification_workspace_id: None,
+            #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+            notification_hotkeys: None,
             _hook_task: hook_task,
             _notification_activation_task: notification_activation_task,
+            #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+            _notification_hotkey_task: notification_hotkey_task,
         }
     }
 
@@ -694,6 +740,9 @@ impl WorkspaceAttentionController {
         }
 
         let workspace_id = workspace_id.to_string();
+        self.active_notification_workspace_id = Some(workspace_id.clone());
+        #[cfg(target_os = "macos")]
+        self.register_notification_hotkeys();
         self.notification_subscriptions
             .push(
                 cx.subscribe(&pop_up, move |this, _, event, cx| match event {
@@ -727,6 +776,9 @@ impl WorkspaceAttentionController {
 
     #[cfg(feature = "acp_tabs")]
     fn dismiss_notifications(&mut self, cx: &mut Context<Self>) {
+        self.active_notification_workspace_id = None;
+        #[cfg(target_os = "macos")]
+        self.unregister_notification_hotkeys();
         for window in self.notifications.drain(..) {
             window
                 .update(cx, |_, window, _| {
@@ -740,7 +792,83 @@ impl WorkspaceAttentionController {
 
     #[cfg(not(feature = "acp_tabs"))]
     fn dismiss_notifications(&mut self, _cx: &mut Context<Self>) {}
+
+    #[cfg(feature = "acp_tabs")]
+    fn open_active_notification_workspace(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.active_notification_workspace_id.take() else {
+            return;
+        };
+        self.handle_native_notification_activation(&workspace_id, cx);
+    }
+
+    #[cfg(not(feature = "acp_tabs"))]
+    fn open_active_notification_workspace(&mut self, _cx: &mut Context<Self>) {}
+
+    // System-wide hotkeys let the user act on the popup while another app has
+    // keyboard focus, which is the common case since the popup only shows when
+    // the source workspace is not active. They are registered only while a
+    // popup is visible to minimize the time the combos are captured globally.
+    #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+    fn register_notification_hotkeys(&mut self) {
+        if self.notification_hotkeys.is_some() {
+            return;
+        }
+        let manager = match GlobalHotKeyManager::new() {
+            Ok(manager) => manager,
+            Err(error) => {
+                log::error!("failed to create global hotkey manager for notifications: {error:#}");
+                return;
+            }
+        };
+        let open = HotKey::new(
+            Some(Modifiers::CONTROL | Modifiers::META),
+            NOTIFICATION_OPEN_HOTKEY_CODE,
+        );
+        let dismiss = HotKey::new(
+            Some(Modifiers::CONTROL | Modifiers::META),
+            NOTIFICATION_DISMISS_HOTKEY_CODE,
+        );
+        if let Err(error) = manager.register_all(&[open, dismiss]) {
+            log::error!("failed to register notification hotkeys: {error:#}");
+            return;
+        }
+        self.notification_hotkeys = Some(NotificationHotkeys {
+            manager,
+            open,
+            dismiss,
+        });
+    }
+
+    #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+    fn unregister_notification_hotkeys(&mut self) {
+        let Some(hotkeys) = self.notification_hotkeys.take() else {
+            return;
+        };
+        if let Err(error) = hotkeys
+            .manager
+            .unregister_all(&[hotkeys.open, hotkeys.dismiss])
+        {
+            log::error!("failed to unregister notification hotkeys: {error:#}");
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+    fn handle_notification_hotkey(&mut self, hotkey_id: u32, cx: &mut Context<Self>) {
+        let Some(hotkeys) = &self.notification_hotkeys else {
+            return;
+        };
+        if hotkey_id == hotkeys.open.id() {
+            self.open_active_notification_workspace(cx);
+        } else if hotkey_id == hotkeys.dismiss.id() {
+            self.dismiss_notifications(cx);
+        }
+    }
 }
+
+#[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+const NOTIFICATION_OPEN_HOTKEY_CODE: Code = Code::Enter;
+#[cfg(all(target_os = "macos", feature = "acp_tabs"))]
+const NOTIFICATION_DISMISS_HOTKEY_CODE: Code = Code::Escape;
 
 #[derive(Clone, Copy, Debug)]
 enum TerminalLifecycleNotification {
@@ -784,7 +912,8 @@ pub fn init(cx: &mut App) {
 
     let attention_controller = cx.new(WorkspaceAttentionController::new);
 
-    cx.observe_new(
+    cx.observe_new({
+        let attention_controller = attention_controller.clone();
         move |terminal_view: &mut TerminalView, _window, cx: &mut Context<TerminalView>| {
             let terminal = terminal_view.terminal().clone();
             let (terminal_id, workspace_id) = {
@@ -826,8 +955,8 @@ pub fn init(cx: &mut App) {
                 });
             })
             .detach();
-        },
-    )
+        }
+    })
     .detach();
 
     cx.observe_new(|pane: &mut Pane, _window, cx: &mut Context<Pane>| {
@@ -840,8 +969,24 @@ pub fn init(cx: &mut App) {
     .detach();
 
     cx.observe_new(
-        |workspace: &mut Workspace, _window, _: &mut Context<Workspace>| {
+        move |workspace: &mut Workspace, _window, _: &mut Context<Workspace>| {
             workspace
+                .register_action({
+                    let attention_controller = attention_controller.clone();
+                    move |_, _: &OpenNotificationWorkspace, _window, cx| {
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.open_active_notification_workspace(cx);
+                        });
+                    }
+                })
+                .register_action({
+                    let attention_controller = attention_controller.clone();
+                    move |_, _: &DismissNotification, _window, cx| {
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.dismiss_notifications(cx);
+                        });
+                    }
+                })
                 .register_action(|workspace, _: &AddProject, window, cx| {
                     run_add_project(workspace, window, cx);
                 })
