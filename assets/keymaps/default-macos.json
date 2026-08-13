@@ -670,6 +670,8 @@
       "ctrl-cmd-o": ["projects::OpenRemote", { "from_existing_connection": false, "create_new_window": false }],
       "ctrl-cmd-shift-o": ["projects::OpenRemote", { "from_existing_connection": true, "create_new_window": false }],
       "cmd-ctrl-b": "branches::OpenRecent",
+      "ctrl-cmd-enter": "superzent::OpenNotificationWorkspace",
+      "ctrl-cmd-escape": "superzent::DismissNotification",
       "ctrl-`": "terminal_panel::Toggle",
       "ctrl-~": "workspace::NewTerminal",
       "cmd-s": "workspace::Save",
