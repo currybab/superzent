@@ -461,6 +461,7 @@ impl Search {
                     }
                     let tx = tx.clone();
                     let results = results.clone();
+                    let snapshot = Arc::new(snapshot);
 
                     cx.background_executor()
                         .spawn(async move {
@@ -838,7 +839,7 @@ impl RequestHandler<'_> {
 
 struct InputPath {
     entry: Entry,
-    snapshot: Snapshot,
+    snapshot: Arc<Snapshot>,
     should_scan_tx: oneshot::Sender<ProjectPath>,
 }
 
