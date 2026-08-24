@@ -1156,11 +1156,11 @@ impl GitPanel {
                 .iter()
                 .position(|entry| entry.status_entry().is_some()),
             GitPanelViewMode::Tree(state) => {
-                let index = self.entries.iter().position(|entry| {
-                    entry.status_entry().is_some() || entry.directory_entry().is_some()
-                });
-
-                index.map(|index| state.logical_indices[index])
+                state.logical_indices.iter().copied().find(|&index| {
+                    self.entries.get(index).is_some_and(|entry| {
+                        entry.status_entry().is_some() || entry.directory_entry().is_some()
+                    })
+                })
             }
         };
 
