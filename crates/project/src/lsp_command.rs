@@ -1187,10 +1187,9 @@ pub async fn location_links_from_lsp(
         cx.update(|cx| {
             let origin_location = origin_range.map(|origin_range| {
                 let origin_buffer = buffer.read(cx);
-                let origin_start =
-                    origin_buffer.clip_point_utf16(point_from_lsp(origin_range.start), Bias::Left);
-                let origin_end =
-                    origin_buffer.clip_point_utf16(point_from_lsp(origin_range.end), Bias::Left);
+                let origin_range = range_from_lsp(origin_range);
+                let origin_start = origin_buffer.clip_point_utf16(origin_range.start, Bias::Left);
+                let origin_end = origin_buffer.clip_point_utf16(origin_range.end, Bias::Left);
                 Location {
                     buffer: buffer.clone(),
                     range: origin_buffer.anchor_after(origin_start)
@@ -1199,10 +1198,9 @@ pub async fn location_links_from_lsp(
             });
 
             let target_buffer = target_buffer_handle.read(cx);
-            let target_start =
-                target_buffer.clip_point_utf16(point_from_lsp(target_range.start), Bias::Left);
-            let target_end =
-                target_buffer.clip_point_utf16(point_from_lsp(target_range.end), Bias::Left);
+            let target_range = range_from_lsp(target_range);
+            let target_start = target_buffer.clip_point_utf16(target_range.start, Bias::Left);
+            let target_end = target_buffer.clip_point_utf16(target_range.end, Bias::Left);
             let target_location = Location {
                 buffer: target_buffer_handle,
                 range: target_buffer.anchor_after(target_start)
@@ -1242,10 +1240,9 @@ pub async fn location_link_from_lsp(
     Ok(cx.update(|cx| {
         let origin_location = origin_range.map(|origin_range| {
             let origin_buffer = buffer.read(cx);
-            let origin_start =
-                origin_buffer.clip_point_utf16(point_from_lsp(origin_range.start), Bias::Left);
-            let origin_end =
-                origin_buffer.clip_point_utf16(point_from_lsp(origin_range.end), Bias::Left);
+            let origin_range = range_from_lsp(origin_range);
+            let origin_start = origin_buffer.clip_point_utf16(origin_range.start, Bias::Left);
+            let origin_end = origin_buffer.clip_point_utf16(origin_range.end, Bias::Left);
             Location {
                 buffer: buffer.clone(),
                 range: origin_buffer.anchor_after(origin_start)
@@ -1254,10 +1251,9 @@ pub async fn location_link_from_lsp(
         });
 
         let target_buffer = target_buffer_handle.read(cx);
-        let target_start =
-            target_buffer.clip_point_utf16(point_from_lsp(target_range.start), Bias::Left);
-        let target_end =
-            target_buffer.clip_point_utf16(point_from_lsp(target_range.end), Bias::Left);
+        let target_range = range_from_lsp(target_range);
+        let target_start = target_buffer.clip_point_utf16(target_range.start, Bias::Left);
+        let target_end = target_buffer.clip_point_utf16(target_range.end, Bias::Left);
         let target_location = Location {
             buffer: target_buffer_handle,
             range: target_buffer.anchor_after(target_start)
@@ -1391,10 +1387,9 @@ impl LspCommand for GetReferences {
                 target_buffer_handle
                     .clone()
                     .read_with(&cx, |target_buffer, _| {
-                        let target_start = target_buffer
-                            .clip_point_utf16(point_from_lsp(lsp_location.range.start), Bias::Left);
-                        let target_end = target_buffer
-                            .clip_point_utf16(point_from_lsp(lsp_location.range.end), Bias::Left);
+                        let range = range_from_lsp(lsp_location.range);
+                        let target_start = target_buffer.clip_point_utf16(range.start, Bias::Left);
+                        let target_end = target_buffer.clip_point_utf16(range.end, Bias::Left);
                         references.push(Location {
                             buffer: target_buffer_handle,
                             range: target_buffer.anchor_after(target_start)
@@ -1552,10 +1547,9 @@ impl LspCommand for GetDocumentHighlights {
             lsp_highlights
                 .into_iter()
                 .map(|lsp_highlight| {
-                    let start = buffer
-                        .clip_point_utf16(point_from_lsp(lsp_highlight.range.start), Bias::Left);
-                    let end = buffer
-                        .clip_point_utf16(point_from_lsp(lsp_highlight.range.end), Bias::Left);
+                    let range = range_from_lsp(lsp_highlight.range);
+                    let start = buffer.clip_point_utf16(range.start, Bias::Left);
+                    let end = buffer.clip_point_utf16(range.end, Bias::Left);
                     DocumentHighlight {
                         range: buffer.anchor_after(start)..buffer.anchor_before(end),
                         kind: lsp_highlight
@@ -2029,9 +2023,9 @@ impl LspCommand for GetHover {
             (
                 buffer.language().cloned(),
                 hover.range.map(|range| {
-                    let token_start =
-                        buffer.clip_point_utf16(point_from_lsp(range.start), Bias::Left);
-                    let token_end = buffer.clip_point_utf16(point_from_lsp(range.end), Bias::Left);
+                    let range = range_from_lsp(range);
+                    let token_start = buffer.clip_point_utf16(range.start, Bias::Left);
+                    let token_end = buffer.clip_point_utf16(range.end, Bias::Left);
                     buffer.anchor_after(token_start)..buffer.anchor_before(token_end)
                 }),
             )
@@ -4014,9 +4008,9 @@ impl LspCommand for LinkedEditingRange {
                 ranges
                     .into_iter()
                     .map(|range| {
-                        let start =
-                            buffer.clip_point_utf16(point_from_lsp(range.start), Bias::Left);
-                        let end = buffer.clip_point_utf16(point_from_lsp(range.end), Bias::Left);
+                        let range = range_from_lsp(range);
+                        let start = buffer.clip_point_utf16(range.start, Bias::Left);
+                        let end = buffer.clip_point_utf16(range.end, Bias::Left);
                         buffer.anchor_before(start)..buffer.anchor_after(end)
                     })
                     .collect()
