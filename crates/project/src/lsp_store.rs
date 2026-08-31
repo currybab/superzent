@@ -2765,6 +2765,26 @@ impl LocalLspStore {
                     range.start.column -= 1;
                     range.start = snapshot.clip_point_utf16(Unclipped(range.start), Bias::Left);
                 }
+            } else if end.0 == PointUtf16::new(start.0.row + 1, 0) {
+                // Some language servers (e.g. Python parsers reporting a missing `:`)
+                // report a diagnostic whose range starts at the end of a line and ends
+                // at the start of the next one. That range contains nothing but the
+                // line terminator itself, so there is no glyph left to underline and
+                // the diagnostic renders invisibly even though it's real. Only collapse
+                // ranges that are exactly the terminator (checked via the precise end
+                // position above) so genuinely multi-line diagnostics that merely start
+                // at an end-of-line are left untouched.
+                let line_end = snapshot.clip_point_utf16(
+                    Unclipped(PointUtf16::new(range.start.row, u32::MAX)),
+                    Bias::Left,
+                );
+                if range.start == line_end {
+                    range.end = range.start;
+                    if range.start.column > 0 {
+                        range.start.column -= 1;
+                        range.start = snapshot.clip_point_utf16(Unclipped(range.start), Bias::Left);
+                    }
+                }
             }
 
             sanitized_diagnostics.push(DiagnosticEntry {
