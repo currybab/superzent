@@ -1033,6 +1033,9 @@ impl GitRepository for RealGitRepository {
                         "--no-patch",
                         "--format=%H%x00%B%x00%at%x00%ae%x00%an%x00",
                         &commit,
+                        // `commit` reaches here as whatever the user typed, so it can name
+                        // a branch that also names a path in the working tree.
+                        "--",
                     ])
                     .output()
                     .await?;
@@ -1075,6 +1078,7 @@ impl GitRepository for RealGitRepository {
                     "--first-parent",
                 ])
                 .arg(&commit)
+                .arg("--")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -1494,6 +1498,7 @@ impl GitRepository for RealGitRepository {
                 args.push(OsString::from(head.as_str()));
             }
         }
+        args.push("--".into());
 
         self.executor
             .spawn(async move {
@@ -1889,7 +1894,7 @@ impl GitRepository for RealGitRepository {
                     }
                     DiffType::HeadToWorktree => git.build_command(&["diff"]).output().await?,
                     DiffType::MergeBase { base_ref } => {
-                        git.build_command(&["diff", "--merge-base", base_ref.as_ref()])
+                        git.build_command(&["diff", "--merge-base", base_ref.as_ref(), "--"])
                             .output()
                             .await?
                     }
@@ -2645,6 +2650,10 @@ impl GitRepository for RealGitRepository {
                 GRAPH_COMMIT_FORMAT,
                 log_order.as_arg(),
                 log_source.get_arg()?,
+                // Without a terminator git cannot tell a branch named `docs/rewrite` from a
+                // `docs/rewrite` directory in the working tree, and refuses the argument as
+                // ambiguous.
+                "--",
             ]);
             command.stdout(Stdio::piped());
             command.stderr(Stdio::null());
@@ -3081,13 +3090,20 @@ impl GitBinary {
             command.args(["-c", "protocol.ext.allow=never"]);
             command.args(["-c", "diff.external="]);
         }
-        command.args(args);
-
         // If the `diff` command is being used, we'll want to add the
         // `--no-ext-diff` flag when working on an untrusted repository,
-        // preventing any external diff programs from being invoked.
-        if !self.is_trusted && args.iter().any(|arg| arg.as_ref() == "diff") {
-            command.arg("--no-ext-diff");
+        // preventing any external diff programs from being invoked. It goes
+        // directly after the subcommand: callers end their revisions with `--`,
+        // and anything after that separator is read as a pathspec rather than as
+        // an option.
+        let mut args = args.iter();
+        if let Some(subcommand) = args.next() {
+            let is_diff = subcommand.as_ref() == "diff";
+            command.arg(subcommand);
+            if !self.is_trusted && is_diff {
+                command.arg("--no-ext-diff");
+            }
+            command.args(args);
         }
 
         if let Some(index_file_path) = self.index_file_path.as_ref() {
