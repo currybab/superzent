@@ -6268,7 +6268,7 @@ mod tests {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
                     settings.theme.ui_font_size = Some(16.0.into());
-                    settings.theme.markdown_preview_font_size = None;
+                    settings.markdown_preview.get_or_insert_default().font_size = None;
                 });
             });
         });
@@ -6296,7 +6296,7 @@ mod tests {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
                     settings.theme.ui_font_size = Some(20.0.into());
-                    settings.theme.markdown_preview_font_size = None;
+                    settings.markdown_preview.get_or_insert_default().font_size = None;
                 });
             });
         });
@@ -6357,7 +6357,7 @@ mod tests {
         cx.update(|cx| {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
-                    settings.theme.markdown_preview_font_size = Some(14.0.into());
+                    settings.markdown_preview.get_or_insert_default().font_size = Some(14.0.into());
                     settings.theme.buffer_line_height =
                         Some(settings::BufferLineHeight::Custom(1.5));
                 });
@@ -6562,7 +6562,7 @@ mod tests {
     /// Note that this does not reproduce the `WithRemSize` wrapper the real
     /// preview renders inside, so rem-derived lengths (such as the `rems(1.3)`
     /// prose leading) resolve against the default rem size rather than
-    /// `markdown_preview_font_size`. Code block metrics are unaffected, since
+    /// `markdown_preview.font_size`. Code block metrics are unaffected, since
     /// the code font size is set as absolute pixels.
     fn rendered_prose_and_code_line_heights(
         cx: &mut TestAppContext,
@@ -6573,7 +6573,8 @@ mod tests {
         cx.update(|cx| {
             settings::SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
-                    settings.theme.markdown_preview_font_size = Some(font_size.into());
+                    settings.markdown_preview.get_or_insert_default().font_size =
+                        Some(font_size.into());
                     settings.theme.buffer_line_height =
                         Some(settings::BufferLineHeight::Custom(buffer_line_height));
                 });

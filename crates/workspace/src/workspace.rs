@@ -1360,6 +1360,7 @@ pub struct Workspace {
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
     _panels_task: Option<Task<Result<()>>>,
+    restoring_workspace: bool,
 }
 
 impl EventEmitter<Event> for Workspace {}
@@ -1740,6 +1741,7 @@ impl Workspace {
             bottom_dock,
             right_dock,
             _panels_task: None,
+            restoring_workspace: false,
             project: project.clone(),
             follower_states: Default::default(),
             last_leaders_by_pane: Default::default(),
@@ -2198,6 +2200,15 @@ impl Workspace {
 
     pub fn app_state(&self) -> &Arc<AppState> {
         &self.app_state
+    }
+
+    pub fn is_restoring(&self) -> bool {
+        self.restoring_workspace
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_restoring_workspace(&mut self, restoring: bool) {
+        self.restoring_workspace = restoring;
     }
 
     pub fn set_panels_task(&mut self, task: Task<Result<()>>) {
@@ -6512,6 +6523,9 @@ impl Workspace {
         cx: &mut Context<Workspace>,
     ) -> Task<Result<Vec<Option<Box<dyn ItemHandle>>>>> {
         cx.spawn_in(window, async move |workspace, cx| {
+            workspace.update(cx, |workspace, _| {
+                workspace.restoring_workspace = true;
+            })?;
             let project = workspace.read_with(cx, |workspace, _| workspace.project().clone())?;
 
             let mut center_group = None;
@@ -6587,6 +6601,7 @@ impl Workspace {
                     });
                 }
 
+                workspace.restoring_workspace = false;
                 cx.notify();
             })?;
 

@@ -304,3 +304,9 @@ pub(crate) mod m_2026_02_25 {
 
     pub(crate) use settings::migrate_builtin_agent_servers_to_registry;
 }
+
+pub(crate) mod m_2026_08_30 {
+    mod settings;
+
+    pub(crate) use settings::nest_markdown_preview_settings;
+}
