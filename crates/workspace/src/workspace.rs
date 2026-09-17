@@ -4025,10 +4025,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.add_item_to_center_with_focus(item, true, window, cx)
+    }
+
+    pub fn add_item_to_center_with_focus(
+        &mut self,
+        item: Box<dyn ItemHandle>,
+        focus_item: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if let Some(center_pane) = self.last_active_center_pane.clone() {
             if let Some(center_pane) = center_pane.upgrade() {
                 center_pane.update(cx, |pane, cx| {
-                    pane.add_item(item, true, true, None, window, cx)
+                    pane.add_item(item, true, focus_item, None, window, cx)
                 });
                 true
             } else {

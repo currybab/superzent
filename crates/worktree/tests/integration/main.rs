@@ -3208,3 +3208,207 @@ async fn test_refresh_entries_for_paths_creates_ancestors(cx: &mut TestAppContex
         );
     });
 }
+
+#[gpui::test]
+async fn test_watcher_overflow_rescan_reloads_git_state(cx: &mut TestAppContext) {
+    // When the OS watch queue overflows, pending events are dropped and the
+    // watcher reports only a `Rescan` event for the worktree root. The dropped
+    // events may have included changes inside `.git`, so the rescan must
+    // trigger a git state reload even though no `.git` event is ever seen.
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            ".git": {},
+            "file.txt": "content",
+        }),
+    )
+    .await;
+
+    let tree = Worktree::local(
+        path!("/root").as_ref(),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    tree.update(cx, |tree, _| tree.as_local().unwrap().scan_complete())
+        .await;
+    cx.run_until_parked();
+
+    let repo_update_count: std::rc::Rc<std::cell::Cell<usize>> =
+        std::rc::Rc::new(std::cell::Cell::new(0));
+    tree.update(cx, {
+        let repo_update_count = repo_update_count.clone();
+        |_, cx| {
+            cx.subscribe(&cx.entity(), move |_, _, event, _| {
+                if matches!(event, Event::UpdatedGitRepositories(_)) {
+                    repo_update_count.set(repo_update_count.get() + 1);
+                }
+            })
+            .detach();
+        }
+    });
+
+    // A git state change occurs while events are queued but undelivered, and
+    // is then lost to a watcher overflow: the only event the worktree ever
+    // receives is the root rescan.
+    fs.pause_events();
+    fs.set_head_for_repo(
+        path!("/root/.git").as_ref(),
+        &[("file.txt", "content".into())],
+        "sha-after-overflow",
+    );
+    fs.clear_buffered_events();
+    fs.emit_fs_event(path!("/root"), Some(fs::PathEventKind::Rescan));
+    fs.unpause_events_and_flush();
+    cx.run_until_parked();
+
+    assert!(
+        repo_update_count.get() > 0,
+        "a watcher overflow rescan should reload git state, since the dropped \
+         events may have included .git changes"
+    );
+}
+
+#[gpui::test]
+async fn test_git_update_in_same_batch_as_rescan_is_not_lost(cx: &mut TestAppContext) {
+    // When a `.git` event and a watcher rescan arrive in the same batch,
+    // `update_git_repositories` stamps the repository's `git_dir_scan_id`, but
+    // the rescan then re-inserts the repository entry. If the re-insertion
+    // resets `git_dir_scan_id`, the stamp is lost before the snapshot diff can
+    // observe it. The git update must still be signaled via
+    // `UpdatedGitRepositories`.
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            ".git": {},
+            "file.txt": "content",
+        }),
+    )
+    .await;
+
+    let tree = Worktree::local(
+        path!("/root").as_ref(),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    tree.update(cx, |tree, _| tree.as_local().unwrap().scan_complete())
+        .await;
+    cx.run_until_parked();
+
+    let repo_update_count: std::rc::Rc<std::cell::Cell<usize>> =
+        std::rc::Rc::new(std::cell::Cell::new(0));
+    tree.update(cx, {
+        let repo_update_count = repo_update_count.clone();
+        |_, cx| {
+            cx.subscribe(&cx.entity(), move |_, _, event, _| {
+                if matches!(event, Event::UpdatedGitRepositories(_)) {
+                    repo_update_count.set(repo_update_count.get() + 1);
+                }
+            })
+            .detach();
+        }
+    });
+
+    // Deliver the git change and the rescan in a single batch, as happens when
+    // a rescan arrives while other events are still queued.
+    fs.pause_events();
+    fs.set_head_for_repo(
+        path!("/root/.git").as_ref(),
+        &[("file.txt", "content".into())],
+        "sha-with-rescan",
+    );
+    fs.emit_fs_event(path!("/root"), Some(fs::PathEventKind::Rescan));
+    fs.unpause_events_and_flush();
+    cx.run_until_parked();
+
+    assert!(
+        repo_update_count.get() > 0,
+        "a git update processed in the same batch as a rescan should still be \
+         signaled via UpdatedGitRepositories"
+    );
+}
+
+#[gpui::test]
+async fn test_rescan_reloads_linked_worktree_git_state(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        path!("/main"),
+        json!({
+            ".git": {
+                "worktrees": {
+                    "linked": {
+                        "commondir": "../..\n",
+                        "HEAD": "",
+                        "config": ""
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+    fs.insert_tree(
+        path!("/linked"),
+        json!({
+            ".git": "gitdir: ../main/.git/worktrees/linked\n",
+            "file.txt": "content"
+        }),
+    )
+    .await;
+    let tree = Worktree::local(
+        Path::new(path!("/linked")),
+        true,
+        fs.clone(),
+        Arc::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .expect("linked worktree should load");
+    tree.update(cx, |tree, _| {
+        tree.as_local().expect("local worktree").scan_complete()
+    })
+    .await;
+    cx.run_until_parked();
+
+    let repository_updates = std::rc::Rc::new(std::cell::Cell::new(0));
+    let _subscription = tree.update(cx, {
+        let repository_updates = repository_updates.clone();
+        |_, cx| {
+            cx.subscribe(&cx.entity(), move |_, _, event, _| {
+                if matches!(event, Event::UpdatedGitRepositories(_)) {
+                    repository_updates.set(repository_updates.get() + 1);
+                }
+            })
+        }
+    });
+    for path in [
+        path!("/linked"),
+        path!("/main/.git"),
+        path!("/main/.git/worktrees/linked"),
+    ] {
+        let previous_updates = repository_updates.get();
+        fs.emit_fs_event(path, Some(fs::PathEventKind::Rescan));
+        cx.run_until_parked();
+        assert!(
+            repository_updates.get() > previous_updates,
+            "rescan of {path} should refresh the linked worktree repository"
+        );
+    }
+}
