@@ -29,6 +29,18 @@ const HOOK_ENDPOINT_PATH: &str = "/agent-hook";
 const NOTIFY_SCRIPT_FILE_NAME: &str = "notify.sh";
 const WRAPPER_MARKER: &str = "# Superzent agent wrapper v1";
 
+const WRAPPER_NOTIFICATION_SCOPE: &str = r#"
+# A nested agent belongs to its outer agent's request, not a new terminal task.
+if [ -n "$SUPERZENT_TERMINAL_ID" ]; then
+  if [ "${SUPERZENT_HOOK_OWNER_TERMINAL_ID:-}" = "$SUPERZENT_TERMINAL_ID" ]; then
+    export SUPERZENT_SUPPRESS_AGENT_COMPLETION=1
+  else
+    export SUPERZENT_HOOK_OWNER_TERMINAL_ID="$SUPERZENT_TERMINAL_ID"
+    unset SUPERZENT_SUPPRESS_AGENT_COMPLETION
+  fi
+fi
+"#;
+
 static HOOK_RUNTIME: OnceLock<AgentHookRuntime> = OnceLock::new();
 
 fn debug_hooks_enabled() -> bool {
@@ -542,6 +554,12 @@ if [ -z "$EVENT_TYPE" ]; then
   exit 0
 fi
 
+if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
+  case "$EVENT_TYPE" in
+    Stop|AfterAgent|agent-turn-complete|sessionEnd) exit 0 ;;
+  esac
+fi
+
 _superzent_status=$(curl -sSG "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
@@ -638,6 +656,8 @@ if [ -z "$REAL_BIN" ]; then
   exit 127
 fi
 
+{WRAPPER_NOTIFICATION_SCOPE}
+
 if [ "$_superzent_debug_enabled" = "1" ]; then
   echo "$(date '+%H:%M:%S') claude wrapper exec REAL_BIN=$REAL_BIN" >> "$_superzent_debug_log"
 fi
@@ -658,6 +678,8 @@ if [ -z "$REAL_BIN" ]; then
   echo "Superzent: codex not found in PATH." >&2
   exit 127
 fi
+
+{WRAPPER_NOTIFICATION_SCOPE}
 
 if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
   export CODEX_TUI_RECORD_SESSION=1
@@ -841,6 +863,147 @@ mod tests {
             codex_wrapper_content(Path::new("/tmp/bin"), Path::new("/tmp/hooks/notify.sh"));
         assert!(wrapper.contains(AGENT_REAL_CODEX_BIN_ENV_VAR));
         assert!(wrapper.contains("notify=[\\\"bash\\\",\\\"/tmp/hooks/notify.sh\\\"]"));
+    }
+
+    #[cfg(unix)]
+    fn write_test_wrappers(directory: &Path) -> (PathBuf, PathBuf) {
+        let bin_dir = directory.join("managed bin");
+        fs::create_dir_all(&bin_dir).expect("create test wrapper directory");
+        let notify_path = directory.join("hooks/notify.sh");
+        let claude = bin_dir.join("claude");
+        let codex = bin_dir.join("codex");
+        write_executable_file(
+            &claude,
+            claude_wrapper_content(&bin_dir, &notify_path).expect("render Claude wrapper"),
+        )
+        .expect("write Claude wrapper");
+        write_executable_file(&codex, codex_wrapper_content(&bin_dir, &notify_path))
+            .expect("write Codex wrapper");
+        (claude, codex)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_agents_only_suppress_completion_notifications() {
+        let directory = tempfile::tempdir().expect("create wrapper test directory");
+        let (claude, codex) = write_test_wrappers(directory.path());
+        let parent_binary = directory.path().join("parent-agent");
+        let child_binary = directory.path().join("child-agent");
+        let notify_script = directory.path().join("notify.sh");
+        let events_path = directory.path().join("events");
+        write_executable_file(&notify_script, notify_script_content())
+            .expect("write notification hook");
+        write_executable_file(
+            &directory.path().join("curl"),
+            r#"#!/bin/bash
+for argument in "$@"; do
+  case "$argument" in
+    event_type=*) printf '%s\n' "${argument#event_type=}" >> "$SUPERZENT_TEST_EVENTS" ;;
+  esac
+done
+printf '204'
+"#
+            .into(),
+        )
+        .expect("write HTTP recorder");
+        write_executable_file(
+            &parent_binary,
+            r#"#!/bin/bash
+export SUPERZENT_REAL_CLAUDE_BIN="$SUPERZENT_TEST_CHILD_BINARY"
+export SUPERZENT_REAL_CODEX_BIN="$SUPERZENT_TEST_CHILD_BINARY"
+"$SUPERZENT_TEST_CHILD_WRAPPER" child-request || exit $?
+bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" '{"hook_event_name":"Stop"}'
+"#
+            .into(),
+        )
+        .expect("write parent agent");
+        write_executable_file(
+            &child_binary,
+            r#"#!/bin/bash
+bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" '{"hook_event_name":"Start"}'
+bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" '{"hook_event_name":"PermissionRequest"}'
+bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
+"#
+            .into(),
+        )
+        .expect("write child agent");
+
+        for (parent, child) in [
+            (&claude, &codex),
+            (&codex, &claude),
+            (&claude, &claude),
+            (&codex, &codex),
+        ] {
+            fs::write(&events_path, "").expect("clear recorded hook events");
+            let completion = if child == &codex {
+                r#"{"type":"agent-turn-complete"}"#
+            } else {
+                r#"{"hook_event_name":"Stop"}"#
+            };
+            let output = smol::block_on(
+                smol::process::Command::new(parent)
+                    .arg("parent-request")
+                    .env(AGENT_REAL_CLAUDE_BIN_ENV_VAR, &parent_binary)
+                    .env(AGENT_REAL_CODEX_BIN_ENV_VAR, &parent_binary)
+                    .env("SUPERZENT_TEST_CHILD_WRAPPER", child)
+                    .env("SUPERZENT_TEST_CHILD_BINARY", &child_binary)
+                    .env("SUPERZENT_TEST_CHILD_STOP", completion)
+                    .env("SUPERZENT_TEST_NOTIFY_SCRIPT", &notify_script)
+                    .env("SUPERZENT_TEST_EVENTS", &events_path)
+                    .env(
+                        "PATH",
+                        format!(
+                            "{}:{}",
+                            directory.path().display(),
+                            std::env::var("PATH").expect("test PATH")
+                        ),
+                    )
+                    .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+                    .env(AGENT_HOOK_URL_ENV_VAR, "http://127.0.0.1/agent-hook")
+                    .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                    .env_remove("SUPERZENT_HOOK_OWNER_TERMINAL_ID")
+                    .env_remove("SUPERZENT_SUPPRESS_AGENT_COMPLETION")
+                    .output(),
+            )
+            .expect("run nested agent wrappers");
+            assert!(output.status.success(), "{:?}", output);
+            assert_eq!(
+                fs::read_to_string(&events_path).expect("read recorded events"),
+                "Start\nPermissionRequest\nStop\n",
+                "preserve child activity and approvals, but only notify completion for the parent"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn top_level_agent_commands_keep_terminal_notification_hooks() {
+        let directory = tempfile::tempdir().expect("create wrapper test directory");
+        let (claude, codex) = write_test_wrappers(directory.path());
+        let real_binary = directory.path().join("real-agent");
+        write_executable_file(&real_binary, "#!/bin/bash\nprintf '%s\\n' \"$@\"\n".into())
+            .expect("write real agent");
+
+        for (wrapper, expected_option) in [(&claude, "--settings"), (&codex, "-c")] {
+            for inherited_owner in ["", "another-terminal"] {
+                let output = smol::block_on(
+                    smol::process::Command::new(wrapper)
+                        .arg("parent-request")
+                        .env(AGENT_REAL_CLAUDE_BIN_ENV_VAR, &real_binary)
+                        .env(AGENT_REAL_CODEX_BIN_ENV_VAR, &real_binary)
+                        .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+                        .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                        .env("SUPERZENT_HOOK_OWNER_TERMINAL_ID", inherited_owner)
+                        .output(),
+                )
+                .expect("run top-level agent wrapper");
+                assert!(output.status.success(), "{:?}", output);
+                let arguments =
+                    String::from_utf8(output.stdout).expect("agent arguments are UTF-8");
+                assert_eq!(arguments.lines().next(), Some(expected_option));
+                assert_eq!(arguments.lines().last(), Some("parent-request"));
+            }
+        }
     }
 
     #[test]

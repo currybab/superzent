@@ -24,3 +24,6 @@ superzent_model.workspace = true
 task.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
