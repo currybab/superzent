@@ -7017,6 +7017,40 @@ async fn test_rotate_selections(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_rotate_selections_nonconsecutive_lines(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    let mut cx = EditorTestContext::new(cx).await;
+
+    cx.set_state(indoc! {"
+        ˇline1
+        line2
+        liˇne3
+        line4ˇ
+    "});
+
+    cx.update_editor(|editor, window, cx| {
+        editor.rotate_selections_forward(&RotateSelectionsForward, window, cx)
+    });
+    cx.assert_editor_state(indoc! {"
+        line4ˇ
+        line2
+        ˇline1
+        liˇne3
+    "});
+
+    cx.update_editor(|editor, window, cx| {
+        editor.rotate_selections_backward(&RotateSelectionsBackward, window, cx)
+    });
+    cx.assert_editor_state(indoc! {"
+        ˇline1
+        line2
+        liˇne3
+        line4ˇ
+    "});
+}
+
+#[gpui::test]
 fn test_move_line_up_down(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
@@ -8452,6 +8486,32 @@ async fn test_clipboard(cx: &mut TestAppContext) {
         ˇx jumps over
         fox jumps over
         tˇhe lazy dog"});
+}
+
+#[gpui::test]
+async fn test_copy_and_paste_non_empty_selection_followed_by_empty_selection(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+
+    let mut cx = EditorTestContext::new(cx).await;
+    cx.set_state(indoc! {"
+        «fooˇ»
+        barˇ
+    "});
+
+    cx.update_editor(|editor, window, cx| editor.copy(&Copy, window, cx));
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("foo\nbar\n".to_string())
+    );
+
+    cx.update_editor(|editor, window, cx| editor.paste(&Paste, window, cx));
+    cx.assert_editor_state(indoc! {"
+        fooˇ
+        bar
+        barˇ
+    "});
 }
 
 #[gpui::test]

@@ -12552,13 +12552,14 @@ impl Editor {
                     .map(|(i, &row)| (row, i))
                     .collect();
 
-                // Compute new line start offsets after rotation (handles CRLF)
-                let newline_len = line_ranges[1].start.0 - line_ranges[0].end.0;
-                let first_line_start = line_ranges[0].start.0;
-                let mut new_line_starts: Vec<usize> = vec![first_line_start];
-                for text in line_texts.iter().take(num_rows - 1) {
-                    let prev_start = *new_line_starts.last().unwrap();
-                    new_line_starts.push(prev_start + text.len() + newline_len);
+                let mut old_line_end = 0;
+                let mut new_line_end = 0;
+                let mut new_line_starts = Vec::new();
+                for (range, text) in line_ranges.iter().zip(&line_texts) {
+                    let line_start = new_line_end + (range.start.0 - old_line_end);
+                    new_line_starts.push(line_start);
+                    old_line_end = range.end.0;
+                    new_line_end = line_start + text.len();
                 }
 
                 let new_selections = selections
@@ -14035,6 +14036,7 @@ impl Editor {
 
         let max_point = buffer.max_point();
         let mut is_first = true;
+        let mut previous_selection_was_entire_line = false;
         for selection in &selections {
             let mut start = selection.start;
             let mut end = selection.end;
@@ -14090,12 +14092,11 @@ impl Editor {
 
             let is_multiline_trim = trimmed_selections.len() > 1;
             let mut selection_len: usize = 0;
-            let prev_selection_was_entire_line = is_entire_line && !is_multiline_trim;
 
             for trimmed_range in trimmed_selections {
                 if is_first {
                     is_first = false;
-                } else if is_multiline_trim || !prev_selection_was_entire_line {
+                } else if is_multiline_trim || !previous_selection_was_entire_line {
                     text.push('\n');
                     if is_multiline_trim {
                         selection_len += 1;
@@ -14110,6 +14111,7 @@ impl Editor {
                     selection_len += 1;
                 }
             }
+            previous_selection_was_entire_line = is_entire_line && !is_multiline_trim;
 
             clipboard_selections.push(ClipboardSelection::for_buffer(
                 selection_len,
