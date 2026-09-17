@@ -851,6 +851,13 @@
     },
   },
   {
+    "context": "ProjectSearchView > Editor && !menu",
+    "bindings": {
+      "enter": "search::SelectNextMatch",
+      "shift-enter": "search::SelectPreviousMatch",
+    },
+  },
+  {
     "context": "InlineAssistant",
     "bindings": {
       "ctrl-[": "agent::CyclePreviousInlineAssist",

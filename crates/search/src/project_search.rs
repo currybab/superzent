@@ -517,6 +517,7 @@ impl Render for ProjectSearchView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.has_matches() {
             div()
+                .key_context("ProjectSearchView")
                 .flex_1()
                 .size_full()
                 .track_focus(&self.focus_handle(cx))
@@ -3088,6 +3089,91 @@ pub mod tests {
             has_any_folded,
             "Should report folds after manually folding one buffer"
         );
+    }
+
+    #[gpui::test]
+    async fn test_project_search_enter_navigates_without_editing(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                "one.txt": "needle first\nneedle second\n",
+                "two.txt": "needle third\n",
+            }),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |workspace, _| workspace.workspace().clone())
+            .expect("workspace should exist");
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let search_bar = window.build_entity(cx, |_, _| ProjectSearchBar::new());
+        let buffer_search_bar =
+            window.build_entity(cx, |window, cx| BufferSearchBar::new(None, window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.active_pane().update(cx, |pane, cx| {
+                pane.toolbar().update(cx, |toolbar, cx| {
+                    toolbar.add_item(buffer_search_bar, window, cx);
+                    toolbar.add_item(search_bar, window, cx);
+                });
+            });
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx);
+        });
+        let search_view = cx.read(|cx| {
+            workspace
+                .read(cx)
+                .active_item(cx)
+                .and_then(|item| item.downcast::<ProjectSearchView>())
+                .expect("search view should be active")
+        });
+
+        for keymap in [
+            "keymaps/default-macos.json",
+            "keymaps/default-linux.json",
+            "keymaps/default-windows.json",
+        ] {
+            cx.update(|_, cx| {
+                cx.clear_key_bindings();
+                let bindings = settings::KeymapFile::load_asset_allow_partial_failure(keymap, cx)
+                    .expect("default keymap should load");
+                cx.bind_keys(bindings);
+            });
+            search_view.update_in(cx, |search, window, cx| {
+                search.set_query("needle", window, cx);
+                search.focus_query_editor(window, cx);
+            });
+            cx.simulate_keystrokes("enter");
+
+            let original_text = search_view.update_in(cx, |search, window, cx| {
+                assert_eq!(search.active_match_index, Some(0));
+                assert_eq!(search.entity.read(cx).match_ranges.len(), 3);
+                assert!(search.results_editor.focus_handle(cx).is_focused(window));
+                search.results_editor.read(cx).text(cx)
+            });
+            for (keystroke, expected_index) in [
+                ("enter", 1),
+                ("enter", 2),
+                ("enter", 0),
+                ("shift-enter", 2),
+                ("shift-enter", 1),
+                ("shift-enter", 0),
+            ] {
+                cx.simulate_keystrokes(keystroke);
+                search_view.update_in(cx, |search, window, cx| {
+                    assert_eq!(search.results_editor.read(cx).text(cx), original_text);
+                    assert!(!search.is_dirty(cx));
+                    assert_eq!(
+                        search.active_match_index,
+                        Some(expected_index),
+                        "{keymap}: {keystroke}"
+                    );
+                    assert!(search.results_editor.focus_handle(cx).is_focused(window));
+                });
+            }
+        }
     }
 
     #[perf]
