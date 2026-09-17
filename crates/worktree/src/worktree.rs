@@ -3099,11 +3099,19 @@ impl BackgroundScannerState {
 
         let work_directory_id = work_dir_entry.id;
 
+        // Rediscovering a repository during a rescan must not erase a Git
+        // update already recorded in this scan cycle.
+        let git_dir_scan_id = self
+            .snapshot
+            .git_repositories
+            .get(&work_directory_id)
+            .map_or(0, |repository| repository.git_dir_scan_id);
+
         let local_repository = LocalRepositoryEntry {
             work_directory_id,
             work_directory,
             work_directory_abs_path: work_directory_abs_path.as_path().into(),
-            git_dir_scan_id: 0,
+            git_dir_scan_id,
             dot_git_abs_path,
             common_dir_abs_path,
             repository_dir_abs_path,
@@ -4088,6 +4096,11 @@ impl BackgroundScanner {
                 false
             }
         });
+        let rescanned_paths = events
+            .iter()
+            .filter(|event| matches!(event.kind, Some(fs::PathEventKind::Rescan)))
+            .map(|event| SanitizedPath::new(&event.path).as_path().to_path_buf())
+            .collect::<Vec<_>>();
         {
             let snapshot = &self.state.lock().await.snapshot;
 
@@ -4284,7 +4297,34 @@ impl BackgroundScanner {
 
         {
             let mut state = self.state.lock().await;
-            state.snapshot.completed_scan_id = state.snapshot.scan_id;
+            let scan_id = state.snapshot.scan_id;
+            if !rescanned_paths.is_empty() {
+                // Rescans replace lost watcher events, including Git metadata changes.
+                // Stamp repositories after scanning because recursive entry reloads can
+                // remove and recreate them, discarding any earlier update in this batch.
+                let rescanned_repository_ids = state
+                    .snapshot
+                    .git_repositories
+                    .iter()
+                    .filter(|(_, repository)| {
+                        rescanned_paths.iter().any(|path| {
+                            repository.dot_git_abs_path.starts_with(path)
+                                || repository.common_dir_abs_path.starts_with(path)
+                                || repository.repository_dir_abs_path.starts_with(path)
+                        })
+                    })
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                for repository_id in rescanned_repository_ids {
+                    state
+                        .snapshot
+                        .git_repositories
+                        .update(&repository_id, |repository| {
+                            repository.git_dir_scan_id = scan_id;
+                        });
+                }
+            }
+            state.snapshot.completed_scan_id = scan_id;
             for (_, entry) in mem::take(&mut state.removed_entries) {
                 state.scanned_dirs.remove(&entry.id);
             }
