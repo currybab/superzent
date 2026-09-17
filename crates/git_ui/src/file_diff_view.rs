@@ -94,6 +94,9 @@ impl FileDiffView {
         let editor = cx.new(|cx| {
             let mut editor =
                 Editor::for_multibuffer(multibuffer.clone(), Some(project.clone()), window, cx);
+            // FileDiffView is not serialized, so its embedded editor has no
+            // database row for selection or scroll metadata to reference.
+            editor.set_should_serialize(false, cx);
             editor.start_temporary_diff_override();
             editor.disable_diagnostics(cx);
             editor.set_expand_all_diff_hunks(cx);
@@ -516,6 +519,58 @@ mod tests {
                 )
             );
         })
+    }
+
+    #[gpui::test]
+    async fn test_diff_editor_does_not_serialize_as_a_file_tab(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/test"),
+            serde_json::json!({"old.txt": "before", "new.txt": "after"}),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/test").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        workspace.update(cx, |workspace, _| workspace.set_random_database_id());
+
+        let diff_view = workspace
+            .update_in(cx, |workspace, window, cx| {
+                FileDiffView::open(
+                    path!("/test/old.txt").into(),
+                    path!("/test/new.txt").into(),
+                    workspace.weak_handle(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .expect("file comparison should open");
+        let (diff_editor, buffer) =
+            diff_view.read_with(cx, |view, _| (view.editor.clone(), view.new_buffer.clone()));
+        workspace.update_in(cx, |workspace, window, cx| {
+            let file_editor =
+                cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+            let mut serialize = |editor: &Entity<Editor>, window: &mut Window, cx: &mut App| {
+                editor.update(cx, |editor, cx| {
+                    workspace::SerializableItem::serialize(
+                        editor,
+                        workspace,
+                        cx.entity_id().as_u64(),
+                        false,
+                        window,
+                        cx,
+                    )
+                })
+            };
+            assert!(serialize(&file_editor, window, cx).is_some());
+            assert!(
+                serialize(&diff_editor, window, cx).is_none(),
+                "the comparison's embedded editor has no persisted file-tab row"
+            );
+        });
     }
 
     #[gpui::test]
