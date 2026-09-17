@@ -924,6 +924,14 @@
     },
   },
   {
+    "context": "ProjectSearchView > Editor && !menu",
+    "use_key_equivalents": true,
+    "bindings": {
+      "enter": "search::SelectNextMatch",
+      "shift-enter": "search::SelectPreviousMatch",
+    },
+  },
+  {
     "context": "InlineAssistant > Editor",
     "use_key_equivalents": true,
     "bindings": {
