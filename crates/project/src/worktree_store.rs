@@ -569,38 +569,37 @@ impl WorktreeStore {
                 }
             };
 
+            // The store must own cleanup so cancelling a caller cannot retain the
+            // completed worktree and its background scanner in this map forever.
+            let loading_task = cx.spawn({
+                let abs_path = abs_path.clone();
+                async move |this, cx| {
+                    let result = task.await;
+                    let trust_context = this.update(cx, |this, cx| {
+                        this.loading_worktrees.remove(&abs_path);
+                        TrustedWorktrees::try_get_global(cx)
+                            .map(|trusted_worktrees| (trusted_worktrees, cx.entity()))
+                    })?;
+                    if !is_via_collab
+                        && let Ok(worktree) = &result
+                        && let Some((trusted_worktrees, worktree_store)) = trust_context
+                    {
+                        trusted_worktrees.update(cx, |trusted_worktrees, cx| {
+                            trusted_worktrees.can_trust(
+                                &worktree_store,
+                                worktree.read(cx).id(),
+                                cx,
+                            );
+                        });
+                    }
+                    result
+                }
+            });
             self.loading_worktrees
-                .insert(abs_path.clone(), task.shared());
+                .insert(abs_path.clone(), loading_task.shared());
         }
         let task = self.loading_worktrees.get(&abs_path).unwrap().clone();
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, _| this.loading_worktrees.remove(&abs_path))
-                .ok();
-            match result {
-                Ok(worktree) => {
-                    if !is_via_collab {
-                        if let Some((trusted_worktrees, worktree_store)) = this
-                            .update(cx, |_, cx| {
-                                TrustedWorktrees::try_get_global(cx).zip(Some(cx.entity()))
-                            })
-                            .ok()
-                            .flatten()
-                        {
-                            trusted_worktrees.update(cx, |trusted_worktrees, cx| {
-                                trusted_worktrees.can_trust(
-                                    &worktree_store,
-                                    worktree.read(cx).id(),
-                                    cx,
-                                );
-                            });
-                        }
-                    }
-                    Ok(worktree)
-                }
-                Err(err) => Err((*err).cloned()),
-            }
-        })
+        cx.background_spawn(async move { task.await.map_err(|error| (*error).cloned()) })
     }
 
     fn create_remote_worktree(
