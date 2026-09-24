@@ -975,7 +975,13 @@ impl Markdown {
             let mut fallback_code_block_language = None;
             if let Some(registry) = language_registry.as_ref() {
                 for name in language_names {
-                    if let Ok(language) = registry.language_for_name_or_extension(&name).await {
+                    let mut language = registry.language_for_name_or_extension(&name).await;
+                    if language.is_err()
+                        && let Some((first_word, _)) = name.split_once(char::is_whitespace)
+                    {
+                        language = registry.language_for_name_or_extension(first_word).await;
+                    }
+                    if let Ok(language) = language {
                         languages_by_name.insert(name, language);
                     }
                 }
@@ -5040,6 +5046,35 @@ mod tests {
 
             markdown.toggle_code_block_wrap(0);
             assert!(markdown.code_block_scroll_handle(0).is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn test_code_block_language_prefers_full_info_string(cx: &mut TestAppContext) {
+        let language_registry = Arc::new(LanguageRegistry::test(cx.executor()));
+        for name in ["Go", "Go Mod"] {
+            language_registry.add(Arc::new(Language::new(
+                LanguageConfig {
+                    name: name.into(),
+                    ..LanguageConfig::default()
+                },
+                None,
+            )));
+        }
+
+        let source = "```Go Mod\nmodule example\n```\n\n```Go extra\npackage main\n```";
+        let markdown = cx.new(|cx| Markdown::new(source.into(), Some(language_registry), None, cx));
+        cx.run_until_parked();
+
+        markdown.read_with(cx, |markdown, _| {
+            let languages_by_name = &markdown.parsed_markdown().languages_by_name;
+            let resolved_name = |info: &str| {
+                languages_by_name
+                    .get(&SharedString::from(info.to_string()))
+                    .map(|language| language.name())
+            };
+            assert_eq!(resolved_name("Go Mod"), Some("Go Mod".into()));
+            assert_eq!(resolved_name("Go extra"), Some("Go".into()));
         });
     }
 
