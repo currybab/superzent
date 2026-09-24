@@ -4612,6 +4612,7 @@ impl Editor {
         self.unfold_buffers_with_selections(cx);
 
         let selections = self.selections.all_adjusted(&self.display_snapshot(cx));
+        let has_multiple_selections = selections.len() > 1;
         let mut bracket_inserted = false;
         let mut edits = Vec::new();
         let mut linked_edits = LinkedEdits::new();
@@ -4944,11 +4945,18 @@ impl Editor {
             let initial_buffer_versions =
                 jsx_tag_auto_close::construct_initial_buffer_versions_map(this, &edits, cx);
 
+            let autoindent_mode = if has_multiple_selections {
+                this.autoindent_mode
+                    .clone()
+                    .map(|_| AutoindentMode::PreserveSingleLine)
+            } else {
+                this.autoindent_mode.clone()
+            };
             this.buffer.update(cx, |buffer, cx| {
                 if has_adjacent_edits {
-                    buffer.edit_non_coalesce(edits, this.autoindent_mode.clone(), cx);
+                    buffer.edit_non_coalesce(edits, autoindent_mode, cx);
                 } else {
-                    buffer.edit(edits, this.autoindent_mode.clone(), cx);
+                    buffer.edit(edits, autoindent_mode, cx);
                 }
             });
             linked_edits.apply(cx);
@@ -11286,7 +11294,13 @@ impl Editor {
             let current_indent = snapshot.indent_size_for_line(MultiBufferRow(row));
             let indent_delta = match (current_indent.kind, indent_kind) {
                 (IndentKind::Space, IndentKind::Space) => {
-                    let columns_to_next_tab_stop = tab_size - (current_indent.len % tab_size);
+                    let columns_to_next_tab_stop = if delta_for_start_row > 0 {
+                        delta_for_start_row
+                    } else if has_multiple_rows {
+                        tab_size
+                    } else {
+                        tab_size - (current_indent.len % tab_size)
+                    };
                     IndentSize::spaces(columns_to_next_tab_stop)
                 }
                 (IndentKind::Tab, IndentKind::Space) => IndentSize::spaces(tab_size),
