@@ -3718,7 +3718,7 @@ impl MarkdownElementBuilder {
         self.rendered_lines.push(rendered_line.clone());
         self.append_child(
             RenderedLineElement {
-                text: text.into_any(),
+                text,
                 line: rendered_line,
             }
             .into_any_element(),
@@ -3743,7 +3743,7 @@ impl MarkdownElementBuilder {
 /// Wraps a rendered line so its code chips and highlights share the glyphs'
 /// ancestor content masks, and records the clipped bounds for platform text hit testing.
 struct RenderedLineElement {
-    text: AnyElement,
+    text: StyledText,
     line: Rc<RenderedLine>,
 }
 
@@ -3762,26 +3762,27 @@ impl Element for RenderedLineElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        (self.text.request_layout(window, cx), ())
+        self.text.request_layout(None, inspector_id, window, cx)
     }
 
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
+        request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.line
             .visible_bounds
             .set(Some(bounds.intersect(&window.content_mask().bounds)));
-        self.text.prepaint(window, cx);
+        self.text
+            .prepaint(None, inspector_id, bounds, request_layout, window, cx);
     }
 
     fn paint(
@@ -3794,9 +3795,11 @@ impl Element for RenderedLineElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let layout = self.text.layout();
         self.line.paint_code_chips(window);
-        self.text.paint(window, cx);
+        layout.paint_background(window, cx).log_err();
         self.line.paint_highlights(window);
+        layout.paint_foreground(window, cx).log_err();
     }
 }
 
@@ -3868,6 +3871,8 @@ impl RenderedLine {
         }
     }
 
+    /// Painted between the text run backgrounds and the glyphs, so opaque highlight
+    /// colors neither hide the text nor get hidden by run backgrounds
     fn paint_highlights(&self, window: &mut Window) {
         if self.highlights.is_empty() {
             return;
@@ -4610,13 +4615,16 @@ impl InputHandler for MarkdownInputHandler {
 mod tests {
     use super::*;
     use gpui::{
-        Modifiers, RenderImage, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
+        Background, DevicePixels, Font, FontId, FontMetrics, FontRun, GlyphId, LineLayout,
+        Modifiers, NoopTextSystem, PlatformTextSystem, RenderGlyphParams, RenderImage, ScrollDelta,
+        ScrollWheelEvent, Size, TestAppContext, TestDispatcher, TextRenderingMode, TouchPhase,
         UpdateGlobal, VisualTestContext, size,
     };
     use language::{Language, LanguageConfig, LanguageMatcher};
+    use std::borrow::Cow;
     use std::cell::RefCell;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -6918,6 +6926,78 @@ mod tests {
         assert!(quad_bounds.left() < px(0.));
         assert!(visible_bounds.left() >= px(0.));
         assert!(visible_bounds.right() <= window_width);
+    }
+
+    /// Records the font runs of every line it shapes, delegating everything else.
+    struct FontRunRecordingTextSystem {
+        text_system: NoopTextSystem,
+        shaped_lines: Mutex<Vec<(String, Vec<usize>)>>,
+    }
+
+    impl PlatformTextSystem for FontRunRecordingTextSystem {
+        fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> anyhow::Result<()> {
+            self.text_system.add_fonts(fonts)
+        }
+
+        fn all_font_names(&self) -> Vec<String> {
+            self.text_system.all_font_names()
+        }
+
+        fn font_id(&self, descriptor: &Font) -> anyhow::Result<FontId> {
+            self.text_system.font_id(descriptor)
+        }
+
+        fn font_metrics(&self, font_id: FontId) -> FontMetrics {
+            self.text_system.font_metrics(font_id)
+        }
+
+        fn typographic_bounds(
+            &self,
+            font_id: FontId,
+            glyph_id: GlyphId,
+        ) -> anyhow::Result<Bounds<f32>> {
+            self.text_system.typographic_bounds(font_id, glyph_id)
+        }
+
+        fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> anyhow::Result<Size<f32>> {
+            self.text_system.advance(font_id, glyph_id)
+        }
+
+        fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
+            self.text_system.glyph_for_char(font_id, ch)
+        }
+
+        fn glyph_raster_bounds(
+            &self,
+            params: &RenderGlyphParams,
+        ) -> anyhow::Result<Bounds<DevicePixels>> {
+            self.text_system.glyph_raster_bounds(params)
+        }
+
+        fn rasterize_glyph(
+            &self,
+            params: &RenderGlyphParams,
+            raster_bounds: Bounds<DevicePixels>,
+        ) -> anyhow::Result<(Size<DevicePixels>, Vec<u8>)> {
+            self.text_system.rasterize_glyph(params, raster_bounds)
+        }
+
+        fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
+            self.shaped_lines
+                .lock()
+                .expect("shaped lines lock should not be poisoned")
+                .push((text.to_string(), runs.iter().map(|run| run.len).collect()));
+            self.text_system.layout_line(text, font_size, runs)
+        }
+
+        fn recommended_rendering_mode(
+            &self,
+            font_id: FontId,
+            font_size: Pixels,
+        ) -> TextRenderingMode {
+            self.text_system
+                .recommended_rendering_mode(font_id, font_size)
+        }
     }
 
     /// Renders a paragraph followed by a fenced code block at the given
