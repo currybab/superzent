@@ -113,6 +113,9 @@ actions!(
         ExpandWorkspaceSection,
         /// Opens the workspace referenced by the visible agent notification popup.
         OpenNotificationWorkspace,
+        /// Opens the tab of the visible agent notification popup, or otherwise jumps to the
+        /// next agent terminal waiting for approval or review.
+        GoToAgentAttention,
         /// Dismisses the visible agent notification popup.
         DismissNotification
     ]
@@ -232,6 +235,12 @@ struct NotificationTarget {
     terminal_id: String,
 }
 
+struct AttentionQueueEntry {
+    workspace_id: String,
+    attention: TerminalTabAttention,
+    sequence: u64,
+}
+
 #[derive(Clone)]
 struct LiveTerminalAttention {
     workspace_id: String,
@@ -252,6 +261,8 @@ struct WorkspaceAttentionController {
     terminal_views_by_terminal: BTreeMap<String, WeakEntity<TerminalView>>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     unreviewed_terminals: BTreeMap<String, String>,
+    attention_queue: BTreeMap<String, AttentionQueueEntry>,
+    next_attention_sequence: u64,
     focused_terminal_id: Option<String>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -334,6 +345,8 @@ impl WorkspaceAttentionController {
             terminal_views_by_terminal: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             unreviewed_terminals: BTreeMap::new(),
+            attention_queue: BTreeMap::new(),
+            next_attention_sequence: 0,
             focused_terminal_id: None,
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
@@ -385,6 +398,7 @@ impl WorkspaceAttentionController {
     ) {
         self.terminal_ids_by_entity.remove(&entity_id);
         self.terminal_views_by_terminal.remove(terminal_id);
+        self.attention_queue.remove(terminal_id);
         if self.focused_terminal_id.as_deref() == Some(terminal_id) {
             self.focused_terminal_id = None;
         }
@@ -479,11 +493,12 @@ impl WorkspaceAttentionController {
         }
     }
 
-    fn sync_terminal_tab_attention(&self, terminal_id: &str, cx: &mut Context<Self>) {
+    fn sync_terminal_tab_attention(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        let tab_attention = self.terminal_tab_attention(terminal_id);
+        self.update_attention_queue(terminal_id, tab_attention);
         let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
             return;
         };
-        let tab_attention = self.terminal_tab_attention(terminal_id);
         // Focus, input, and creation callbacks reach the controller while the terminal view
         // itself is being updated, so updating it synchronously would double-lease it.
         cx.defer(move |cx| {
@@ -491,6 +506,68 @@ impl WorkspaceAttentionController {
                 terminal_view.set_tab_attention(tab_attention, cx);
             });
         });
+    }
+
+    fn update_attention_queue(
+        &mut self,
+        terminal_id: &str,
+        tab_attention: Option<TerminalTabAttention>,
+    ) {
+        let attention = match tab_attention {
+            Some(
+                attention @ (TerminalTabAttention::NeedsApproval
+                | TerminalTabAttention::NeedsReview),
+            ) => attention,
+            Some(TerminalTabAttention::Working) | None => {
+                self.attention_queue.remove(terminal_id);
+                return;
+            }
+        };
+        if self
+            .attention_queue
+            .get(terminal_id)
+            .is_some_and(|entry| entry.attention == attention)
+        {
+            return;
+        }
+        let Some(workspace_id) = self
+            .live_terminal_attention
+            .get(terminal_id)
+            .map(|attention| attention.workspace_id.clone())
+            .or_else(|| self.unreviewed_terminals.get(terminal_id).cloned())
+        else {
+            self.attention_queue.remove(terminal_id);
+            return;
+        };
+
+        self.next_attention_sequence += 1;
+        self.attention_queue.insert(
+            terminal_id.to_string(),
+            AttentionQueueEntry {
+                workspace_id,
+                attention,
+                sequence: self.next_attention_sequence,
+            },
+        );
+    }
+
+    fn go_to_agent_attention(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "acp_tabs")]
+        if self.active_notification_target.is_some() {
+            self.open_active_notification_workspace(cx);
+            return;
+        }
+
+        let Some((terminal_id, workspace_id)) =
+            next_attention_terminal(&self.attention_queue, self.focused_terminal_id.as_deref())
+                .and_then(|terminal_id| {
+                    let entry = self.attention_queue.get(terminal_id)?;
+                    Some((terminal_id.to_string(), entry.workspace_id.clone()))
+                })
+        else {
+            return;
+        };
+        self.handle_native_notification_activation(&workspace_id, Some(&terminal_id), cx);
     }
 
     fn handle_terminal_input(
@@ -1155,6 +1232,14 @@ pub fn init(cx: &mut App) {
                     move |_, _: &OpenNotificationWorkspace, _window, cx| {
                         attention_controller.update(cx, |controller, cx| {
                             controller.open_active_notification_workspace(cx);
+                        });
+                    }
+                })
+                .register_action({
+                    let attention_controller = attention_controller.clone();
+                    move |_, _: &GoToAgentAttention, _window, cx| {
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.go_to_agent_attention(cx);
                         });
                     }
                 })
@@ -8795,6 +8880,25 @@ fn attention_priority(status: &WorkspaceAttentionStatus) -> u8 {
     }
 }
 
+fn next_attention_terminal<'a>(
+    attention_queue: &'a BTreeMap<String, AttentionQueueEntry>,
+    focused_terminal_id: Option<&str>,
+) -> Option<&'a str> {
+    attention_queue
+        .iter()
+        .filter(|(terminal_id, _)| Some(terminal_id.as_str()) != focused_terminal_id)
+        .min_by_key(|(_, entry)| (attention_queue_priority(entry.attention), entry.sequence))
+        .map(|(terminal_id, _)| terminal_id.as_str())
+}
+
+fn attention_queue_priority(attention: TerminalTabAttention) -> u8 {
+    match attention {
+        TerminalTabAttention::NeedsApproval => 0,
+        TerminalTabAttention::NeedsReview => 1,
+        TerminalTabAttention::Working => 2,
+    }
+}
+
 fn next_terminal_input_attention_status(
     current_live_status: Option<&WorkspaceAttentionStatus>,
 ) -> Option<WorkspaceAttentionStatus> {
@@ -9747,6 +9851,72 @@ mod tests {
             next_terminal_input_attention_status(Some(&WorkspaceAttentionStatus::Permission)),
             None
         );
+    }
+
+    fn attention_entry(attention: TerminalTabAttention, sequence: u64) -> AttentionQueueEntry {
+        AttentionQueueEntry {
+            workspace_id: "workspace".to_string(),
+            attention,
+            sequence,
+        }
+    }
+
+    #[test]
+    fn next_attention_terminal_prefers_approval_then_oldest() {
+        let queue = BTreeMap::from([
+            (
+                "review-old".to_string(),
+                attention_entry(TerminalTabAttention::NeedsReview, 1),
+            ),
+            (
+                "approval-new".to_string(),
+                attention_entry(TerminalTabAttention::NeedsApproval, 4),
+            ),
+            (
+                "approval-old".to_string(),
+                attention_entry(TerminalTabAttention::NeedsApproval, 2),
+            ),
+            (
+                "review-new".to_string(),
+                attention_entry(TerminalTabAttention::NeedsReview, 3),
+            ),
+        ]);
+
+        assert_eq!(next_attention_terminal(&queue, None), Some("approval-old"));
+    }
+
+    #[test]
+    fn next_attention_terminal_skips_the_focused_terminal() {
+        let queue = BTreeMap::from([
+            (
+                "approval".to_string(),
+                attention_entry(TerminalTabAttention::NeedsApproval, 1),
+            ),
+            (
+                "review".to_string(),
+                attention_entry(TerminalTabAttention::NeedsReview, 2),
+            ),
+        ]);
+
+        assert_eq!(
+            next_attention_terminal(&queue, Some("approval")),
+            Some("review")
+        );
+        assert_eq!(
+            next_attention_terminal(&queue, Some("review")),
+            Some("approval")
+        );
+    }
+
+    #[test]
+    fn next_attention_terminal_is_none_when_only_the_focused_terminal_waits() {
+        let queue = BTreeMap::from([(
+            "approval".to_string(),
+            attention_entry(TerminalTabAttention::NeedsApproval, 1),
+        )]);
+
+        assert_eq!(next_attention_terminal(&queue, Some("approval")), None);
+        assert_eq!(next_attention_terminal(&BTreeMap::new(), None), None);
     }
 
     #[test]
