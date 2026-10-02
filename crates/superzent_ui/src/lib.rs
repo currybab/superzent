@@ -551,6 +551,21 @@ impl WorkspaceAttentionController {
         );
     }
 
+    fn clear_workspace_attention_for_activity(&self, workspace_id: &str, cx: &mut Context<Self>) {
+        // New activity supersedes a workspace-level review, but not one still owed by
+        // another terminal in this workspace that finished unseen.
+        let review_pending = self.workspace_has_unreviewed_terminals(workspace_id);
+        self.store.update(cx, |store, cx| {
+            store.set_workspace_attention(
+                workspace_id,
+                WorkspaceAttentionStatus::Idle,
+                review_pending,
+                None,
+                cx,
+            );
+        });
+    }
+
     fn go_to_agent_attention(&mut self, cx: &mut Context<Self>) {
         #[cfg(feature = "acp_tabs")]
         if self.active_notification_target.is_some() {
@@ -594,15 +609,7 @@ impl WorkspaceAttentionController {
             },
         );
         self.sync_terminal_tab_attention(terminal_id, cx);
-        self.store.update(cx, |store, cx| {
-            store.set_workspace_attention(
-                workspace_id,
-                WorkspaceAttentionStatus::Idle,
-                false,
-                None,
-                cx,
-            );
-        });
+        self.clear_workspace_attention_for_activity(workspace_id, cx);
         self.recompute_workspace_attention(workspace_id, cx);
     }
 
@@ -660,15 +667,7 @@ impl WorkspaceAttentionController {
                     },
                 );
                 self.sync_terminal_tab_attention(&event.terminal_id, cx);
-                self.store.update(cx, |store, cx| {
-                    store.set_workspace_attention(
-                        &workspace_id,
-                        WorkspaceAttentionStatus::Idle,
-                        false,
-                        None,
-                        cx,
-                    );
-                });
+                self.clear_workspace_attention_for_activity(&workspace_id, cx);
                 self.recompute_workspace_attention(&workspace_id, cx);
             }
             AgentHookEventType::PermissionRequest => {
@@ -680,15 +679,7 @@ impl WorkspaceAttentionController {
                     },
                 );
                 self.sync_terminal_tab_attention(&event.terminal_id, cx);
-                self.store.update(cx, |store, cx| {
-                    store.set_workspace_attention(
-                        &workspace_id,
-                        WorkspaceAttentionStatus::Idle,
-                        false,
-                        None,
-                        cx,
-                    );
-                });
+                self.clear_workspace_attention_for_activity(&workspace_id, cx);
                 self.recompute_workspace_attention(&workspace_id, cx);
                 self.maybe_show_terminal_notification(
                     TerminalLifecycleNotification::PermissionRequest,
@@ -819,11 +810,29 @@ impl WorkspaceAttentionController {
 
         let activated_existing_workspace =
             match target_window.update(cx, |multi_workspace, window, cx| {
-                let live_workspace = multi_workspace
-                    .workspaces()
-                    .iter()
-                    .find(|workspace| workspace_matches_entry(workspace, &workspace_entry, cx))
-                    .cloned();
+                // A terminal can be moved to another workspace after its agent hooks captured
+                // the original workspace id, so prefer wherever the terminal lives now.
+                let live_workspace = terminal_view
+                    .as_ref()
+                    .and_then(|terminal_view| {
+                        multi_workspace
+                            .workspaces()
+                            .iter()
+                            .find(|workspace| {
+                                locate_terminal_view(workspace.read(cx), terminal_view, cx)
+                                    .is_some()
+                            })
+                            .cloned()
+                    })
+                    .or_else(|| {
+                        multi_workspace
+                            .workspaces()
+                            .iter()
+                            .find(|workspace| {
+                                workspace_matches_entry(workspace, &workspace_entry, cx)
+                            })
+                            .cloned()
+                    });
                 window.activate_window();
                 if let Some(live_workspace) = live_workspace {
                     multi_workspace.activate(live_workspace.clone(), cx);
@@ -8101,37 +8110,61 @@ fn observe_terminal_view_focus(
     .detach();
 }
 
-fn reveal_terminal_view(
-    workspace: &mut Workspace,
+enum TerminalViewLocation {
+    Center,
+    TerminalPanel {
+        pane: Entity<Pane>,
+        item_index: usize,
+    },
+}
+
+fn locate_terminal_view(
+    workspace: &Workspace,
     terminal_view: &Entity<TerminalView>,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> bool {
-    if workspace.activate_item(terminal_view, true, true, window, cx) {
-        return true;
+    cx: &App,
+) -> Option<TerminalViewLocation> {
+    if workspace
+        .panes()
+        .iter()
+        .any(|pane| pane.read(cx).index_for_item(terminal_view).is_some())
+    {
+        return Some(TerminalViewLocation::Center);
     }
 
-    let Some(terminal_panel) = workspace.panel::<TerminalPanel>(cx) else {
-        return false;
-    };
-    let Some((pane, item_index)) = terminal_panel
+    workspace
+        .panel::<TerminalPanel>(cx)?
         .read(cx)
         .panes()
         .into_iter()
         .find_map(|pane| {
             pane.read(cx)
                 .index_for_item(terminal_view)
-                .map(|item_index| (pane.clone(), item_index))
+                .map(|item_index| TerminalViewLocation::TerminalPanel {
+                    pane: pane.clone(),
+                    item_index,
+                })
         })
-    else {
-        return false;
-    };
+}
 
-    workspace.open_panel::<TerminalPanel>(window, cx);
-    pane.update(cx, |pane, cx| {
-        pane.activate_item(item_index, true, true, window, cx);
-    });
-    true
+fn reveal_terminal_view(
+    workspace: &mut Workspace,
+    terminal_view: &Entity<TerminalView>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    match locate_terminal_view(workspace, terminal_view, cx) {
+        Some(TerminalViewLocation::Center) => {
+            workspace.activate_item(terminal_view, true, true, window, cx)
+        }
+        Some(TerminalViewLocation::TerminalPanel { pane, item_index }) => {
+            workspace.open_panel::<TerminalPanel>(window, cx);
+            pane.update(cx, |pane, cx| {
+                pane.activate_item(item_index, true, true, window, cx);
+            });
+            true
+        }
+        None => false,
+    }
 }
 
 fn workspace_matches_entry(
