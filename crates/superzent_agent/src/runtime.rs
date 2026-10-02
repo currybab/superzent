@@ -89,6 +89,11 @@ pub fn subscribe() -> Result<smol::channel::Receiver<AgentHookEvent>> {
     Ok(receiver)
 }
 
+/// Whether Superzent wraps this agent command so it reports lifecycle hook events.
+pub fn reports_lifecycle_hooks(command: &str) -> bool {
+    ManagedCommand::for_command(command).is_some()
+}
+
 pub fn new_terminal_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -771,6 +776,14 @@ mod tests {
     use superzent_model::{
         WorkspaceAttentionStatus, WorkspaceGitStatus, WorkspaceKind, WorkspaceLocation,
     };
+
+    #[test]
+    fn only_wrapped_agents_report_lifecycle_hooks() {
+        assert!(reports_lifecycle_hooks("claude"));
+        assert!(reports_lifecycle_hooks("/opt/homebrew/bin/codex"));
+        assert!(!reports_lifecycle_hooks("gemini"));
+        assert!(!reports_lifecycle_hooks("aider"));
+    }
 
     #[test]
     fn maps_supported_event_types() {
