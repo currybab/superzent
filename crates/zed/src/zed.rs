@@ -1327,6 +1327,9 @@ fn quit(_: &Quit, cx: &mut App) {
     }
 
     let should_confirm = WorkspaceSettings::get_global(cx).confirm_quit;
+    // Quitting kills managed agents mid-task, so ask even when confirm_quit is off.
+    let confirm_message = superzent_ui::busy_agents_quit_prompt(cx)
+        .or_else(|| should_confirm.then(|| "Are you sure you want to quit?".to_string()));
     cx.spawn(async move |cx| {
         let mut workspace_windows: Vec<WindowHandle<MultiWorkspace>> = cx.update(|cx| {
             cx.windows()
@@ -1341,12 +1344,14 @@ fn quit(_: &Quit, cx: &mut App) {
             workspace_windows.sort_by_key(|window| window.is_active(cx) == Some(false));
         });
 
-        if should_confirm && let Some(multi_workspace) = workspace_windows.first() {
+        if let Some(confirm_message) = confirm_message
+            && let Some(multi_workspace) = workspace_windows.first()
+        {
             let answer = multi_workspace
                 .update(cx, |_, window, cx| {
                     window.prompt(
                         PromptLevel::Info,
-                        "Are you sure you want to quit?",
+                        &confirm_message,
                         None,
                         &["Quit", "Cancel"],
                         cx,

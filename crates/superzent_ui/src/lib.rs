@@ -235,6 +235,22 @@ struct NotificationTarget {
     terminal_id: String,
 }
 
+struct GlobalAttentionController(Entity<WorkspaceAttentionController>);
+
+impl gpui::Global for GlobalAttentionController {}
+
+/// The confirmation to show before quitting while managed agents are mid-task, since
+/// quitting kills their terminals.
+pub fn busy_agents_quit_prompt(cx: &App) -> Option<String> {
+    let controller = cx.try_global::<GlobalAttentionController>()?.0.read(cx);
+    busy_agents_quit_message(count_busy_agents(
+        controller
+            .live_terminal_attention
+            .values()
+            .map(|attention| &attention.status),
+    ))
+}
+
 struct FocusedTerminal {
     terminal_id: String,
     window: AnyWindowHandle,
@@ -1197,6 +1213,7 @@ pub fn init(cx: &mut App) {
     acp_tabs::init(cx);
 
     let attention_controller = cx.new(WorkspaceAttentionController::new);
+    cx.set_global(GlobalAttentionController(attention_controller.clone()));
 
     cx.observe_new({
         let attention_controller = attention_controller.clone();
@@ -8956,6 +8973,27 @@ fn attention_priority(status: &WorkspaceAttentionStatus) -> u8 {
     }
 }
 
+fn count_busy_agents<'a>(statuses: impl Iterator<Item = &'a WorkspaceAttentionStatus>) -> usize {
+    statuses
+        .filter(|status| {
+            matches!(
+                status,
+                WorkspaceAttentionStatus::Working | WorkspaceAttentionStatus::Permission
+            )
+        })
+        .count()
+}
+
+fn busy_agents_quit_message(busy_agent_count: usize) -> Option<String> {
+    match busy_agent_count {
+        0 => None,
+        1 => Some("1 agent is still working. Quit anyway?".to_string()),
+        busy_agent_count => Some(format!(
+            "{busy_agent_count} agents are still working. Quit anyway?"
+        )),
+    }
+}
+
 fn next_attention_terminal<'a>(
     attention_queue: &'a BTreeMap<String, AttentionQueueEntry>,
     focused_terminal_id: Option<&str>,
@@ -9993,6 +10031,33 @@ mod tests {
 
         assert_eq!(next_attention_terminal(&queue, Some("approval")), None);
         assert_eq!(next_attention_terminal(&BTreeMap::new(), None), None);
+    }
+
+    #[test]
+    fn busy_agent_count_includes_working_and_awaiting_approval() {
+        let statuses = [
+            WorkspaceAttentionStatus::Working,
+            WorkspaceAttentionStatus::Permission,
+            WorkspaceAttentionStatus::Review,
+            WorkspaceAttentionStatus::Idle,
+            WorkspaceAttentionStatus::Working,
+        ];
+
+        assert_eq!(count_busy_agents(statuses.iter()), 3);
+        assert_eq!(count_busy_agents([].iter()), 0);
+    }
+
+    #[test]
+    fn busy_agents_quit_message_matches_count() {
+        assert_eq!(busy_agents_quit_message(0), None);
+        assert_eq!(
+            busy_agents_quit_message(1).as_deref(),
+            Some("1 agent is still working. Quit anyway?")
+        );
+        assert_eq!(
+            busy_agents_quit_message(3).as_deref(),
+            Some("3 agents are still working. Quit anyway?")
+        );
     }
 
     #[test]
