@@ -2305,13 +2305,20 @@ impl Terminal {
         self.vi_mode_enabled
     }
 
-    pub fn clone_builder(&self, cx: &App, cwd: Option<PathBuf>) -> Task<Result<TerminalBuilder>> {
+    pub fn clone_builder(
+        &self,
+        cx: &App,
+        cwd: Option<PathBuf>,
+        env_overrides: HashMap<String, String>,
+    ) -> Task<Result<TerminalBuilder>> {
         let working_directory = self.working_directory().or_else(|| cwd);
+        let mut env = self.template.env.clone();
+        env.extend(env_overrides);
         TerminalBuilder::new(
             working_directory,
             None,
             self.template.shell.clone(),
-            self.template.env.clone(),
+            env,
             self.template.cursor_shape,
             self.template.alternate_scroll,
             self.template.max_scroll_history_lines,

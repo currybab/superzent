@@ -89,9 +89,13 @@ pub fn subscribe() -> Result<smol::channel::Receiver<AgentHookEvent>> {
     Ok(receiver)
 }
 
+pub fn new_terminal_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
 pub fn inject_terminal_environment(environment: &mut HashMap<String, String>) -> Result<String> {
     let runtime = runtime()?;
-    let terminal_id = Uuid::new_v4().to_string();
+    let terminal_id = new_terminal_id();
 
     environment.insert(
         AGENT_HOOK_URL_ENV_VAR.to_string(),
@@ -442,8 +446,6 @@ fn map_hook_event_type(event_type: &str) -> Option<AgentHookEventType> {
         | "PostToolUseFailure"
         | "BeforeAgent"
         | "AfterTool"
-        | "SessionStart"
-        | "sessionStart"
         | "userPromptSubmitted"
         | "postToolUse" => Some(AgentHookEventType::Start),
         "PermissionRequest" | "preToolUse" | "Notification" => {
@@ -587,7 +589,6 @@ fn claude_settings_content(notify_script_path: &Path) -> Result<String> {
     let settings = serde_json::json!({
         "hooks": {
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
-            "SessionStart": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
             "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
             "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
@@ -789,10 +790,8 @@ mod tests {
             map_hook_event_type("Notification"),
             Some(AgentHookEventType::PermissionRequest)
         );
-        assert_eq!(
-            map_hook_event_type("sessionStart"),
-            Some(AgentHookEventType::Start)
-        );
+        assert_eq!(map_hook_event_type("SessionStart"), None);
+        assert_eq!(map_hook_event_type("sessionStart"), None);
         assert_eq!(
             map_hook_event_type("userPromptSubmitted"),
             Some(AgentHookEventType::Start)
@@ -855,7 +854,7 @@ mod tests {
             serde_json::from_str(&decoded_settings).expect("inline settings should be valid JSON");
         assert!(settings.get("hooks").is_some());
         assert_eq!(
-            settings["hooks"]["SessionStart"][0]["hooks"][0]["type"],
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["type"],
             "command"
         );
 

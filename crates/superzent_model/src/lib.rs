@@ -467,6 +467,10 @@ impl Default for SuperzentState {
 pub struct SuperzentStore {
     state_path: PathBuf,
     state: SuperzentState,
+    // Workspaces whose review must survive activation because a specific
+    // terminal tab still has to be looked at. Runtime-only: terminals don't
+    // outlive the process, so a restored review falls back to clear-on-open.
+    review_held_workspace_ids: BTreeSet<String>,
 }
 
 struct GlobalSuperzentStore(Entity<SuperzentStore>);
@@ -948,12 +952,8 @@ impl SuperzentStore {
         };
 
         workspace.last_opened_at = now;
-        workspace.review_pending = false;
-        if workspace.attention_status == WorkspaceAttentionStatus::Review {
-            workspace.attention_status = WorkspaceAttentionStatus::Idle;
-            workspace.last_attention_reason = None;
-        }
         let project_id = workspace.project_id.clone();
+        self.clear_workspace_review_pending(workspace_id);
         if let Some(project) = self
             .state
             .projects
@@ -1291,6 +1291,8 @@ impl SuperzentStore {
         reason: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        let review_pending =
+            review_pending || self.review_held_workspace_ids.contains(workspace_id);
         let Some(workspace) = self
             .state
             .workspaces
@@ -1373,7 +1375,11 @@ impl SuperzentStore {
             state.presets = default_presets();
         }
 
-        let mut store = Self { state_path, state };
+        let mut store = Self {
+            state_path,
+            state,
+            review_held_workspace_ids: BTreeSet::new(),
+        };
         store.normalize();
         store.clear_transient_workspace_attention();
         store
@@ -1514,7 +1520,19 @@ impl SuperzentStore {
         }
     }
 
+    pub fn set_workspace_review_held(&mut self, workspace_id: &str, held: bool) {
+        if held {
+            self.review_held_workspace_ids
+                .insert(workspace_id.to_string());
+        } else {
+            self.review_held_workspace_ids.remove(workspace_id);
+        }
+    }
+
     fn clear_workspace_review_pending(&mut self, workspace_id: &str) {
+        if self.review_held_workspace_ids.contains(workspace_id) {
+            return;
+        }
         let Some(workspace) = self
             .state
             .workspaces
@@ -2293,6 +2311,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         let workspace = store
@@ -2319,6 +2338,7 @@ mod tests {
                 workspaces: vec![workspace.clone()],
                 ..Default::default()
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         let resolved = store
@@ -2358,6 +2378,7 @@ mod tests {
                 workspaces: vec![workspace.clone()],
                 ..Default::default()
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         let resolved = store
@@ -2383,6 +2404,7 @@ mod tests {
                 projects: vec![project.clone()],
                 ..Default::default()
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         let resolved = store
@@ -2417,6 +2439,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         let workspace = store.startup_workspace().expect("workspace should resolve");
@@ -2493,6 +2516,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         store.normalize();
@@ -2505,6 +2529,42 @@ mod tests {
                 .map(|workspace| workspace.id.as_str()),
             Some("project-one-primary")
         );
+    }
+
+    #[test]
+    fn held_review_survives_workspace_activation_until_released() {
+        let mut workspace = workspace_entry(
+            "workspace",
+            "project",
+            WorkspaceKind::Primary,
+            "/tmp/project",
+        );
+        workspace.attention_status = WorkspaceAttentionStatus::Review;
+        workspace.review_pending = true;
+        let mut store = SuperzentStore {
+            state_path: PathBuf::from("/tmp/state.json"),
+            state: SuperzentState {
+                active_project_id: None,
+                active_workspace_id: None,
+                projects: vec![project_entry("project", "/tmp/project")],
+                workspaces: vec![workspace],
+                sessions: Vec::new(),
+                presets: default_presets(),
+            },
+            review_held_workspace_ids: BTreeSet::new(),
+        };
+
+        store.set_workspace_review_held("workspace", true);
+        store.clear_workspace_review_pending("workspace");
+        let held = store.workspace("workspace").expect("workspace exists");
+        assert!(held.review_pending);
+        assert_eq!(held.attention_status, WorkspaceAttentionStatus::Review);
+
+        store.set_workspace_review_held("workspace", false);
+        store.clear_workspace_review_pending("workspace");
+        let released = store.workspace("workspace").expect("workspace exists");
+        assert!(!released.review_pending);
+        assert_eq!(released.attention_status, WorkspaceAttentionStatus::Idle);
     }
 
     #[test]
@@ -2549,6 +2609,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
+            review_held_workspace_ids: BTreeSet::new(),
         };
 
         let locator = WorkspaceLocator::Ssh {
