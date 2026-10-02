@@ -467,10 +467,11 @@ impl Default for SuperzentState {
 pub struct SuperzentStore {
     state_path: PathBuf,
     state: SuperzentState,
-    // Workspaces whose review must survive activation because a specific
-    // terminal tab still has to be looked at. Runtime-only: terminals don't
-    // outlive the process, so a restored review falls back to clear-on-open.
-    review_held_workspace_ids: BTreeSet<String>,
+    // Agent terminals that finished while unseen, keyed by terminal id, mapped to
+    // their workspace. A workspace's review can't be cleared by activation or new
+    // activity while it owns one. Runtime-only: terminals don't outlive the
+    // process, so a restored review falls back to clear-on-open.
+    unreviewed_terminals: BTreeMap<String, String>,
 }
 
 struct GlobalSuperzentStore(Entity<SuperzentStore>);
@@ -1292,7 +1293,7 @@ impl SuperzentStore {
         cx: &mut Context<Self>,
     ) {
         let review_pending =
-            review_pending || self.review_held_workspace_ids.contains(workspace_id);
+            review_pending || self.workspace_has_unreviewed_terminals(workspace_id);
         let Some(workspace) = self
             .state
             .workspaces
@@ -1378,7 +1379,7 @@ impl SuperzentStore {
         let mut store = Self {
             state_path,
             state,
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
         store.normalize();
         store.clear_transient_workspace_attention();
@@ -1402,6 +1403,8 @@ impl SuperzentStore {
             .iter()
             .map(|workspace| workspace.id.as_str())
             .collect::<BTreeSet<_>>();
+        self.unreviewed_terminals
+            .retain(|_, workspace_id| existing_workspace_ids.contains(workspace_id.as_str()));
         let fallback_workspace_id = self
             .default_startup_workspace()
             .map(|workspace| workspace.id.clone());
@@ -1520,17 +1523,58 @@ impl SuperzentStore {
         }
     }
 
-    pub fn set_workspace_review_held(&mut self, workspace_id: &str, held: bool) {
-        if held {
-            self.review_held_workspace_ids
-                .insert(workspace_id.to_string());
-        } else {
-            self.review_held_workspace_ids.remove(workspace_id);
+    pub fn mark_terminal_unreviewed(&mut self, terminal_id: &str, workspace_id: &str) {
+        self.unreviewed_terminals
+            .insert(terminal_id.to_string(), workspace_id.to_string());
+    }
+
+    /// Records that the user looked at the terminal. Once its workspace has no unseen
+    /// terminals left, the workspace review is acknowledged. Returns the workspace id.
+    pub fn mark_terminal_reviewed(
+        &mut self,
+        terminal_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (workspace_id, workspace_reviewed) = self.remove_unreviewed_terminal(terminal_id)?;
+        if workspace_reviewed {
+            self.acknowledge_workspace_review(&workspace_id, cx);
         }
+        Some(workspace_id)
+    }
+
+    /// Stops tracking the terminal without treating it as seen, so its workspace review
+    /// falls back to clearing on the next activation. Returns the workspace id.
+    pub fn forget_unreviewed_terminal(&mut self, terminal_id: &str) -> Option<String> {
+        self.remove_unreviewed_terminal(terminal_id)
+            .map(|(workspace_id, _)| workspace_id)
+    }
+
+    pub fn has_unreviewed_terminal(&self, terminal_id: &str) -> bool {
+        self.unreviewed_terminals.contains_key(terminal_id)
+    }
+
+    pub fn unreviewed_terminal_workspace(&self, terminal_id: &str) -> Option<&str> {
+        self.unreviewed_terminals
+            .get(terminal_id)
+            .map(String::as_str)
+    }
+
+    fn workspace_has_unreviewed_terminals(&self, workspace_id: &str) -> bool {
+        self.unreviewed_terminals
+            .values()
+            .any(|unreviewed_workspace_id| unreviewed_workspace_id == workspace_id)
+    }
+
+    /// Returns the terminal's workspace and whether that workspace has no unseen
+    /// terminals left.
+    fn remove_unreviewed_terminal(&mut self, terminal_id: &str) -> Option<(String, bool)> {
+        let workspace_id = self.unreviewed_terminals.remove(terminal_id)?;
+        let workspace_reviewed = !self.workspace_has_unreviewed_terminals(&workspace_id);
+        Some((workspace_id, workspace_reviewed))
     }
 
     fn clear_workspace_review_pending(&mut self, workspace_id: &str) {
-        if self.review_held_workspace_ids.contains(workspace_id) {
+        if self.workspace_has_unreviewed_terminals(workspace_id) {
             return;
         }
         let Some(workspace) = self
@@ -2311,7 +2355,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         let workspace = store
@@ -2338,7 +2382,7 @@ mod tests {
                 workspaces: vec![workspace.clone()],
                 ..Default::default()
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         let resolved = store
@@ -2378,7 +2422,7 @@ mod tests {
                 workspaces: vec![workspace.clone()],
                 ..Default::default()
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         let resolved = store
@@ -2404,7 +2448,7 @@ mod tests {
                 projects: vec![project.clone()],
                 ..Default::default()
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         let resolved = store
@@ -2439,7 +2483,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         let workspace = store.startup_workspace().expect("workspace should resolve");
@@ -2516,7 +2560,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         store.normalize();
@@ -2531,40 +2575,94 @@ mod tests {
         );
     }
 
-    #[test]
-    fn held_review_survives_workspace_activation_until_released() {
-        let mut workspace = workspace_entry(
-            "workspace",
-            "project",
-            WorkspaceKind::Primary,
-            "/tmp/project",
-        );
-        workspace.attention_status = WorkspaceAttentionStatus::Review;
-        workspace.review_pending = true;
-        let mut store = SuperzentStore {
+    fn review_pending_store(workspace_ids: &[&str]) -> SuperzentStore {
+        let workspaces = workspace_ids
+            .iter()
+            .map(|workspace_id| {
+                let mut workspace = workspace_entry(
+                    workspace_id,
+                    "project",
+                    WorkspaceKind::Worktree,
+                    &format!("/tmp/project/{workspace_id}"),
+                );
+                workspace.attention_status = WorkspaceAttentionStatus::Review;
+                workspace.review_pending = true;
+                workspace
+            })
+            .collect();
+        SuperzentStore {
             state_path: PathBuf::from("/tmp/state.json"),
             state: SuperzentState {
                 active_project_id: None,
                 active_workspace_id: None,
                 projects: vec![project_entry("project", "/tmp/project")],
-                workspaces: vec![workspace],
+                workspaces,
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
-            review_held_workspace_ids: BTreeSet::new(),
-        };
+            unreviewed_terminals: BTreeMap::new(),
+        }
+    }
 
-        store.set_workspace_review_held("workspace", true);
+    #[test]
+    fn unreviewed_terminals_hold_review_until_each_is_reviewed() {
+        let mut store = review_pending_store(&["workspace"]);
+        store.mark_terminal_unreviewed("terminal-a", "workspace");
+        store.mark_terminal_unreviewed("terminal-b", "workspace");
+
         store.clear_workspace_review_pending("workspace");
         let held = store.workspace("workspace").expect("workspace exists");
         assert!(held.review_pending);
         assert_eq!(held.attention_status, WorkspaceAttentionStatus::Review);
 
-        store.set_workspace_review_held("workspace", false);
+        assert_eq!(
+            store.remove_unreviewed_terminal("terminal-a"),
+            Some(("workspace".to_string(), false))
+        );
+        store.clear_workspace_review_pending("workspace");
+        assert!(
+            store
+                .workspace("workspace")
+                .expect("workspace exists")
+                .review_pending
+        );
+
+        assert_eq!(
+            store.remove_unreviewed_terminal("terminal-b"),
+            Some(("workspace".to_string(), true))
+        );
+        assert_eq!(store.remove_unreviewed_terminal("terminal-b"), None);
         store.clear_workspace_review_pending("workspace");
         let released = store.workspace("workspace").expect("workspace exists");
         assert!(!released.review_pending);
         assert_eq!(released.attention_status, WorkspaceAttentionStatus::Idle);
+    }
+
+    #[test]
+    fn unreviewed_terminals_only_hold_their_own_workspace() {
+        let mut store = review_pending_store(&["held", "free"]);
+        store.mark_terminal_unreviewed("terminal", "held");
+
+        store.clear_workspace_review_pending("free");
+
+        assert!(store.workspace("held").expect("held exists").review_pending);
+        assert!(!store.workspace("free").expect("free exists").review_pending);
+        assert_eq!(
+            store.unreviewed_terminal_workspace("terminal"),
+            Some("held")
+        );
+    }
+
+    #[test]
+    fn normalize_drops_unreviewed_terminals_of_removed_workspaces() {
+        let mut store = review_pending_store(&["workspace"]);
+        store.mark_terminal_unreviewed("kept", "workspace");
+        store.mark_terminal_unreviewed("orphaned", "removed");
+
+        store.normalize();
+
+        assert!(store.has_unreviewed_terminal("kept"));
+        assert!(!store.has_unreviewed_terminal("orphaned"));
     }
 
     #[test]
@@ -2609,7 +2707,7 @@ mod tests {
                 sessions: Vec::new(),
                 presets: default_presets(),
             },
-            review_held_workspace_ids: BTreeSet::new(),
+            unreviewed_terminals: BTreeMap::new(),
         };
 
         let locator = WorkspaceLocator::Ssh {

@@ -265,7 +265,6 @@ struct WorkspaceAttentionController {
     workspace_ids_by_terminal: BTreeMap<String, String>,
     terminal_views_by_terminal: BTreeMap<String, WeakEntity<TerminalView>>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
-    unreviewed_terminals: BTreeMap<String, String>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
     focused_terminal: Option<FocusedTerminal>,
@@ -349,7 +348,6 @@ impl WorkspaceAttentionController {
             workspace_ids_by_terminal: BTreeMap::new(),
             terminal_views_by_terminal: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
-            unreviewed_terminals: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
             next_attention_sequence: 0,
             focused_terminal: None,
@@ -405,20 +403,18 @@ impl WorkspaceAttentionController {
         self.terminal_views_by_terminal.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.clear_focused_terminal(terminal_id);
-        if let Some(workspace_id) = self.unreviewed_terminals.remove(terminal_id)
-            && !self.workspace_has_unreviewed_terminals(&workspace_id)
-        {
-            // Closing the tab from inside its workspace is a deliberate dismissal. Otherwise
-            // (e.g. the whole workspace went away) leave the review for the next activation.
-            let closed_from_active_workspace =
-                self.store.read(cx).active_workspace_id() == Some(workspace_id.as_str());
-            self.store.update(cx, |store, cx| {
-                store.set_workspace_review_held(&workspace_id, false);
-                if closed_from_active_workspace {
-                    store.acknowledge_workspace_review(&workspace_id, cx);
-                }
-            });
-        }
+        // Closing the tab from inside its workspace is a deliberate dismissal. Otherwise
+        // (e.g. the whole workspace went away) leave the review for the next activation.
+        self.store.update(cx, |store, cx| {
+            let closed_from_active_workspace = store
+                .unreviewed_terminal_workspace(terminal_id)
+                .is_some_and(|workspace_id| store.active_workspace_id() == Some(workspace_id));
+            if closed_from_active_workspace {
+                store.mark_terminal_reviewed(terminal_id, cx);
+            } else {
+                store.forget_unreviewed_terminal(terminal_id);
+            }
+        });
         let tracked_workspace_id = self.workspace_ids_by_terminal.remove(terminal_id);
         let workspace_id = workspace_id_for_terminal_unregister(
             self.live_terminal_attention.remove(terminal_id).as_ref(),
@@ -427,12 +423,6 @@ impl WorkspaceAttentionController {
         if let Some(workspace_id) = workspace_id {
             self.recompute_workspace_attention(&workspace_id, cx);
         }
-    }
-
-    fn workspace_has_unreviewed_terminals(&self, workspace_id: &str) -> bool {
-        self.unreviewed_terminals
-            .values()
-            .any(|unreviewed_workspace_id| unreviewed_workspace_id == workspace_id)
     }
 
     fn is_terminal_in_view(&self, terminal_id: &str, cx: &App) -> bool {
@@ -486,21 +476,16 @@ impl WorkspaceAttentionController {
             self.dismiss_notifications(cx);
         }
 
-        let Some(workspace_id) = self.unreviewed_terminals.remove(terminal_id) else {
+        let Some(workspace_id) = self.store.update(cx, |store, cx| {
+            store.mark_terminal_reviewed(terminal_id, cx)
+        }) else {
             return;
         };
         self.sync_terminal_tab_attention(terminal_id, cx);
-        if self.workspace_has_unreviewed_terminals(&workspace_id) {
-            return;
-        }
-        self.store.update(cx, |store, cx| {
-            store.set_workspace_review_held(&workspace_id, false);
-            store.acknowledge_workspace_review(&workspace_id, cx);
-        });
         self.recompute_workspace_attention(&workspace_id, cx);
     }
 
-    fn terminal_tab_attention(&self, terminal_id: &str) -> Option<TerminalTabAttention> {
+    fn terminal_tab_attention(&self, terminal_id: &str, cx: &App) -> Option<TerminalTabAttention> {
         match self
             .live_terminal_attention
             .get(terminal_id)
@@ -509,15 +494,16 @@ impl WorkspaceAttentionController {
             Some(WorkspaceAttentionStatus::Permission) => Some(TerminalTabAttention::NeedsApproval),
             Some(WorkspaceAttentionStatus::Working) => Some(TerminalTabAttention::Working),
             Some(WorkspaceAttentionStatus::Idle | WorkspaceAttentionStatus::Review) | None => self
-                .unreviewed_terminals
-                .contains_key(terminal_id)
+                .store
+                .read(cx)
+                .has_unreviewed_terminal(terminal_id)
                 .then_some(TerminalTabAttention::NeedsReview),
         }
     }
 
     fn sync_terminal_tab_attention(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
-        let tab_attention = self.terminal_tab_attention(terminal_id);
-        self.update_attention_queue(terminal_id, tab_attention);
+        let tab_attention = self.terminal_tab_attention(terminal_id, cx);
+        self.update_attention_queue(terminal_id, tab_attention, cx);
         let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
             return;
         };
@@ -534,6 +520,7 @@ impl WorkspaceAttentionController {
         &mut self,
         terminal_id: &str,
         tab_attention: Option<TerminalTabAttention>,
+        cx: &App,
     ) {
         let attention = match tab_attention {
             Some(
@@ -556,7 +543,12 @@ impl WorkspaceAttentionController {
             .live_terminal_attention
             .get(terminal_id)
             .map(|attention| attention.workspace_id.clone())
-            .or_else(|| self.unreviewed_terminals.get(terminal_id).cloned())
+            .or_else(|| {
+                self.store
+                    .read(cx)
+                    .unreviewed_terminal_workspace(terminal_id)
+                    .map(str::to_string)
+            })
         else {
             self.attention_queue.remove(terminal_id);
             return;
@@ -574,14 +566,13 @@ impl WorkspaceAttentionController {
     }
 
     fn clear_workspace_attention_for_activity(&self, workspace_id: &str, cx: &mut Context<Self>) {
-        // New activity supersedes a workspace-level review, but not one still owed by
-        // another terminal in this workspace that finished unseen.
-        let review_pending = self.workspace_has_unreviewed_terminals(workspace_id);
+        // New activity supersedes a workspace-level review; the store keeps any review
+        // still owed by another terminal in this workspace that finished unseen.
         self.store.update(cx, |store, cx| {
             store.set_workspace_attention(
                 workspace_id,
                 WorkspaceAttentionStatus::Idle,
-                review_pending,
+                false,
                 None,
                 cx,
             );
@@ -726,17 +717,12 @@ impl WorkspaceAttentionController {
                 // Only a terminal with a live tab can be looked at; anything else keeps the
                 // workspace-level review that clears on activation.
                 let tracks_terminal_tab = self.live_terminal_view(&event.terminal_id).is_some();
-                if tracks_terminal_tab {
-                    self.unreviewed_terminals
-                        .insert(event.terminal_id.clone(), workspace_id.clone());
-                    self.sync_terminal_tab_attention(&event.terminal_id, cx);
-                }
                 let (attention_status, review_pending) =
                     workspace_attention_for_terminal_status(&TaskStatus::Completed)
                         .expect("completed terminal status should map to attention");
                 self.store.update(cx, |store, cx| {
                     if tracks_terminal_tab {
-                        store.set_workspace_review_held(&workspace_id, true);
+                        store.mark_terminal_unreviewed(&event.terminal_id, &workspace_id);
                     }
                     store.set_workspace_attention(
                         &workspace_id,
@@ -749,6 +735,9 @@ impl WorkspaceAttentionController {
                         cx,
                     );
                 });
+                if tracks_terminal_tab {
+                    self.sync_terminal_tab_attention(&event.terminal_id, cx);
+                }
                 self.recompute_workspace_attention(&workspace_id, cx);
                 self.maybe_show_terminal_notification(
                     TerminalLifecycleNotification::Completed,
