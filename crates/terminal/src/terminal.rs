@@ -2202,6 +2202,15 @@ impl Terminal {
         }
     }
 
+    /// Whether a job other than the terminal's own shell holds its foreground.
+    pub fn has_foreground_job(&self) -> bool {
+        let Some(pid_getter) = self.pid_getter() else {
+            return false;
+        };
+        self.pid()
+            .is_some_and(|pid| pid != pid_getter.fallback_pid())
+    }
+
     pub fn pid_getter(&self) -> Option<&ProcessIdGetter> {
         match &self.terminal_type {
             TerminalType::Pty { info, .. } => Some(info.pid_getter()),

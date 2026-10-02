@@ -67,7 +67,7 @@ use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
 };
 use superzent_model::{
-    AgentPreset, AgentSession, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
+    AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
     StoredSshConnection, StoredSshPortForward, SuperzentStore, TaskStatus,
     WorkspaceAttentionStatus, WorkspaceEntry, WorkspaceGitStatus, WorkspaceKind, WorkspaceLocation,
     aggregate_workspace_attention_status,
@@ -249,18 +249,49 @@ pub fn busy_agents_quit_prompt(cx: &App) -> Option<String> {
             .values()
             .map(|attention| &attention.status),
     );
-    let unhooked_agents = count_running_sessions(
-        controller
-            .unhooked_preset_sessions
-            .iter()
-            .filter(|(_, terminal)| terminal.upgrade().is_some())
-            .map(|(session_id, _)| session_id.as_str()),
-        controller.store.read(cx).sessions(),
-    );
-    busy_agents_quit_message(hooked_agents + unhooked_agents)
+    let sessions = controller.store.read(cx).sessions();
+    let preset_agents = controller
+        .preset_terminals
+        .iter()
+        .filter(|tracked| {
+            let Some(terminal) = tracked.terminal.upgrade() else {
+                return false;
+            };
+            let terminal = terminal.read(cx);
+            let reported_hooks =
+                terminal
+                    .env_var(AGENT_TERMINAL_ID_ENV_VAR)
+                    .is_some_and(|terminal_id| {
+                        controller.hook_reporting_terminals.contains(terminal_id)
+                    });
+            let session_running = match &tracked.launch {
+                PresetLaunch::Task { session_id } => sessions.iter().any(|session| {
+                    session.id == *session_id && session.status == TaskStatus::Running
+                }),
+                PresetLaunch::Interactive => false,
+            };
+            preset_agent_is_busy(
+                &tracked.launch,
+                reported_hooks,
+                session_running,
+                terminal.has_foreground_job(),
+            )
+        })
+        .count();
+    busy_agents_quit_message(hooked_agents + preset_agents)
 }
 
-fn track_unhooked_preset_session(session_id: &str, terminal: WeakEntity<Terminal>, cx: &mut App) {
+enum PresetLaunch {
+    Task { session_id: String },
+    Interactive,
+}
+
+struct TrackedPresetTerminal {
+    terminal: WeakEntity<Terminal>,
+    launch: PresetLaunch,
+}
+
+fn track_preset_terminal(terminal: WeakEntity<Terminal>, launch: PresetLaunch, cx: &mut App) {
     let Some(controller) = cx
         .try_global::<GlobalAttentionController>()
         .map(|controller| controller.0.clone())
@@ -269,11 +300,11 @@ fn track_unhooked_preset_session(session_id: &str, terminal: WeakEntity<Terminal
     };
     controller.update(cx, |controller, _| {
         controller
-            .unhooked_preset_sessions
-            .retain(|_, terminal| terminal.upgrade().is_some());
+            .preset_terminals
+            .retain(|tracked| tracked.terminal.upgrade().is_some());
         controller
-            .unhooked_preset_sessions
-            .insert(session_id.to_string(), terminal);
+            .preset_terminals
+            .push(TrackedPresetTerminal { terminal, launch });
     });
 }
 
@@ -310,9 +341,10 @@ struct WorkspaceAttentionController {
     unreviewed_terminals: BTreeMap<String, String>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
-    // Preset sessions launched this run whose agent reports no lifecycle hooks, so
-    // their session status is the only signal that they are still working.
-    unhooked_preset_sessions: BTreeMap<String, WeakEntity<Terminal>>,
+    // Preset terminals launched this run. Until their agent reports a lifecycle hook
+    // (or for agents that never do), the launch itself is the only busy signal.
+    preset_terminals: Vec<TrackedPresetTerminal>,
+    hook_reporting_terminals: BTreeSet<String>,
     focused_terminal: Option<FocusedTerminal>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -397,7 +429,8 @@ impl WorkspaceAttentionController {
             unreviewed_terminals: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
             next_attention_sequence: 0,
-            unhooked_preset_sessions: BTreeMap::new(),
+            preset_terminals: Vec::new(),
+            hook_reporting_terminals: BTreeSet::new(),
             focused_terminal: None,
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
@@ -450,6 +483,7 @@ impl WorkspaceAttentionController {
         self.terminal_ids_by_entity.remove(&entity_id);
         self.terminal_views_by_terminal.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
+        self.hook_reporting_terminals.remove(terminal_id);
         self.clear_focused_terminal(terminal_id);
         if let Some(workspace_id) = self.unreviewed_terminals.remove(terminal_id)
             && !self.workspace_has_unreviewed_terminals(&workspace_id)
@@ -686,6 +720,8 @@ impl WorkspaceAttentionController {
     }
 
     fn handle_hook_event(&mut self, event: AgentHookEvent, cx: &mut Context<Self>) {
+        self.hook_reporting_terminals
+            .insert(event.terminal_id.clone());
         if debug_terminal_notifications_enabled() {
             log::info!(
                 "superzent notification hook received: type={:?} terminal_id={} workspace_id={:?} session_id={:?} cwd={:?}",
@@ -1962,6 +1998,16 @@ fn launch_workspace_preset_in_terminal(
                 return Ok::<(), anyhow::Error>(());
             }
 
+            // Hooked agents report their own status once prompted; an idle one that
+            // hasn't been prompted yet shouldn't block quitting.
+            if !superzent_agent::reports_lifecycle_hooks(&preset.command) {
+                if let Err(error) = cx.update(|_, cx| {
+                    track_preset_terminal(terminal, PresetLaunch::Interactive, cx);
+                }) {
+                    log::error!("failed to track interactive preset for quit: {error:#}");
+                }
+            }
+
             let _ = update_store_async(&store, cx, |store, cx| {
                 store.set_workspace_attention(
                     &workspace_entry.id,
@@ -2103,14 +2149,16 @@ fn launch_workspace_preset_task(
                     {
                         return Ok::<(), anyhow::Error>(());
                     }
-                    if !superzent_agent::reports_lifecycle_hooks(&preset.command) {
-                        let session_id = session.id.clone();
-                        let tracked_terminal = terminal.clone();
-                        if let Err(error) = cx.update(|_, cx| {
-                            track_unhooked_preset_session(&session_id, tracked_terminal, cx);
-                        }) {
-                            log::error!("failed to track preset session for quit: {error:#}");
-                        }
+                    // Track hooked agents too: the prompt is sent before their first hook
+                    // can report the authoritative live status.
+                    let launch = PresetLaunch::Task {
+                        session_id: session.id.clone(),
+                    };
+                    let tracked_terminal = terminal.clone();
+                    if let Err(error) = cx.update(|_, cx| {
+                        track_preset_terminal(tracked_terminal, launch, cx);
+                    }) {
+                        log::error!("failed to track preset task for quit: {error:#}");
                     }
                     terminal
                 }
@@ -9023,17 +9071,21 @@ fn count_busy_agents<'a>(statuses: impl Iterator<Item = &'a WorkspaceAttentionSt
         .count()
 }
 
-fn count_running_sessions<'a>(
-    session_ids: impl Iterator<Item = &'a str>,
-    sessions: &[AgentSession],
-) -> usize {
-    session_ids
-        .filter(|session_id| {
-            sessions
-                .iter()
-                .any(|session| session.id == *session_id && session.status == TaskStatus::Running)
-        })
-        .count()
+fn preset_agent_is_busy(
+    launch: &PresetLaunch,
+    reported_hooks: bool,
+    session_running: bool,
+    has_foreground_job: bool,
+) -> bool {
+    if reported_hooks {
+        return false;
+    }
+    match launch {
+        PresetLaunch::Task { .. } => session_running,
+        // The command runs inside a shell, so the agent is alive while something other
+        // than the shell holds the foreground.
+        PresetLaunch::Interactive => has_foreground_job,
+    }
 }
 
 fn busy_agents_quit_message(busy_agent_count: usize) -> Option<String> {
@@ -10100,30 +10152,44 @@ mod tests {
     }
 
     #[test]
-    fn running_session_count_ignores_untracked_and_finished_sessions() {
-        let session = |id: &str, status: TaskStatus| AgentSession {
-            id: id.to_string(),
-            workspace_id: "workspace".to_string(),
-            preset_id: "gemini".to_string(),
-            label: id.to_string(),
-            status,
-            started_at: Utc::now(),
-            exited_at: None,
-            last_attention_reason: None,
+    fn preset_agent_defers_to_hooks_once_they_report() {
+        let task = PresetLaunch::Task {
+            session_id: "session".to_string(),
         };
-        let sessions = [
-            session("tracked-running", TaskStatus::Running),
-            session("tracked-completed", TaskStatus::Completed),
-            session("stale-running", TaskStatus::Running),
-        ];
 
-        assert_eq!(
-            count_running_sessions(
-                ["tracked-running", "tracked-completed", "missing"].into_iter(),
-                &sessions
-            ),
-            1
-        );
+        assert!(!preset_agent_is_busy(&task, true, true, true));
+        assert!(!preset_agent_is_busy(
+            &PresetLaunch::Interactive,
+            true,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn preset_task_is_busy_while_its_session_runs() {
+        let task = PresetLaunch::Task {
+            session_id: "session".to_string(),
+        };
+
+        assert!(preset_agent_is_busy(&task, false, true, false));
+        assert!(!preset_agent_is_busy(&task, false, false, true));
+    }
+
+    #[test]
+    fn interactive_preset_is_busy_while_a_foreground_job_runs() {
+        assert!(preset_agent_is_busy(
+            &PresetLaunch::Interactive,
+            false,
+            false,
+            true
+        ));
+        assert!(!preset_agent_is_busy(
+            &PresetLaunch::Interactive,
+            false,
+            true,
+            false
+        ));
     }
 
     #[test]
