@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Bounds, Div, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, Task, Window,
+    IntoElement, LayoutId, Pixels, Task, Window, div,
 };
 
 /// A self-contained pulsing wrapper for small attention dots.
@@ -79,45 +79,43 @@ impl Element for PulsingDot {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        window.with_element_state(
-            global_id.expect("PulsingDot reports an id, so it is always stateful"),
-            |state, window| {
-                let state = state.unwrap_or_else(|| PulsingDotState {
-                    start: Instant::now(),
-                    _redraw: None,
-                });
-                let elapsed = state.start.elapsed();
-                let delta = (elapsed.as_secs_f32() / self.period.as_secs_f32()).fract();
+        let Some(global_id) = global_id else {
+            let mut element = self.element.take().unwrap_or_else(div).into_any_element();
+            let layout_id = element.request_layout(window, cx);
+            return (layout_id, element);
+        };
+        window.with_element_state(global_id, |state, window| {
+            let state = state.unwrap_or_else(|| PulsingDotState {
+                start: Instant::now(),
+                _redraw: None,
+            });
+            let elapsed = state.start.elapsed();
+            let delta = (elapsed.as_secs_f32() / self.period.as_secs_f32()).fract();
 
-                let element = self
-                    .element
-                    .take()
-                    .expect("PulsingDot::request_layout is called once");
-                let mut element = (self.animator)(element, delta).into_any_element();
+            let element = self.element.take().unwrap_or_else(div);
+            let mut element = (self.animator)(element, delta).into_any_element();
 
-                // Wake this view at the next interval boundary rather than on the next
-                // frame, decoupling the pulse cadence from the display refresh rate.
-                // Aligning to the boundary keeps stepped animators from drifting.
-                let view = window.current_view();
-                let interval_nanos = self.interval.as_nanos().max(1);
-                let remaining_nanos = interval_nanos - elapsed.as_nanos() % interval_nanos;
-                let delay =
-                    Duration::from_nanos(u64::try_from(remaining_nanos).unwrap_or(u64::MAX));
-                let redraw = cx.spawn(async move |cx| {
-                    cx.background_executor().timer(delay).await;
-                    cx.update(|cx| cx.notify(view));
-                });
+            // Wake this view at the next interval boundary rather than on the next
+            // frame, decoupling the pulse cadence from the display refresh rate.
+            // Aligning to the boundary keeps stepped animators from drifting.
+            let view = window.current_view();
+            let interval_nanos = self.interval.as_nanos().max(1);
+            let remaining_nanos = interval_nanos - elapsed.as_nanos() % interval_nanos;
+            let delay = Duration::from_nanos(u64::try_from(remaining_nanos).unwrap_or(u64::MAX));
+            let redraw = cx.spawn(async move |cx| {
+                cx.background_executor().timer(delay).await;
+                cx.update(|cx| cx.notify(view));
+            });
 
-                let layout_id = element.request_layout(window, cx);
-                (
-                    (layout_id, element),
-                    PulsingDotState {
-                        start: state.start,
-                        _redraw: Some(redraw),
-                    },
-                )
-            },
-        )
+            let layout_id = element.request_layout(window, cx);
+            (
+                (layout_id, element),
+                PulsingDotState {
+                    start: state.start,
+                    _redraw: Some(redraw),
+                },
+            )
+        })
     }
 
     fn prepaint(

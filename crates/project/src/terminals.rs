@@ -516,7 +516,22 @@ impl Project {
             cwd
         };
 
-        let builder = terminal.read(cx).clone_builder(cx, local_path);
+        let mut env_overrides = HashMap::default();
+        // A split must not share the original's agent identity, or hook events and tab
+        // attention from either pane would be attributed to both.
+        if terminal
+            .read(cx)
+            .env_var(superzent_agent::AGENT_TERMINAL_ID_ENV_VAR)
+            .is_some()
+        {
+            env_overrides.insert(
+                superzent_agent::AGENT_TERMINAL_ID_ENV_VAR.to_string(),
+                superzent_agent::new_terminal_id(),
+            );
+        }
+        let builder = terminal
+            .read(cx)
+            .clone_builder(cx, local_path, env_overrides);
         cx.spawn(async |project, cx| {
             let terminal = builder.await?;
             project.update(cx, |project, cx| {

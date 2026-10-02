@@ -1291,6 +1291,8 @@ impl SuperzentStore {
         reason: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        let review_pending =
+            review_pending || self.review_held_workspace_ids.contains(workspace_id);
         let Some(workspace) = self
             .state
             .workspaces

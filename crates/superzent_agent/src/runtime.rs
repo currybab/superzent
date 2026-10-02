@@ -89,9 +89,13 @@ pub fn subscribe() -> Result<smol::channel::Receiver<AgentHookEvent>> {
     Ok(receiver)
 }
 
+pub fn new_terminal_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
 pub fn inject_terminal_environment(environment: &mut HashMap<String, String>) -> Result<String> {
     let runtime = runtime()?;
-    let terminal_id = Uuid::new_v4().to_string();
+    let terminal_id = new_terminal_id();
 
     environment.insert(
         AGENT_HOOK_URL_ENV_VAR.to_string(),
