@@ -46,7 +46,7 @@ use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use ui::{
-    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    ContextMenu, Divider, Indicator, PulsingDot, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, GlobalSetting, ScrollbarVisibility},
 };
@@ -68,6 +68,7 @@ struct ImeState {
 }
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+const TAB_ATTENTION_BLINK_STEP: Duration = Duration::from_millis(800);
 
 /// Event to transmit the scroll from the element to the view
 #[derive(Clone, Debug, PartialEq)]
@@ -157,8 +158,17 @@ pub struct TerminalView {
     self_handle: WeakEntity<Self>,
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
+    tab_attention: Option<TerminalTabAttention>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
+}
+
+/// Something in the terminal that is waiting on the user, surfaced as a dot on its tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalTabAttention {
+    Working,
+    NeedsApproval,
+    NeedsReview,
 }
 
 #[derive(Default, Clone)]
@@ -311,6 +321,7 @@ impl TerminalView {
             self_handle: cx.entity().downgrade(),
             rename_editor: None,
             rename_editor_subscription: None,
+            tab_attention: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
         }
@@ -418,6 +429,40 @@ impl TerminalView {
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
+    }
+
+    pub fn set_tab_attention(
+        &mut self,
+        tab_attention: Option<TerminalTabAttention>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tab_attention != tab_attention {
+            self.tab_attention = tab_attention;
+            cx.emit(ItemEvent::UpdateTab);
+            cx.notify();
+        }
+    }
+
+    fn render_tab_attention(&self, tab_attention: TerminalTabAttention) -> AnyElement {
+        let (name, color) = match tab_attention {
+            TerminalTabAttention::Working => ("working", Color::Warning),
+            TerminalTabAttention::NeedsApproval => ("approval", Color::Error),
+            TerminalTabAttention::NeedsReview => {
+                return Indicator::dot().color(Color::Success).into_any_element();
+            }
+        };
+        // A two-step blink only needs a redraw per step, unlike a smooth pulse.
+        PulsingDot::new(
+            SharedString::from(format!(
+                "terminal-tab-{name}-{}",
+                self.self_handle.entity_id()
+            )),
+            TAB_ATTENTION_BLINK_STEP * 2,
+            div().child(Indicator::dot().color(color)),
+            |indicator: Div, delta: f32| indicator.opacity(if delta < 0.5 { 1. } else { 0.3 }),
+        )
+        .redraw_interval(TAB_ATTENTION_BLINK_STEP)
+        .into_any_element()
     }
 
     pub fn is_renaming(&self) -> bool {
@@ -1430,6 +1475,9 @@ impl Item for TerminalView {
                 self_handle
                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
                     .ok();
+            })
+            .when_some(self.tab_attention, |this, tab_attention| {
+                this.child(self.render_tab_attention(tab_attention))
             })
             .child(
                 h_flex()

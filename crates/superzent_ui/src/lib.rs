@@ -56,7 +56,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 #[cfg(target_os = "macos")]
 use std::{
@@ -77,13 +77,13 @@ use terminal::{
     Event as TerminalEvent,
     terminal_settings::{TerminalAgentNotificationMode, TerminalSettings},
 };
-use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
+use terminal_view::{TerminalTabAttention, TerminalView, terminal_panel::TerminalPanel};
 #[cfg(feature = "acp_tabs")]
 use ui::ContextMenuEntry;
 use ui::{
     ButtonLike, Checkbox, Chip, CommonAnimationExt, ContextMenu, CopyButton, Disclosure,
     DropdownMenu, DropdownStyle, ElevationIndex, Icon, Indicator, ListItem, Modal, ModalFooter,
-    ModalHeader, Section, Tab, ToggleState, Tooltip, prelude::*,
+    ModalHeader, PulsingDot, Section, Tab, ToggleState, Tooltip, prelude::*,
 };
 use uuid::Uuid;
 use workspace::{
@@ -226,6 +226,12 @@ fn toggle_superzent_right_sidebar(
     show_superzent_right_sidebar(workspace, Some(tab), true, window, cx);
 }
 
+#[cfg(feature = "acp_tabs")]
+struct NotificationTarget {
+    workspace_id: String,
+    terminal_id: String,
+}
+
 #[derive(Clone)]
 struct LiveTerminalAttention {
     workspace_id: String,
@@ -243,13 +249,16 @@ struct WorkspaceAttentionController {
     store: Entity<SuperzentStore>,
     terminal_ids_by_entity: BTreeMap<EntityId, String>,
     workspace_ids_by_terminal: BTreeMap<String, String>,
+    terminal_views_by_terminal: BTreeMap<String, WeakEntity<TerminalView>>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
+    unreviewed_terminals: BTreeMap<String, String>,
+    focused_terminal_id: Option<String>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
     #[cfg(feature = "acp_tabs")]
     notification_subscriptions: Vec<Subscription>,
     #[cfg(feature = "acp_tabs")]
-    active_notification_workspace_id: Option<String>,
+    active_notification_target: Option<NotificationTarget>,
     #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
     notification_hotkeys: Option<NotificationHotkeys>,
     _hook_task: Task<Result<()>>,
@@ -292,7 +301,7 @@ impl WorkspaceAttentionController {
                 Some(receiver) => cx.spawn(async move |this, cx| {
                     while let Ok(workspace_id) = receiver.recv().await {
                         this.update(cx, |this, cx| {
-                            this.handle_native_notification_activation(&workspace_id, cx);
+                            this.handle_native_notification_activation(&workspace_id, None, cx);
                         })?;
                     }
                     Ok(())
@@ -322,13 +331,16 @@ impl WorkspaceAttentionController {
             store,
             terminal_ids_by_entity: BTreeMap::new(),
             workspace_ids_by_terminal: BTreeMap::new(),
+            terminal_views_by_terminal: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
+            unreviewed_terminals: BTreeMap::new(),
+            focused_terminal_id: None,
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
             #[cfg(feature = "acp_tabs")]
             notification_subscriptions: Vec::new(),
             #[cfg(feature = "acp_tabs")]
-            active_notification_workspace_id: None,
+            active_notification_target: None,
             #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
             notification_hotkeys: None,
             _hook_task: hook_task,
@@ -341,6 +353,7 @@ impl WorkspaceAttentionController {
     fn register_terminal<T>(
         &mut self,
         terminal: Entity<T>,
+        terminal_view: WeakEntity<TerminalView>,
         terminal_id: String,
         workspace_id: Option<String>,
         cx: &mut Context<Self>,
@@ -350,6 +363,9 @@ impl WorkspaceAttentionController {
         let entity_id = terminal.entity_id();
         self.terminal_ids_by_entity
             .insert(entity_id, terminal_id.clone());
+        self.terminal_views_by_terminal
+            .insert(terminal_id.clone(), terminal_view);
+        self.sync_terminal_tab_attention(&terminal_id, cx);
         if let Some(workspace_id) = workspace_id {
             self.workspace_ids_by_terminal
                 .insert(terminal_id.clone(), workspace_id);
@@ -368,6 +384,24 @@ impl WorkspaceAttentionController {
         cx: &mut Context<Self>,
     ) {
         self.terminal_ids_by_entity.remove(&entity_id);
+        self.terminal_views_by_terminal.remove(terminal_id);
+        if self.focused_terminal_id.as_deref() == Some(terminal_id) {
+            self.focused_terminal_id = None;
+        }
+        if let Some(workspace_id) = self.unreviewed_terminals.remove(terminal_id)
+            && !self.workspace_has_unreviewed_terminals(&workspace_id)
+        {
+            // Closing the tab from inside its workspace is a deliberate dismissal. Otherwise
+            // (e.g. the whole workspace went away) leave the review for the next activation.
+            let closed_from_active_workspace =
+                self.store.read(cx).active_workspace_id() == Some(workspace_id.as_str());
+            self.store.update(cx, |store, cx| {
+                store.set_workspace_review_held(&workspace_id, false);
+                if closed_from_active_workspace {
+                    store.acknowledge_workspace_review(&workspace_id, cx);
+                }
+            });
+        }
         let tracked_workspace_id = self.workspace_ids_by_terminal.remove(terminal_id);
         let workspace_id = workspace_id_for_terminal_unregister(
             self.live_terminal_attention.remove(terminal_id).as_ref(),
@@ -376,6 +410,87 @@ impl WorkspaceAttentionController {
         if let Some(workspace_id) = workspace_id {
             self.recompute_workspace_attention(&workspace_id, cx);
         }
+    }
+
+    fn workspace_has_unreviewed_terminals(&self, workspace_id: &str) -> bool {
+        self.unreviewed_terminals
+            .values()
+            .any(|unreviewed_workspace_id| unreviewed_workspace_id == workspace_id)
+    }
+
+    fn is_terminal_in_view(&self, terminal_id: &str, cx: &App) -> bool {
+        cx.active_window().is_some() && self.focused_terminal_id.as_deref() == Some(terminal_id)
+    }
+
+    fn handle_terminal_focus_in(
+        &mut self,
+        terminal_id: &str,
+        window_active: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.focused_terminal_id = Some(terminal_id.to_string());
+        if window_active {
+            self.mark_terminal_viewed(terminal_id, cx);
+        }
+    }
+
+    fn handle_terminal_focus_out(&mut self, terminal_id: &str) {
+        if self.focused_terminal_id.as_deref() == Some(terminal_id) {
+            self.focused_terminal_id = None;
+        }
+    }
+
+    fn mark_terminal_viewed(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        #[cfg(feature = "acp_tabs")]
+        if self
+            .active_notification_target
+            .as_ref()
+            .is_some_and(|target| target.terminal_id == terminal_id)
+        {
+            self.dismiss_notifications(cx);
+        }
+
+        let Some(workspace_id) = self.unreviewed_terminals.remove(terminal_id) else {
+            return;
+        };
+        self.sync_terminal_tab_attention(terminal_id, cx);
+        if self.workspace_has_unreviewed_terminals(&workspace_id) {
+            return;
+        }
+        self.store.update(cx, |store, cx| {
+            store.set_workspace_review_held(&workspace_id, false);
+            store.acknowledge_workspace_review(&workspace_id, cx);
+        });
+        self.recompute_workspace_attention(&workspace_id, cx);
+    }
+
+    fn terminal_tab_attention(&self, terminal_id: &str) -> Option<TerminalTabAttention> {
+        match self
+            .live_terminal_attention
+            .get(terminal_id)
+            .map(|attention| &attention.status)
+        {
+            Some(WorkspaceAttentionStatus::Permission) => Some(TerminalTabAttention::NeedsApproval),
+            Some(WorkspaceAttentionStatus::Working) => Some(TerminalTabAttention::Working),
+            Some(WorkspaceAttentionStatus::Idle | WorkspaceAttentionStatus::Review) | None => self
+                .unreviewed_terminals
+                .contains_key(terminal_id)
+                .then_some(TerminalTabAttention::NeedsReview),
+        }
+    }
+
+    fn sync_terminal_tab_attention(&self, terminal_id: &str, cx: &mut Context<Self>) {
+        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
+            return;
+        };
+        let tab_attention = self.terminal_tab_attention(terminal_id);
+        // Focus, input, and creation callbacks reach the controller while the terminal view
+        // itself is being updated, so updating it synchronously would double-lease it.
+        cx.defer(move |cx| {
+            terminal_view.update(cx, |terminal_view, cx| {
+                terminal_view.set_tab_attention(tab_attention, cx);
+            });
+        });
     }
 
     fn handle_terminal_input(
@@ -401,6 +516,7 @@ impl WorkspaceAttentionController {
                 status: next_status,
             },
         );
+        self.sync_terminal_tab_attention(terminal_id, cx);
         self.store.update(cx, |store, cx| {
             store.set_workspace_attention(
                 workspace_id,
@@ -460,12 +576,13 @@ impl WorkspaceAttentionController {
         match event.event_type {
             AgentHookEventType::Start => {
                 self.live_terminal_attention.insert(
-                    event.terminal_id,
+                    event.terminal_id.clone(),
                     LiveTerminalAttention {
                         workspace_id: workspace_id.clone(),
                         status: WorkspaceAttentionStatus::Working,
                     },
                 );
+                self.sync_terminal_tab_attention(&event.terminal_id, cx);
                 self.store.update(cx, |store, cx| {
                     store.set_workspace_attention(
                         &workspace_id,
@@ -485,6 +602,7 @@ impl WorkspaceAttentionController {
                         status: WorkspaceAttentionStatus::Permission,
                     },
                 );
+                self.sync_terminal_tab_attention(&event.terminal_id, cx);
                 self.store.update(cx, |store, cx| {
                     store.set_workspace_attention(
                         &workspace_id,
@@ -497,6 +615,7 @@ impl WorkspaceAttentionController {
                 self.recompute_workspace_attention(&workspace_id, cx);
                 self.maybe_show_terminal_notification(
                     TerminalLifecycleNotification::PermissionRequest,
+                    &event.terminal_id,
                     &workspace_id,
                     &workspace_name,
                     cx,
@@ -504,10 +623,20 @@ impl WorkspaceAttentionController {
             }
             AgentHookEventType::Stop => {
                 self.live_terminal_attention.remove(&event.terminal_id);
+                if self.is_terminal_in_view(&event.terminal_id, cx) {
+                    self.sync_terminal_tab_attention(&event.terminal_id, cx);
+                    self.recompute_workspace_attention(&workspace_id, cx);
+                    return;
+                }
+
+                self.unreviewed_terminals
+                    .insert(event.terminal_id.clone(), workspace_id.clone());
+                self.sync_terminal_tab_attention(&event.terminal_id, cx);
                 let (attention_status, review_pending) =
                     workspace_attention_for_terminal_status(&TaskStatus::Completed)
                         .expect("completed terminal status should map to attention");
                 self.store.update(cx, |store, cx| {
+                    store.set_workspace_review_held(&workspace_id, true);
                     store.set_workspace_attention(
                         &workspace_id,
                         attention_status,
@@ -522,6 +651,7 @@ impl WorkspaceAttentionController {
                 self.recompute_workspace_attention(&workspace_id, cx);
                 self.maybe_show_terminal_notification(
                     TerminalLifecycleNotification::Completed,
+                    &event.terminal_id,
                     &workspace_id,
                     &workspace_name,
                     cx,
@@ -578,12 +708,21 @@ impl WorkspaceAttentionController {
         });
     }
 
+    fn live_terminal_view(&self, terminal_id: &str) -> Option<Entity<TerminalView>> {
+        self.terminal_views_by_terminal
+            .get(terminal_id)
+            .and_then(WeakEntity::upgrade)
+    }
+
     fn handle_native_notification_activation(
         &mut self,
         workspace_id: &str,
+        terminal_id: Option<&str>,
         cx: &mut Context<Self>,
     ) {
         self.dismiss_notifications(cx);
+        let terminal_view =
+            terminal_id.and_then(|terminal_id| self.live_terminal_view(terminal_id));
 
         let Some(workspace_entry) = self.store.read(cx).workspace(workspace_id).cloned() else {
             return;
@@ -610,7 +749,12 @@ impl WorkspaceAttentionController {
                     .cloned();
                 window.activate_window();
                 if let Some(live_workspace) = live_workspace {
-                    multi_workspace.activate(live_workspace, cx);
+                    multi_workspace.activate(live_workspace.clone(), cx);
+                    if let Some(terminal_view) = terminal_view.as_ref() {
+                        live_workspace.update(cx, |workspace, cx| {
+                            reveal_terminal_view(workspace, terminal_view, window, cx);
+                        });
+                    }
                     true
                 } else {
                     false
@@ -642,10 +786,14 @@ impl WorkspaceAttentionController {
     fn maybe_show_terminal_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
+        terminal_id: &str,
         workspace_id: &str,
         workspace_name: &str,
         cx: &mut Context<Self>,
     ) {
+        if self.is_terminal_in_view(terminal_id, cx) {
+            return;
+        }
         let mode = TerminalSettings::get_global(cx).agent_notifications;
         let should_show = should_show_terminal_notification(mode, workspace_id, &self.store, cx);
         if debug_terminal_notifications_enabled() {
@@ -663,13 +811,14 @@ impl WorkspaceAttentionController {
             return;
         }
 
-        self.show_popup_notification(notification, workspace_id, workspace_name, cx);
+        self.show_popup_notification(notification, terminal_id, workspace_id, workspace_name, cx);
     }
 
     #[cfg(feature = "acp_tabs")]
     fn show_popup_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
+        terminal_id: &str,
         workspace_id: &str,
         workspace_name: &str,
         cx: &mut Context<Self>,
@@ -699,6 +848,11 @@ impl WorkspaceAttentionController {
         let workspace_name = SharedString::from(workspace_name.to_string());
         let icon = notification.icon();
         let options = AgentNotification::window_options(screen, cx);
+        let action_label = if self.live_terminal_view(terminal_id).is_some() {
+            "Open Tab"
+        } else {
+            "Open Workspace"
+        };
 
         let screen_window = match cx.open_window(options, {
             move |_window, cx| {
@@ -709,7 +863,7 @@ impl WorkspaceAttentionController {
                         icon,
                         Some(workspace_name.clone()),
                     )
-                    .with_action_label("Open Workspace")
+                    .with_action_label(action_label)
                 })
             }
         }) {
@@ -740,14 +894,22 @@ impl WorkspaceAttentionController {
         }
 
         let workspace_id = workspace_id.to_string();
-        self.active_notification_workspace_id = Some(workspace_id.clone());
+        let terminal_id = terminal_id.to_string();
+        self.active_notification_target = Some(NotificationTarget {
+            workspace_id: workspace_id.clone(),
+            terminal_id: terminal_id.clone(),
+        });
         #[cfg(target_os = "macos")]
         self.register_notification_hotkeys();
         self.notification_subscriptions
             .push(
                 cx.subscribe(&pop_up, move |this, _, event, cx| match event {
                     AgentNotificationEvent::Accepted => {
-                        this.handle_native_notification_activation(&workspace_id, cx);
+                        this.handle_native_notification_activation(
+                            &workspace_id,
+                            Some(&terminal_id),
+                            cx,
+                        );
                     }
                     AgentNotificationEvent::Dismissed => {
                         this.dismiss_notifications(cx);
@@ -761,6 +923,7 @@ impl WorkspaceAttentionController {
     fn show_popup_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
+        _terminal_id: &str,
         workspace_id: &str,
         _workspace_name: &str,
         _cx: &mut Context<Self>,
@@ -776,7 +939,7 @@ impl WorkspaceAttentionController {
 
     #[cfg(feature = "acp_tabs")]
     fn dismiss_notifications(&mut self, cx: &mut Context<Self>) {
-        self.active_notification_workspace_id = None;
+        self.active_notification_target = None;
         #[cfg(target_os = "macos")]
         self.unregister_notification_hotkeys();
         for window in self.notifications.drain(..) {
@@ -795,10 +958,14 @@ impl WorkspaceAttentionController {
 
     #[cfg(feature = "acp_tabs")]
     fn open_active_notification_workspace(&mut self, cx: &mut Context<Self>) {
-        let Some(workspace_id) = self.active_notification_workspace_id.take() else {
+        let Some(target) = self.active_notification_target.take() else {
             return;
         };
-        self.handle_native_notification_activation(&workspace_id, cx);
+        self.handle_native_notification_activation(
+            &target.workspace_id,
+            Some(&target.terminal_id),
+            cx,
+        );
     }
 
     #[cfg(not(feature = "acp_tabs"))]
@@ -914,8 +1081,9 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new({
         let attention_controller = attention_controller.clone();
-        move |terminal_view: &mut TerminalView, _window, cx: &mut Context<TerminalView>| {
+        move |terminal_view: &mut TerminalView, window, cx: &mut Context<TerminalView>| {
             let terminal = terminal_view.terminal().clone();
+            let terminal_view_handle = cx.entity().downgrade();
             let (terminal_id, workspace_id) = {
                 let terminal_snapshot = terminal.read(cx);
                 let Some(terminal_id) = terminal_snapshot
@@ -933,11 +1101,22 @@ pub fn init(cx: &mut App) {
             attention_controller.update(cx, |controller, cx| {
                 controller.register_terminal(
                     terminal,
+                    terminal_view_handle,
                     terminal_id.clone(),
                     workspace_id.clone(),
                     cx,
                 );
             });
+
+            if let Some(window) = window {
+                observe_terminal_view_focus(
+                    terminal_view,
+                    &terminal_id,
+                    &attention_controller,
+                    window,
+                    cx,
+                );
+            }
 
             let Some(workspace_id) = workspace_id else {
                 return;
@@ -7789,6 +7968,87 @@ fn inferred_project_id_for_live_workspace(
         .map(|project| project.id.clone())
 }
 
+fn observe_terminal_view_focus(
+    terminal_view: &TerminalView,
+    terminal_id: &str,
+    attention_controller: &Entity<WorkspaceAttentionController>,
+    window: &mut Window,
+    cx: &mut Context<TerminalView>,
+) {
+    let focus_handle = terminal_view.focus_handle(cx);
+    cx.on_focus_in(&focus_handle, window, {
+        let terminal_id = terminal_id.to_string();
+        let attention_controller = attention_controller.clone();
+        move |_, window, cx| {
+            let window_active = window.is_window_active();
+            attention_controller.update(cx, |controller, cx| {
+                controller.handle_terminal_focus_in(&terminal_id, window_active, cx);
+            });
+        }
+    })
+    .detach();
+    cx.on_focus_out(&focus_handle, window, {
+        let terminal_id = terminal_id.to_string();
+        let attention_controller = attention_controller.clone();
+        move |_, _, _, cx| {
+            attention_controller.update(cx, |controller, _| {
+                controller.handle_terminal_focus_out(&terminal_id);
+            });
+        }
+    })
+    .detach();
+    // Returning to the app doesn't move focus, so a terminal that was already focused
+    // only becomes "seen" through window activation.
+    cx.observe_window_activation(window, {
+        let terminal_id = terminal_id.to_string();
+        let attention_controller = attention_controller.clone();
+        move |terminal_view, window, cx| {
+            if !window.is_window_active()
+                || !terminal_view.focus_handle(cx).contains_focused(window, cx)
+            {
+                return;
+            }
+            attention_controller.update(cx, |controller, cx| {
+                controller.handle_terminal_focus_in(&terminal_id, true, cx);
+            });
+        }
+    })
+    .detach();
+}
+
+fn reveal_terminal_view(
+    workspace: &mut Workspace,
+    terminal_view: &Entity<TerminalView>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    if workspace.activate_item(terminal_view, true, true, window, cx) {
+        return true;
+    }
+
+    let Some(terminal_panel) = workspace.panel::<TerminalPanel>(cx) else {
+        return false;
+    };
+    let Some((pane, item_index)) = terminal_panel
+        .read(cx)
+        .panes()
+        .into_iter()
+        .find_map(|pane| {
+            pane.read(cx)
+                .index_for_item(terminal_view)
+                .map(|item_index| (pane.clone(), item_index))
+        })
+    else {
+        return false;
+    };
+
+    workspace.open_panel::<TerminalPanel>(window, cx);
+    pane.update(cx, |pane, cx| {
+        pane.activate_item(item_index, true, true, window, cx);
+    });
+    true
+}
+
 fn workspace_matches_entry(
     workspace: &Entity<Workspace>,
     workspace_entry: &WorkspaceEntry,
@@ -8654,136 +8914,6 @@ fn render_workspace_attention_indicator(
             },
         )
         .into_any_element(),
-    }
-}
-
-/// A self-contained pulsing wrapper for the workspace attention dot.
-///
-/// `gpui::with_animation` calls `request_animation_frame` on every frame, which
-/// drives a full-window relayout at the display refresh rate (120Hz on ProMotion)
-/// for as long as the animated element is on screen. A tiny attention dot only
-/// needs a low frame rate to read as a smooth pulse, so this element schedules its
-/// own redraw on a fixed interval instead, keeping the whole window from re-laying
-/// out at the display rate while an agent is working.
-struct PulsingDot {
-    id: ElementId,
-    period: Duration,
-    interval: Duration,
-    element: Option<Div>,
-    animator: Box<dyn Fn(Div, f32) -> Div + 'static>,
-}
-
-impl PulsingDot {
-    fn new(
-        id: impl Into<ElementId>,
-        period: Duration,
-        element: Div,
-        animator: impl Fn(Div, f32) -> Div + 'static,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            period,
-            interval: Duration::from_millis(50),
-            element: Some(element),
-            animator: Box::new(animator),
-        }
-    }
-}
-
-struct PulsingDotState {
-    start: Instant,
-    // Holds the scheduled redraw alive; dropping it cancels the wake-up, so the
-    // pulse stops automatically once the element leaves the tree.
-    _redraw: Option<Task<()>>,
-}
-
-impl IntoElement for PulsingDot {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for PulsingDot {
-    type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        global_id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        window.with_element_state(
-            global_id.expect("PulsingDot reports an id, so it is always stateful"),
-            |state, window| {
-                let state = state.unwrap_or_else(|| PulsingDotState {
-                    start: Instant::now(),
-                    _redraw: None,
-                });
-                let delta =
-                    (state.start.elapsed().as_secs_f32() / self.period.as_secs_f32()).fract();
-
-                let element = self
-                    .element
-                    .take()
-                    .expect("PulsingDot::request_layout is called once");
-                let mut element = (self.animator)(element, delta).into_any_element();
-
-                // Wake this view after a fixed interval rather than on the next
-                // frame, decoupling the pulse cadence from the display refresh rate.
-                let view = window.current_view();
-                let interval = self.interval;
-                let redraw = cx.spawn(async move |cx| {
-                    cx.background_executor().timer(interval).await;
-                    cx.update(|cx| cx.notify(view));
-                });
-
-                let layout_id = element.request_layout(window, cx);
-                (
-                    (layout_id, element),
-                    PulsingDotState {
-                        start: state.start,
-                        _redraw: Some(redraw),
-                    },
-                )
-            },
-        )
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: gpui::Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        element.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: gpui::Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        element.paint(window, cx);
     }
 }
 
