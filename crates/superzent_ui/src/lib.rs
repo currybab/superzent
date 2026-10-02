@@ -9,6 +9,7 @@ pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 
 #[cfg(feature = "acp_tabs")]
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
+use acp_thread::{AcpThread, ThreadStatus};
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
     AgentNotification, AgentNotificationEvent, open_external_acp_tab, pane_has_external_acp_item,
@@ -278,7 +279,16 @@ pub fn busy_agents_quit_prompt(cx: &App) -> Option<String> {
             )
         })
         .count();
-    busy_agents_quit_message(hooked_agents + preset_agents)
+    let acp_agents = controller
+        .acp_threads
+        .iter()
+        .filter_map(WeakEntity::upgrade)
+        .filter(|thread| {
+            let thread = thread.read(cx);
+            acp_thread_is_busy(thread.status(), thread.parent_session_id().is_some())
+        })
+        .count();
+    busy_agents_quit_message(hooked_agents + preset_agents + acp_agents)
 }
 
 enum PresetLaunch {
@@ -344,6 +354,9 @@ struct WorkspaceAttentionController {
     // (or for agents that never do), the launch itself is the only busy signal.
     preset_terminals: Vec<TrackedPresetTerminal>,
     hook_reporting_terminals: BTreeSet<String>,
+    // Agent panel and ACP tab conversations, which quitting stops along with their
+    // agent servers.
+    acp_threads: Vec<WeakEntity<AcpThread>>,
     focused_terminal: Option<FocusedTerminal>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -429,6 +442,7 @@ impl WorkspaceAttentionController {
             next_attention_sequence: 0,
             preset_terminals: Vec::new(),
             hook_reporting_terminals: BTreeSet::new(),
+            acp_threads: Vec::new(),
             focused_terminal: None,
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
@@ -1269,6 +1283,20 @@ pub fn init(cx: &mut App) {
 
     let attention_controller = cx.new(WorkspaceAttentionController::new);
     cx.set_global(GlobalAttentionController(attention_controller.clone()));
+
+    cx.observe_new({
+        let attention_controller = attention_controller.clone();
+        move |_: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
+            let thread = cx.entity().downgrade();
+            attention_controller.update(cx, |controller, _| {
+                controller
+                    .acp_threads
+                    .retain(|thread| thread.upgrade().is_some());
+                controller.acp_threads.push(thread);
+            });
+        }
+    })
+    .detach();
 
     cx.observe_new({
         let attention_controller = attention_controller.clone();
@@ -9060,6 +9088,11 @@ fn count_busy_agents<'a>(statuses: impl Iterator<Item = &'a WorkspaceAttentionSt
         .count()
 }
 
+fn acp_thread_is_busy(status: ThreadStatus, is_subagent: bool) -> bool {
+    // A subagent only runs inside its parent's turn, which is already counted.
+    !is_subagent && status == ThreadStatus::Generating
+}
+
 fn preset_agent_is_busy(
     launch: &PresetLaunch,
     reported_hooks: bool,
@@ -10179,6 +10212,13 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn only_generating_top_level_acp_threads_are_busy() {
+        assert!(acp_thread_is_busy(ThreadStatus::Generating, false));
+        assert!(!acp_thread_is_busy(ThreadStatus::Generating, true));
+        assert!(!acp_thread_is_busy(ThreadStatus::Idle, false));
     }
 
     #[test]

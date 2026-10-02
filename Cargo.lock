@@ -17002,6 +17002,7 @@ dependencies = [
 name = "superzent_ui"
 version = "0.1.0"
 dependencies = [
+ "acp_thread",
  "agent_ui",
  "anyhow",
  "chrono",
