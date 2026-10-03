@@ -43,13 +43,15 @@ impl AgentNotification {
             height: px(72.),
         };
 
-        let notification_margin = px(16.);
+        let notification_margin_width = px(16.);
+        let notification_margin_height = px(-48.);
 
-        // Anchor to the visible area so the menu bar (taller on notched displays) and
-        // a top Dock are accounted for on every display.
         let bounds = gpui::Bounds::<Pixels> {
-            origin: screen.visible_bounds().top_right()
-                - point(size.width + notification_margin, -notification_margin),
+            origin: screen.bounds().top_right()
+                - point(
+                    size.width + notification_margin_width,
+                    notification_margin_height,
+                ),
             size,
         };
 

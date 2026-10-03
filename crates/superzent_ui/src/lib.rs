@@ -248,7 +248,7 @@ const NOTIFICATION_PLACEMENT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Clone, Copy, PartialEq)]
 struct PopupPlacement {
     display_id: gpui::DisplayId,
-    visible_bounds: gpui::Bounds<gpui::Pixels>,
+    bounds: gpui::Bounds<gpui::Pixels>,
 }
 
 #[cfg(feature = "acp_tabs")]
@@ -260,7 +260,7 @@ fn primary_popup_display(
         .or_else(|| cx.displays().into_iter().next())?;
     let placement = PopupPlacement {
         display_id: display.id(),
-        visible_bounds: display.visible_bounds(),
+        bounds: display.bounds(),
     };
     Some((display, placement))
 }
@@ -10312,7 +10312,7 @@ mod tests {
     fn popup_placement(display_id: u32, width: f32) -> PopupPlacement {
         PopupPlacement {
             display_id: gpui::DisplayId::new(display_id),
-            visible_bounds: gpui::Bounds {
+            bounds: gpui::Bounds {
                 origin: gpui::point(px(0.), px(25.)),
                 size: gpui::size(px(width), px(900.)),
             },
