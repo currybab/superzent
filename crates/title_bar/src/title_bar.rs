@@ -206,6 +206,13 @@ impl Render for TitleBar {
     }
 }
 
+// Only the header's controls keep a mouse-down from arming the platform title bar's
+// window drag (so a click with a tiny move still lands); the rest of the header stays
+// draggable and double-clickable.
+fn stop_title_bar_drag(_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut App) {
+    cx.stop_propagation();
+}
+
 impl TitleBar {
     pub fn new(
         id: impl Into<ElementId>,
@@ -384,14 +391,16 @@ impl TitleBar {
             .items_center()
             .justify_between()
             .child(
-                h_flex()
-                    .w(px(120.))
-                    .items_center()
-                    .gap_1()
-                    .children(self.render_workspace_sidebar_toggle(window, cx))
-                    .when(title_bar_settings.show_resource_monitor, |header| {
-                        header.child(self.resource_monitor.clone())
-                    }),
+                h_flex().w(px(120.)).items_center().child(
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .on_mouse_down(MouseButton::Left, stop_title_bar_drag)
+                        .children(self.render_workspace_sidebar_toggle(window, cx))
+                        .when(title_bar_settings.show_resource_monitor, |header| {
+                            header.child(self.resource_monitor.clone())
+                        }),
+                ),
             )
             .child(
                 h_flex().flex_1().justify_center().px_4().child(
@@ -408,38 +417,40 @@ impl TitleBar {
                     .items_center()
                     .gap_1()
                     .child(
-                        IconButton::new("superzent-header-toggle-details", details_sidebar_icon)
-                            .shape(ui::IconButtonShape::Square)
-                            .icon_size(IconSize::Small)
-                            .tooltip(move |_window, cx| {
-                                if is_details_sidebar_open {
-                                    Tooltip::for_action(
-                                        "Hide details sidebar",
-                                        &ToggleRightDock,
-                                        cx,
-                                    )
-                                } else {
-                                    Tooltip::for_action(
-                                        "Show details sidebar",
-                                        &ToggleRightDock,
-                                        cx,
-                                    )
-                                }
-                            })
-                            .on_click(move |_, window, cx| {
-                                if let Some(workspace) = workspace.upgrade() {
-                                    workspace.update(cx, |workspace, cx| {
-                                        workspace.toggle_dock(DockPosition::Right, window, cx);
-                                    });
-                                }
-                            }),
+                        div()
+                            .on_mouse_down(MouseButton::Left, stop_title_bar_drag)
+                            .child(
+                                IconButton::new(
+                                    "superzent-header-toggle-details",
+                                    details_sidebar_icon,
+                                )
+                                .shape(ui::IconButtonShape::Square)
+                                .icon_size(IconSize::Small)
+                                .tooltip(move |_window, cx| {
+                                    if is_details_sidebar_open {
+                                        Tooltip::for_action(
+                                            "Hide details sidebar",
+                                            &ToggleRightDock,
+                                            cx,
+                                        )
+                                    } else {
+                                        Tooltip::for_action(
+                                            "Show details sidebar",
+                                            &ToggleRightDock,
+                                            cx,
+                                        )
+                                    }
+                                })
+                                .on_click(move |_, window, cx| {
+                                    if let Some(workspace) = workspace.upgrade() {
+                                        workspace.update(cx, |workspace, cx| {
+                                            workspace.toggle_dock(DockPosition::Right, window, cx);
+                                        });
+                                    }
+                                }),
+                            ),
                     ),
             )
-            .on_mouse_down(MouseButton::Left, |event, _, cx| {
-                if event.click_count < 2 {
-                    cx.stop_propagation();
-                }
-            })
             .into_any_element()
     }
 
