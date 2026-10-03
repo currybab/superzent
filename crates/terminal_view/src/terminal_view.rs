@@ -444,18 +444,7 @@ impl TerminalView {
     }
 
     fn render_tab_attention(&self, tab_attention: TerminalTabAttention) -> AnyElement {
-        // Overlaid in the tab's leading padding, left of the icon, so the tab keeps its
-        // width when the dot appears. The offset is in rems so it scales with the dot.
-        let dot = |color| {
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(-rems_from_px(9.))
-                .flex()
-                .items_center()
-                .child(Indicator::dot().color(color))
-        };
+        let dot = |color| div().child(Indicator::dot().color(color));
         let (name, color) = match tab_attention {
             TerminalTabAttention::Working => ("working", Color::Warning),
             TerminalTabAttention::NeedsApproval => ("approval", Color::Error),
@@ -1493,14 +1482,10 @@ impl Item for TerminalView {
                     .group("term-tab-icon")
                     .child(
                         div()
-                            .relative()
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .child(Icon::new(icon).color(icon_color))
-                            .when_some(self.tab_attention, |this, tab_attention| {
-                                this.child(self.render_tab_attention(tab_attention))
-                            }),
+                            .child(Icon::new(icon).color(icon_color)),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
                         this.child(
@@ -1547,6 +1532,13 @@ impl Item for TerminalView {
                     }),
             )
             .into_any()
+    }
+
+    fn tab_indicator(&self, _cx: &App) -> Option<AnyElement> {
+        // Drawn in the tab's fixed-size indicator slot, so it never widens the tab and
+        // moves with the slot when the close button is on the left.
+        self.tab_attention
+            .map(|tab_attention| self.render_tab_attention(tab_attention))
     }
 
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
