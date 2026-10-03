@@ -827,17 +827,13 @@ impl PickerDelegate for TabSwitcherDelegate {
 
         let icon = tab_match.icon(&self.project, selected, window, cx);
 
-        let indicator = render_item_indicator(tab_match.item.boxed_clone(), cx);
-        let indicator_color = if let Some(ref indicator) = indicator {
+        let dirty_indicator = render_item_indicator(tab_match.item.boxed_clone(), cx);
+        let indicator_color = if let Some(ref indicator) = dirty_indicator {
             indicator.color
         } else {
             Color::default()
         };
-        let indicator = h_flex()
-            .flex_shrink_0()
-            .children(indicator)
-            .child(div().w_2())
-            .into_any_element();
+        let item_indicator = tab_match.item.tab_indicator(cx);
         let close_button = div()
             .id("close-button")
             .on_mouse_up(
@@ -870,8 +866,34 @@ impl PickerDelegate for TabSwitcherDelegate {
                 .start_slot::<DecoratedIcon>(icon)
                 .map(|el| {
                     if self.selected_index == ix {
-                        el.end_slot::<AnyElement>(close_button)
+                        // The close button stands in for the dirty dot (via its color), but
+                        // an item's own indicator would be lost, so keep it beside the button.
+                        el.end_slot::<AnyElement>(match item_indicator {
+                            Some(item_indicator) => h_flex()
+                                .flex_shrink_0()
+                                .gap_1()
+                                .child(item_indicator)
+                                .child(close_button)
+                                .into_any_element(),
+                            None => close_button,
+                        })
+                    } else if let Some(item_indicator) = item_indicator {
+                        // The hover slot is drawn alongside the end slot, so keep a single
+                        // copy of the item's indicator and only reveal the close button.
+                        el.end_slot::<AnyElement>(
+                            h_flex()
+                                .flex_shrink_0()
+                                .gap_1()
+                                .child(item_indicator)
+                                .child(div().visible_on_hover("list_item").child(close_button))
+                                .into_any_element(),
+                        )
                     } else {
+                        let indicator = h_flex()
+                            .flex_shrink_0()
+                            .children(dirty_indicator)
+                            .child(div().w_2())
+                            .into_any_element();
                         el.end_slot::<AnyElement>(indicator)
                             .end_hover_slot::<AnyElement>(close_button)
                     }

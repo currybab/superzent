@@ -2799,7 +2799,9 @@ impl Pane {
         let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
         let show_close_button = &settings.show_close_button;
-        let indicator = render_item_indicator(item.boxed_clone(), cx);
+        let indicator = item.tab_indicator(cx).or_else(|| {
+            render_item_indicator(item.boxed_clone(), cx).map(IntoElement::into_any_element)
+        });
         let tab_tooltip_content = item.tab_tooltip_content(cx);
         let item_id = item.item_id();
         let is_first_item = ix == 0;
@@ -2926,7 +2928,7 @@ impl Pane {
                 this.drag_split_direction = None;
                 this.handle_external_paths_drop(paths, window, cx)
             }))
-            .start_slot::<Indicator>(indicator)
+            .start_slot::<AnyElement>(indicator)
             .map(|this| {
                 let end_slot_action: &'static dyn Action;
                 let end_slot_tooltip_text: &'static str;
