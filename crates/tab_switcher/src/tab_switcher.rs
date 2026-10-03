@@ -827,15 +827,20 @@ impl PickerDelegate for TabSwitcherDelegate {
 
         let icon = tab_match.icon(&self.project, selected, window, cx);
 
-        let indicator = render_item_indicator(tab_match.item.boxed_clone(), cx);
-        let indicator_color = if let Some(ref indicator) = indicator {
+        let dirty_indicator = render_item_indicator(tab_match.item.boxed_clone(), cx);
+        let indicator_color = if let Some(ref indicator) = dirty_indicator {
             indicator.color
         } else {
             Color::default()
         };
         let indicator = h_flex()
             .flex_shrink_0()
-            .children(indicator)
+            .children(
+                tab_match
+                    .item
+                    .tab_indicator(cx)
+                    .or_else(|| dirty_indicator.map(IntoElement::into_any_element)),
+            )
             .child(div().w_2())
             .into_any_element();
         let close_button = div()
