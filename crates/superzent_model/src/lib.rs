@@ -1932,16 +1932,6 @@ fn default_presets() -> Vec<AgentPreset> {
             acp_agent_name: Some("claude-acp".into()),
             attention_patterns: vec!["waiting for input".into()],
         },
-        AgentPreset {
-            id: "gemini".into(),
-            label: "Gemini CLI".into(),
-            launch_mode: PresetLaunchMode::Terminal,
-            command: "gemini".into(),
-            args: Vec::new(),
-            env: BTreeMap::new(),
-            acp_agent_name: Some("gemini".into()),
-            attention_patterns: vec!["press enter".into()],
-        },
     ]
 }
 
@@ -2663,6 +2653,16 @@ mod tests {
 
         assert!(store.has_unreviewed_terminal("kept"));
         assert!(!store.has_unreviewed_terminal("orphaned"));
+    }
+
+    #[test]
+    fn default_presets_skip_the_retired_gemini_cli() {
+        let preset_ids = default_presets()
+            .into_iter()
+            .map(|preset| preset.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(preset_ids, ["codex", "claude-code"]);
     }
 
     #[test]
