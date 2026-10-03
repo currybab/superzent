@@ -877,13 +877,21 @@ impl PickerDelegate for TabSwitcherDelegate {
                                 .into_any_element(),
                             None => close_button,
                         })
+                    } else if let Some(item_indicator) = item_indicator {
+                        // The hover slot is drawn alongside the end slot, so keep a single
+                        // copy of the item's indicator and only reveal the close button.
+                        el.end_slot::<AnyElement>(
+                            h_flex()
+                                .flex_shrink_0()
+                                .gap_1()
+                                .child(item_indicator)
+                                .child(div().visible_on_hover("list_item").child(close_button))
+                                .into_any_element(),
+                        )
                     } else {
                         let indicator = h_flex()
                             .flex_shrink_0()
-                            .children(
-                                item_indicator
-                                    .or_else(|| dirty_indicator.map(IntoElement::into_any_element)),
-                            )
+                            .children(dirty_indicator)
                             .child(div().w_2())
                             .into_any_element();
                         el.end_slot::<AnyElement>(indicator)
