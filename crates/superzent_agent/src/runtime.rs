@@ -24,6 +24,7 @@ pub const AGENT_HOOK_BIN_DIR_ENV_VAR: &str = "SUPERZENT_AGENT_HOOK_BIN_DIR";
 pub const AGENT_TERMINAL_ID_ENV_VAR: &str = "SUPERZENT_TERMINAL_ID";
 pub const AGENT_WORKSPACE_ID_ENV_VAR: &str = "SUPERZENT_WORKSPACE_ID";
 pub const AGENT_DEBUG_HOOKS_ENV_VAR: &str = "SUPERZENT_DEBUG_HOOKS";
+const AGENT_KIND_ENV_VAR: &str = "SUPERZENT_AGENT_KIND";
 
 const HOOK_ENDPOINT_PATH: &str = "/agent-hook";
 const NOTIFY_SCRIPT_FILE_NAME: &str = "notify.sh";
@@ -58,6 +59,9 @@ pub struct PreparedWorkspaceLaunch {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentHookEventType {
+    // The agent launched or exited; neither says anything about work in progress.
+    SessionStart,
+    SessionEnd,
     Start,
     Stop,
     PermissionRequest,
@@ -70,6 +74,7 @@ pub struct AgentHookEvent {
     pub workspace_id: Option<String>,
     pub session_id: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub agent: Option<AgentKind>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +96,7 @@ pub fn subscribe() -> Result<smol::channel::Receiver<AgentHookEvent>> {
 
 /// Whether Superzent wraps this agent command so it reports lifecycle hook events.
 pub fn reports_lifecycle_hooks(command: &str) -> bool {
-    ManagedCommand::for_command(command).is_some()
+    AgentKind::for_command(command).is_some()
 }
 
 pub fn new_terminal_id() -> String {
@@ -169,7 +174,7 @@ pub fn prepare_workspace_launch(
     inject_terminal_environment(&mut environment)?;
     environment.insert(AGENT_WORKSPACE_ID_ENV_VAR.to_string(), workspace.id.clone());
 
-    let managed_command = ManagedCommand::for_command(&preset.command);
+    let managed_command = AgentKind::for_command(&preset.command);
     let (command, args) = if let Some(managed_command) = managed_command {
         environment.insert(
             managed_command.real_binary_env_var().to_string(),
@@ -424,11 +429,14 @@ fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
             .session_id
             .filter(|session_id| !session_id.trim().is_empty()),
         cwd: params.cwd.map(PathBuf::from),
+        agent: params.agent.as_deref().and_then(AgentKind::from_hook_value),
     }))
 }
 
 #[derive(Debug, Deserialize)]
 struct HookRequestParams {
+    #[serde(rename = "agent")]
+    agent: Option<String>,
     #[serde(rename = "cwd")]
     cwd: Option<String>,
     #[serde(rename = "event_type")]
@@ -459,17 +467,28 @@ fn map_hook_event_type(event_type: &str) -> Option<AgentHookEventType> {
         "Stop" | "AfterAgent" | "agent-turn-complete" | "sessionEnd" => {
             Some(AgentHookEventType::Stop)
         }
+        "SessionStart" => Some(AgentHookEventType::SessionStart),
+        "SessionEnd" => Some(AgentHookEventType::SessionEnd),
         _ => None,
     }
 }
 
+/// An agent CLI that Superzent wraps so it reports lifecycle hooks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ManagedCommand {
+pub enum AgentKind {
     Claude,
     Codex,
 }
 
-impl ManagedCommand {
+impl AgentKind {
+    fn from_hook_value(value: &str) -> Option<Self> {
+        match value {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
     fn for_command(command: &str) -> Option<Self> {
         let file_name = Path::new(command)
             .file_name()?
@@ -563,7 +582,7 @@ fi
 
 if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
   case "$EVENT_TYPE" in
-    Stop|AfterAgent|agent-turn-complete|sessionEnd) exit 0 ;;
+    Stop|AfterAgent|agent-turn-complete|sessionEnd|SessionStart|SessionEnd) exit 0 ;;
   esac
 fi
 
@@ -575,6 +594,7 @@ _superzent_status=$(curl -sSG "$SUPERZENT_AGENT_HOOK_URL" \
   --data-urlencode "workspace_id=$SUPERZENT_WORKSPACE_ID" \
   --data-urlencode "session_id=$SUPERZENT_SESSION_ID" \
   --data-urlencode "cwd=$PWD" \
+  --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
 _superzent_exit=$?
@@ -593,6 +613,8 @@ fn claude_settings_content(notify_script_path: &Path) -> Result<String> {
     );
     let settings = serde_json::json!({
         "hooks": {
+            "SessionStart": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
+            "SessionEnd": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
             "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
@@ -663,6 +685,7 @@ if [ -z "$REAL_BIN" ]; then
 fi
 
 {WRAPPER_NOTIFICATION_SCOPE}
+export {AGENT_KIND_ENV_VAR}=claude
 
 if [ "$_superzent_debug_enabled" = "1" ]; then
   echo "$(date '+%H:%M:%S') claude wrapper exec REAL_BIN=$REAL_BIN" >> "$_superzent_debug_log"
@@ -686,6 +709,13 @@ if [ -z "$REAL_BIN" ]; then
 fi
 
 {WRAPPER_NOTIFICATION_SCOPE}
+export {AGENT_KIND_ENV_VAR}=codex
+
+_superzent_report_session() {{
+  if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
+    bash "{notify_script_path}" "$(printf '{{"hook_event_name":"%s"}}' "$1")" >/dev/null 2>&1 || true
+  fi
+}}
 
 if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
   export CODEX_TUI_RECORD_SESSION=1
@@ -756,8 +786,10 @@ if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
   SUPERZENT_CODEX_START_WATCHER_PID=$!
 fi
 
+_superzent_report_session SessionStart
 "$REAL_BIN" -c "notify=[\"bash\",\"{notify_script_path}\"]" "$@"
 SUPERZENT_CODEX_STATUS=$?
+_superzent_report_session SessionEnd
 
 if [ -n "$SUPERZENT_CODEX_START_WATCHER_PID" ]; then
   kill "$SUPERZENT_CODEX_START_WATCHER_PID" >/dev/null 2>&1 || true
@@ -803,7 +835,14 @@ mod tests {
             map_hook_event_type("Notification"),
             Some(AgentHookEventType::PermissionRequest)
         );
-        assert_eq!(map_hook_event_type("SessionStart"), None);
+        assert_eq!(
+            map_hook_event_type("SessionStart"),
+            Some(AgentHookEventType::SessionStart)
+        );
+        assert_eq!(
+            map_hook_event_type("SessionEnd"),
+            Some(AgentHookEventType::SessionEnd)
+        );
         assert_eq!(map_hook_event_type("sessionStart"), None);
         assert_eq!(
             map_hook_event_type("userPromptSubmitted"),
@@ -827,7 +866,7 @@ mod tests {
     #[test]
     fn parses_valid_hook_request() {
         let event = parse_request(
-            "/agent-hook?event_type=Stop&terminal_id=terminal-1&workspace_id=workspace-1&cwd=%2Ftmp%2Fproject&version=1",
+            "/agent-hook?event_type=Stop&terminal_id=terminal-1&workspace_id=workspace-1&cwd=%2Ftmp%2Fproject&agent=codex&version=1",
         )
         .expect("request should parse")
         .expect("request should produce an event");
@@ -836,6 +875,19 @@ mod tests {
         assert_eq!(event.terminal_id, "terminal-1");
         assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
         assert_eq!(event.cwd.as_deref(), Some(Path::new("/tmp/project")));
+        assert_eq!(event.agent, Some(AgentKind::Codex));
+    }
+
+    #[test]
+    fn hook_requests_without_a_known_agent_have_no_agent_kind() {
+        for agent in ["", "&agent=", "&agent=aider"] {
+            let event = parse_request(&format!(
+                "/agent-hook?event_type=Stop&terminal_id=terminal-1{agent}&version=1"
+            ))
+            .expect("request should parse")
+            .expect("request should produce an event");
+            assert_eq!(event.agent, None, "{agent}");
+        }
     }
 
     #[test]
@@ -870,6 +922,12 @@ mod tests {
             settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["type"],
             "command"
         );
+        for session_hook in ["SessionStart", "SessionEnd"] {
+            assert_eq!(
+                settings["hooks"][session_hook][0]["hooks"][0]["type"], "command",
+                "Claude should report {session_hook} so idle agents are listed"
+            );
+        }
 
         let wrapper =
             codex_wrapper_content(Path::new("/tmp/bin"), Path::new("/tmp/hooks/notify.sh"));
@@ -901,8 +959,10 @@ mod tests {
         let (claude, codex) = write_test_wrappers(directory.path());
         let parent_binary = directory.path().join("parent-agent");
         let child_binary = directory.path().join("child-agent");
-        let notify_script = directory.path().join("notify.sh");
+        // The wrappers' own notify path, so the Codex wrapper can report its session.
+        let notify_script = directory.path().join("hooks/notify.sh");
         let events_path = directory.path().join("events");
+        fs::create_dir_all(directory.path().join("hooks")).expect("create hooks directory");
         write_executable_file(&notify_script, notify_script_content())
             .expect("write notification hook");
         write_executable_file(
@@ -910,9 +970,11 @@ mod tests {
             r#"#!/bin/bash
 for argument in "$@"; do
   case "$argument" in
-    event_type=*) printf '%s\n' "${argument#event_type=}" >> "$SUPERZENT_TEST_EVENTS" ;;
+    event_type=*) _event="${argument#event_type=}" ;;
+    agent=*) _agent="${argument#agent=}" ;;
   esac
 done
+printf '%s:%s\n' "$_event" "$_agent" >> "$SUPERZENT_TEST_EVENTS"
 printf '204'
 "#
             .into(),
@@ -979,10 +1041,20 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             )
             .expect("run nested agent wrappers");
             assert!(output.status.success(), "{:?}", output);
+            let parent_agent = if parent == &codex { "codex" } else { "claude" };
+            let child_agent = if child == &codex { "codex" } else { "claude" };
+            let child_events = format!("Start:{child_agent}\nPermissionRequest:{child_agent}\n");
+            // Codex has no session hooks, so its wrapper reports the session itself.
+            let expected = if parent == &codex {
+                format!("SessionStart:codex\n{child_events}Stop:codex\nSessionEnd:codex\n")
+            } else {
+                format!("{child_events}Stop:{parent_agent}\n")
+            };
             assert_eq!(
                 fs::read_to_string(&events_path).expect("read recorded events"),
-                "Start\nPermissionRequest\nStop\n",
-                "preserve child activity and approvals, but only notify completion for the parent"
+                expected,
+                "preserve child activity and approvals, but only report completion and the \
+                 session for the parent"
             );
         }
     }

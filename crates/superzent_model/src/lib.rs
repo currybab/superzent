@@ -449,6 +449,8 @@ pub struct SuperzentState {
     pub workspaces: Vec<WorkspaceEntry>,
     pub sessions: Vec<AgentSession>,
     pub presets: Vec<AgentPreset>,
+    #[serde(default)]
+    pub agents_collapsed: bool,
 }
 
 impl Default for SuperzentState {
@@ -460,6 +462,7 @@ impl Default for SuperzentState {
             workspaces: Vec::new(),
             sessions: Vec::new(),
             presets: default_presets(),
+            agents_collapsed: false,
         }
     }
 }
@@ -813,6 +816,17 @@ impl SuperzentStore {
             .find(|project| project.id == project_id)
         {
             project.collapsed = collapsed;
+            self.persist_and_notify(cx);
+        }
+    }
+
+    pub fn agents_collapsed(&self) -> bool {
+        self.state.agents_collapsed
+    }
+
+    pub fn set_agents_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.state.agents_collapsed != collapsed {
+            self.state.agents_collapsed = collapsed;
             self.persist_and_notify(cx);
         }
     }
@@ -1737,6 +1751,7 @@ impl From<LegacySuperzentState> for SuperzentState {
             } else {
                 value.presets
             },
+            agents_collapsed: false,
         }
     }
 }
@@ -1788,6 +1803,7 @@ fn load_legacy_state() -> Option<SuperzentState> {
         workspaces: Vec::new(),
         sessions: Vec::new(),
         presets,
+        agents_collapsed: false,
     };
 
     for task in legacy.tasks {
@@ -2344,6 +2360,7 @@ mod tests {
                 workspaces,
                 sessions: Vec::new(),
                 presets: default_presets(),
+                agents_collapsed: false,
             },
             unreviewed_terminals: BTreeMap::new(),
         };
@@ -2472,6 +2489,7 @@ mod tests {
                 ],
                 sessions: Vec::new(),
                 presets: default_presets(),
+                agents_collapsed: false,
             },
             unreviewed_terminals: BTreeMap::new(),
         };
@@ -2549,6 +2567,7 @@ mod tests {
                 ],
                 sessions: Vec::new(),
                 presets: default_presets(),
+                agents_collapsed: false,
             },
             unreviewed_terminals: BTreeMap::new(),
         };
@@ -2589,6 +2608,7 @@ mod tests {
                 workspaces,
                 sessions: Vec::new(),
                 presets: default_presets(),
+                agents_collapsed: false,
             },
             unreviewed_terminals: BTreeMap::new(),
         }
@@ -2706,6 +2726,7 @@ mod tests {
                 workspaces: vec![workspace],
                 sessions: Vec::new(),
                 presets: default_presets(),
+                agents_collapsed: false,
             },
             unreviewed_terminals: BTreeMap::new(),
         };

@@ -171,6 +171,31 @@ pub enum TerminalTabAttention {
     NeedsReview,
 }
 
+/// The agent attention dot shown on terminal tabs, blinking while the agent needs time
+/// or input. `id` must be unique among the dots rendered in the same view.
+pub fn render_attention_dot(
+    id: impl Into<SharedString>,
+    attention: TerminalTabAttention,
+) -> AnyElement {
+    let dot = |color| div().child(Indicator::dot().color(color));
+    let (name, color) = match attention {
+        TerminalTabAttention::Working => ("working", Color::Warning),
+        TerminalTabAttention::NeedsApproval => ("approval", Color::Error),
+        TerminalTabAttention::NeedsReview => {
+            return dot(Color::Success).into_any_element();
+        }
+    };
+    // A two-step blink only needs a redraw per step, unlike a smooth pulse.
+    PulsingDot::new(
+        SharedString::from(format!("{}-{name}", id.into())),
+        TAB_ATTENTION_BLINK_STEP * 2,
+        dot(color),
+        |indicator: Div, delta: f32| indicator.opacity(if delta < 0.5 { 1. } else { 0.3 }),
+    )
+    .redraw_interval(TAB_ATTENTION_BLINK_STEP)
+    .into_any_element()
+}
+
 #[derive(Default, Clone)]
 pub enum TerminalMode {
     #[default]
@@ -444,26 +469,10 @@ impl TerminalView {
     }
 
     fn render_tab_attention(&self, tab_attention: TerminalTabAttention) -> AnyElement {
-        let dot = |color| div().child(Indicator::dot().color(color));
-        let (name, color) = match tab_attention {
-            TerminalTabAttention::Working => ("working", Color::Warning),
-            TerminalTabAttention::NeedsApproval => ("approval", Color::Error),
-            TerminalTabAttention::NeedsReview => {
-                return dot(Color::Success).into_any_element();
-            }
-        };
-        // A two-step blink only needs a redraw per step, unlike a smooth pulse.
-        PulsingDot::new(
-            SharedString::from(format!(
-                "terminal-tab-{name}-{}",
-                self.self_handle.entity_id()
-            )),
-            TAB_ATTENTION_BLINK_STEP * 2,
-            dot(color),
-            |indicator: Div, delta: f32| indicator.opacity(if delta < 0.5 { 1. } else { 0.3 }),
+        render_attention_dot(
+            format!("terminal-tab-{}", self.self_handle.entity_id()),
+            tab_attention,
         )
-        .redraw_interval(TAB_ATTENTION_BLINK_STEP)
-        .into_any_element()
     }
 
     pub fn is_renaming(&self) -> bool {
