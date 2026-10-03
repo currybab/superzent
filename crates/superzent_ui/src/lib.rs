@@ -1074,8 +1074,6 @@ impl WorkspaceAttentionController {
                 workspace_name,
             );
         }
-        self.dismiss_notifications(cx);
-
         let Some((screen, placement)) = primary_popup_display(cx) else {
             if debug_terminal_notifications_enabled() {
                 log::warn!("superzent popup aborted: no display available");
@@ -1134,6 +1132,9 @@ impl WorkspaceAttentionController {
             );
         }
 
+        // Replace the previous popup only once this one is open, so a failed reopen during
+        // a display change leaves the old popup (and its placement watch) to retry.
+        self.dismiss_notifications(cx);
         let workspace_id = workspace_id.to_string();
         let terminal_id = terminal_id.to_string();
         self.active_notification_target = Some(NotificationTarget {
@@ -1231,6 +1232,7 @@ impl WorkspaceAttentionController {
         let workspace_name = target.workspace_name.clone();
         let this = cx.entity();
         // Reopening replaces this watch task, so it has to run after the current poll.
+        // Keep watching meanwhile: if the reopen fails, the next check retries it.
         cx.defer(move |cx| {
             this.update(cx, |this, cx| {
                 this.show_popup_notification(
@@ -1242,7 +1244,7 @@ impl WorkspaceAttentionController {
                 );
             });
         });
-        false
+        true
     }
 
     #[cfg(feature = "acp_tabs")]
