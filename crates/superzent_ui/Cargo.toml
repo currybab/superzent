@@ -15,6 +15,7 @@ workspace = true
 acp_tabs = ["dep:agent_ui", "dep:fs", "dep:schemars", "dep:serde"]
 
 [dependencies]
+acp_thread.workspace = true
 agent_ui = { workspace = true, optional = true }
 anyhow.workspace = true
 chrono.workspace = true
