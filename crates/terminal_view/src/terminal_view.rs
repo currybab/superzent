@@ -444,11 +444,23 @@ impl TerminalView {
     }
 
     fn render_tab_attention(&self, tab_attention: TerminalTabAttention) -> AnyElement {
+        // Overlaid in the tab's leading padding, left of the icon, so the tab keeps its
+        // width when the dot appears.
+        let dot = |color| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(-9.))
+                .flex()
+                .items_center()
+                .child(Indicator::dot().color(color))
+        };
         let (name, color) = match tab_attention {
             TerminalTabAttention::Working => ("working", Color::Warning),
             TerminalTabAttention::NeedsApproval => ("approval", Color::Error),
             TerminalTabAttention::NeedsReview => {
-                return Indicator::dot().color(Color::Success).into_any_element();
+                return dot(Color::Success).into_any_element();
             }
         };
         // A two-step blink only needs a redraw per step, unlike a smooth pulse.
@@ -458,7 +470,7 @@ impl TerminalView {
                 self.self_handle.entity_id()
             )),
             TAB_ATTENTION_BLINK_STEP * 2,
-            div().child(Indicator::dot().color(color)),
+            dot(color),
             |indicator: Div, delta: f32| indicator.opacity(if delta < 0.5 { 1. } else { 0.3 }),
         )
         .redraw_interval(TAB_ATTENTION_BLINK_STEP)
@@ -1476,18 +1488,19 @@ impl Item for TerminalView {
                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
                     .ok();
             })
-            .when_some(self.tab_attention, |this, tab_attention| {
-                this.child(self.render_tab_attention(tab_attention))
-            })
             .child(
                 h_flex()
                     .group("term-tab-icon")
                     .child(
                         div()
+                            .relative()
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .child(Icon::new(icon).color(icon_color)),
+                            .child(Icon::new(icon).color(icon_color))
+                            .when_some(self.tab_attention, |this, tab_attention| {
+                                this.child(self.render_tab_attention(tab_attention))
+                            }),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
                         this.child(
