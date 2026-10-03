@@ -98,5 +98,5 @@ The same opened workspace handle is reused for `Moving local changes…` and the
 
 ## Related Issues
 
-- Related solution: [managed-workspace-lifecycle-source-of-truth-and-teardown-override-contract-2026-04-10.md](/Users/junpark/codingcoding/.superzent-worktrees/superzent/worktree-setup/docs/solutions/best-practices/managed-workspace-lifecycle-source-of-truth-and-teardown-override-contract-2026-04-10.md)
-- Related solution: [managed-terminal-popup-notifications-2026-04-04.md](/Users/junpark/codingcoding/.superzent-worktrees/superzent/worktree-setup/docs/solutions/integration-issues/managed-terminal-popup-notifications-2026-04-04.md)
+- Related solution: [managed-workspace-lifecycle-source-of-truth-and-teardown-override-contract-2026-04-10.md](../best-practices/managed-workspace-lifecycle-source-of-truth-and-teardown-override-contract-2026-04-10.md)
+- Related solution: [managed-terminal-popup-notifications-2026-04-04.md](../integration-issues/managed-terminal-popup-notifications-2026-04-04.md)

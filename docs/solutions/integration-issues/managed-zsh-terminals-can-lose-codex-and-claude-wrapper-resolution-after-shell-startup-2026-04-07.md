@@ -105,5 +105,3 @@ On the Claude side, using inline `--settings` JSON makes the hook configuration 
 ## Related Issues
 
 - Related solution: `docs/solutions/integration-issues/managed-terminal-popup-notifications-2026-04-04.md`
-- Related requirements: `docs/brainstorms/2026-04-03-managed-terminal-notifications-always-mode-requirements.md`
-- Related plan: `docs/plans/2026-04-03-002-fix-managed-terminal-notifications-always-mode-plan.md`

@@ -27,7 +27,7 @@ That triggers the release workflow, which:
 
 1. builds a stable bundle with `SUPERZENT_RELEASE_CHANNEL=stable`
 2. notarizes `superzent-aarch64.dmg`
-3. uploads the DMG, Linux remote-server assets, and `sha256sums.txt` to the GitHub Release for that tag
+3. uploads the DMG, the macOS and Linux remote-server assets, and `sha256sums.txt` (DMG checksum) to the GitHub Release for that tag
 
 ## Required GitHub Configuration
 

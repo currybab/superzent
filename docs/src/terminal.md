@@ -9,11 +9,11 @@ Zed includes a built-in terminal emulator that supports multiple terminal instan
 
 ## Opening Terminals
 
-| Action                  | macOS           | Linux/Windows   |
-| ----------------------- | --------------- | --------------- |
-| Toggle terminal panel   | `` Ctrl+` ``    | `` Ctrl+` ``    |
-| Open new terminal       | Command palette | `Ctrl+~`        |
-| Open terminal in center | `Cmd+T`         | Command palette |
+| Action                  | macOS        | Linux/Windows   |
+| ----------------------- | ------------ | --------------- |
+| Toggle terminal panel   | `` Ctrl+` `` | `` Ctrl+` ``    |
+| Open new terminal       | `Ctrl+~`     | `Ctrl+~`        |
+| Open terminal in center | `Cmd+T`      | Command palette |
 
 You can also open a terminal from the command palette with `terminal panel: toggle`, `workspace: new terminal`, or `workspace: new center terminal`.
 
@@ -21,7 +21,7 @@ You can also open a terminal from the command palette with `terminal panel: togg
 
 Terminals can open in two locations:
 
-- **Terminal Panel** — Docked at the bottom (default), left, or right of the workspace. Toggle it with `` Ctrl+` `` or open a new panel terminal with `workspace: new terminal` from the command palette on macOS. On Linux/Windows, use `Ctrl+~` for a new terminal.
+- **Terminal Panel** — Docked at the bottom (default), left, or right of the workspace. Toggle it with `` Ctrl+` `` or open a new panel terminal with `Ctrl+~`.
 - **Center Pane** — Opens as a regular tab alongside your files. Use `Cmd+T` on macOS or `workspace: new center terminal` from the command palette.
 
 ## Working with Multiple Terminals
@@ -341,15 +341,6 @@ The terminal integrates with Zed's [task system](./tasks.md). When you run a tas
 
 - macOS: `Cmd+Alt+R`
 - Linux/Windows: `Ctrl+Shift+R` or `Alt+T`
-
-## AI Assistance
-
-Get help with terminal commands using the [Inline Assistant](./ai/inline-assistant.md):
-
-- macOS: `Ctrl+Enter`
-- Linux/Windows: `Ctrl+Enter` or `Ctrl+I`
-
-This opens the Inline Assistant to help explain errors, suggest commands, or troubleshoot issues. AI agents in the [Agent Panel](./ai/agent-panel.md) can also run terminal commands as part of their workflow.
 
 ## Sending Text and Keystrokes
 

@@ -31,6 +31,8 @@ Supported keys:
 - `setup`: commands run after a managed local workspace is created
 - `teardown`: commands run before a managed local workspace is deleted
 
+The old `copy` key is no longer supported. A config that still has it fails to load, so move that logic into `setup` commands.
+
 ## How It Works
 
 `superzent` runs these commands only for managed local workspace create/delete flows.
@@ -39,6 +41,13 @@ Supported keys:
 - Delete workspace: run `teardown`, then remove the git worktree
 
 Opening, closing, or re-opening an existing workspace does not run `setup` or `teardown`.
+
+## Scripts in the Create Flow
+
+The create workspace modal pre-fills the setup and teardown scripts from `.superzent/config.json`, one command per line, and lets you edit them for the new workspace. Each script has a **Save as repo default** checkbox:
+
+- Checked: the edited script is written back to `.superzent/config.json` and becomes the repo default.
+- Unchecked: an edited setup script runs only for this workspace. An edited teardown script is stored with the workspace and runs instead of the config `teardown` when that workspace is deleted.
 
 ## Base Branch Selection
 
@@ -53,11 +62,12 @@ If the configured `base_branch` does not exist, `superzent` falls back to the ba
 
 ## Environment Variables
 
-Lifecycle commands run in the new or existing worktree directory and receive:
+Lifecycle commands run through `/bin/zsh -lc` in the new or existing worktree directory and receive:
 
 - `SUPERZENT_ROOT_PATH`
 - `SUPERZENT_WORKTREE_PATH`
 - `SUPERZENT_WORKSPACE_NAME`
+- `SUPERZENT_BASE_PATH`, for setup only, when the workspace is created from a base workspace
 
 For compatibility during the transition, `SUPERSET_ROOT_PATH` and `SUPERSET_WORKSPACE_NAME` are also exported.
 
@@ -84,7 +94,7 @@ If `teardown` fails:
 
 Current v1 scope:
 
-- repo-root `.superzent/config.json` only
+- repo-root `.superzent/config.json`, plus per-workspace script edits from the create flow
 - managed local workspaces only
 - create/delete lifecycle only
 

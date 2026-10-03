@@ -106,7 +106,4 @@ Cover the renderer boundary in tests. The search segment test should include tex
 
 ## Related
 
-- Plan: `docs/plans/2026-05-05-001-feat-markdown-preview-search-plan.md`
-- Origin requirements: `docs/brainstorms/2026-04-23-upstream-sync-editor-search-requirements.md`
-- Prior deferred item: `docs/plans/2026-04-23-001-feat-upstream-editor-search-sync-plan.md`
 - Upstream commit: `fd4d8444cf markdown_preview: Add search support to markdown preview (#52502)`

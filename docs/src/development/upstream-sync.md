@@ -23,22 +23,24 @@ The first watchlist is intentionally small:
 
 Update these markers as part of each import pass:
 
-- Last reviewed upstream tip: `0a436bec1758`
-- Last imported upstream base: `8a38d2d7b465bc5024bba37a21f68958926e2eb9`
+- Last reviewed upstream tip: `be3a5e2c06`
+- Last imported upstream base: `be3a5e2c06`
+
+Some later upstream commits have already been cherry-picked individually, so a candidate after the base may already be in `main`. Check with the porting guidance in `.rules` before importing it.
 
 ## Find Candidate Commits
 
 Use the helper script to list commits on `upstream/main` that touch the watchlist.
 
 ```sh
-script/upstream-agent-ui-candidates --since 8a38d2d7b465bc5024bba37a21f68958926e2eb9
+script/upstream-agent-ui-candidates --since be3a5e2c06
 ```
 
 For a markdown report you can paste into an issue or notes file:
 
 ```sh
 script/upstream-agent-ui-candidates \
-  --since 8a38d2d7b465bc5024bba37a21f68958926e2eb9 \
+  --since be3a5e2c06 \
   --format markdown
 ```
 
@@ -46,7 +48,7 @@ If you have already fetched `upstream/main`, skip the fetch step:
 
 ```sh
 script/upstream-agent-ui-candidates \
-  --since 8a38d2d7b465bc5024bba37a21f68958926e2eb9 \
+  --since be3a5e2c06 \
   --no-fetch
 ```
 
@@ -82,7 +84,7 @@ Review every import against these `superzent` constraints:
 
 - The default app build is still `lite`.
 - `superzent` does not ship hosted AI, cloud, or collab assumptions in the default flow.
-- `AgentPanel` is still a dock panel upstream today, while `superzent`'s next product step is center-pane ACP agent tabs.
+- `AgentPanel` is a dock panel upstream, while `superzent` opens external ACP agents as center-pane tabs (`acp_tabs`) and keeps the docked panel out of the default build.
 - Imported changes must not reintroduce upstream branding, docs links, or release assumptions.
 
 ## Backports vs. Upstream Intake

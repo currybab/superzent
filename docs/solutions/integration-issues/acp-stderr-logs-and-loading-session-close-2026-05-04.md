@@ -141,7 +141,6 @@ The loading-session fix closes the missing UI lifecycle step. A session load sta
 
 ## Related Issues
 
-- Plan context: [Backport Zed 1.0 Next-Edit and ACP Polish](../../plans/2026-05-03-001-feat-zed-1-0-next-edit-acp-sync-plan.md) is the direct planning artifact for this sync.
-- Broader sync context: [Backport Upstream Editor and Search Improvements](../../plans/2026-04-23-001-feat-upstream-editor-search-sync-plan.md) explains the selective upstream-sync constraints that make ACP changes require Superzent boundary review.
+- Broader sync context: [Upstream sync](../../src/development/upstream-sync.md) explains the selective upstream-sync constraints that make ACP changes require Superzent boundary review.
 - Low-overlap related doc: [Restoring default-build next-edit requires separating it from hosted AI surfaces](./default-build-next-edit-surface-restoration-2026-04-05.md) mentions `acp_tabs`, but covers feature gating rather than ACP lifecycle cleanup.
 - Session history surfaced upstream ACP debug/log work, including `73127da4b7 acp_tools: Always capture ACP transport and stderr into the log ring (#54536)` and `1c1b03c3 acp: Improve ACP debug view (#54769)`. These explain why local stderr and debug-view wiring should be treated as part of one diagnostics path.

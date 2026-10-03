@@ -68,8 +68,6 @@ match event_type {
     | "PostToolUseFailure"
     | "BeforeAgent"
     | "AfterTool"
-    | "SessionStart"
-    | "sessionStart"
     | "userPromptSubmitted"
     | "postToolUse" => Some(AgentHookEventType::Start),
     "PermissionRequest" | "preToolUse" | "Notification" => {
@@ -82,9 +80,11 @@ match event_type {
 }
 ```
 
+Do not map session-start events (`SessionStart`, `sessionStart`) to `Start`. They fire as soon as the agent launches, so treating them as work marks an idle agent as running. They were mapped and registered here originally and later removed for that reason.
+
 4. Keep the old “plain terminal input” preset UX and let `PATH` precedence choose the wrapper for managed sessions. Do not force a separate process/task UI just to get completion tracking.
 
-5. Fix Claude hook configuration so the hook command is shell-safe even when the path contains spaces, and add `SessionStart` alongside the older event names:
+5. Fix Claude hook configuration so the hook command is shell-safe even when the path contains spaces:
 
 ```rust
 let notify_command = format!(
@@ -95,7 +95,6 @@ let notify_command = format!(
 let settings = serde_json::json!({
     "hooks": {
         "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
-        "SessionStart": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
         "Stop": [{ "hooks": [{ "type": "command", "command": notify_command }] }],
         "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
         "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": notify_command }] }],
@@ -131,6 +130,7 @@ Once the managed terminal actually ran through the wrapper, `notify.sh` fired, t
   - app logs containing `superzent notification hook`, `superzent notification policy`, and `superzent popup`
 - Keep generated hook commands shell-safe. If a path can contain spaces, never write it as a raw command string.
 - Add tests for hook event alias mapping whenever new lifecycle names are introduced.
+- Nested managed agents (an agent launched by another agent in the same terminal) suppress only their completion events, via `SUPERZENT_HOOK_OWNER_TERMINAL_ID` in the generated wrappers. A missing completion popup from a nested agent is expected; activity and approval events still pass through.
 - Preserve the old terminal-input UX unless there is a strong reason to replace it. UX regressions can hide the actual notification bug.
 - For managed terminal investigations, use:
 
@@ -140,5 +140,4 @@ RUST_LOG=superzent_agent=info,superzent_ui=info SUPERZENT_DEBUG_HOOKS=1 cargo ru
 
 ## Related Issues
 
-- Related requirements: `docs/brainstorms/2026-04-03-managed-terminal-notifications-always-mode-requirements.md`
-- Related plan: `docs/plans/2026-04-03-002-fix-managed-terminal-notifications-always-mode-plan.md`
+- Related solution: `docs/solutions/integration-issues/managed-zsh-terminals-can-lose-codex-and-claude-wrapper-resolution-after-shell-startup-2026-04-07.md`

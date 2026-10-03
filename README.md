@@ -26,12 +26,12 @@ Shortcuts that differ from upstream Zed:
 | `Cmd+Shift+C` | Copy project-relative path |
 | `Ctrl+\` | Next workspace |
 | `Ctrl+\|` | Previous workspace |
-| `Ctrl+Cmd+Enter` | Open the workspace from the agent notification popup |
+| `Ctrl+Cmd+Enter` | Open the agent tab from the notification popup, or jump to the next agent waiting on you |
 | `Ctrl+Cmd+Escape` | Dismiss the agent notification popup |
 
-`Cmd+W` never closes the OS window — quit with `Cmd+Q` instead.
+`Cmd+W` never closes the OS window — quit with `Cmd+Q` instead. `Cmd+Q` asks for confirmation while any agent is still working, since quitting stops its terminal or ACP chat.
 
-On macOS, the notification shortcuts are registered as global hotkeys while a popup is visible, so they work even when superzent is not the focused app.
+On macOS, the notification shortcuts are registered as global hotkeys while a popup is visible, so they work even when superzent is not the focused app. Without a popup, `Ctrl+Cmd+Enter` cycles through agent terminals needing approval, then review, oldest first.
 
 ## Status
 

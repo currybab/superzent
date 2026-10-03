@@ -55,7 +55,7 @@ See frontmatter. The tell-tale sign is that collapsing the sidebar (removing the
 
 ## Solution
 
-Replace `with_animation` for the attention dot with a small, file-private `PulsingDot` element in `crates/superzent_ui/src/lib.rs` that schedules its own redraw on a fixed ~20fps interval instead of every frame:
+Replace `with_animation` for the attention dot with a `PulsingDot` element that schedules its own redraw on a fixed ~20fps interval instead of every frame. It started as a file-private element in `crates/superzent_ui/src/lib.rs` and now lives in `crates/ui/src/components/pulsing_dot.rs` (with a `redraw_interval()` option), where the per-terminal-tab attention dots in `terminal_view` reuse it. Use it for any repeating pulse instead of `with_animation(...).repeat()`:
 
 - In `request_layout`, compute opacity from `start.elapsed()` and, instead of `window.request_animation_frame()`, `cx.spawn` a task that awaits `cx.background_executor().timer(50ms)` then `cx.update(|cx| cx.notify(window.current_view()))`.
 - Store `start` and the redraw `Task` in GPUI element state via `with_element_state`, keyed by id. No `SuperzentSidebar` struct fields and no start/stop lifecycle wiring are needed.

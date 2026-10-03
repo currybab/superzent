@@ -75,6 +75,8 @@ next_edit = [
 ai = [
   "next_edit",
   "acp_tabs",
+  "dep:acp_thread",
+  "dep:acp_tools",
   "dep:agent-client-protocol",
   "dep:agent_settings",
   "edit_prediction_ui/zed-hosted-provider",
@@ -173,6 +175,4 @@ The fix works because each layer now has a narrower contract:
 
 ## Related Issues
 
-- Related requirements: `docs/brainstorms/2026-04-05-default-build-next-edit-requirements.md`
-- Related plan: `docs/plans/2026-04-05-001-feat-default-build-next-edit-plan.md`
 - Related solution with low overlap: `docs/solutions/integration-issues/managed-terminal-popup-notifications-2026-04-04.md`

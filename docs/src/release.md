@@ -4,7 +4,7 @@ The current public desktop release flow is macOS Apple Silicon only.
 
 - Tag releases as `vX.Y.Z`
 - GitHub Actions builds `superzent-aarch64.dmg`
-- The release workflow also uploads Linux `remote_server` support assets
+- The release workflow also uploads macOS and Linux `remote_server` support assets
 - `releases.nangman.ai/releases/...` is served by a thin Cloudflare worker that points the app at those GitHub assets
 
 ## Release Infrastructure

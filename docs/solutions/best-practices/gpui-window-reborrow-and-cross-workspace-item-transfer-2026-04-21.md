@@ -37,7 +37,7 @@ tags:
 
 ## Context
 
-During the implementation of cross-workspace tab moves and worktree import on the `tab-move-workspace` branch, a deceptively small feature surface — a right-click context menu entry on terminal tabs, a modal workspace picker, and a worktree import picker — exposed roughly nine distinct edge-cases across four rounds of code review. The bugs did not surface in compilation, static analysis, or unit tests; they only appeared when specific interactive paths were exercised in the running application (right-clicking a tab, confirming the picker after a terminal had already exited, returning to a workspace whose pane index was corrupted). The recurrence across four review iterations across two distinct pickers (workspace-move and import-worktree) confirmed that the underlying patterns — GPUI's window-lease exclusivity and the non-symmetry of cross-workspace item transfer — are a reliable source of subtle runtime failures and are not obvious from reading GPUI's API surface alone.
+During the implementation of cross-workspace tab moves and worktree import, a deceptively small feature surface — a right-click context menu entry on terminal tabs, a modal workspace picker, and a worktree import picker — exposed roughly nine distinct edge-cases across four rounds of code review. The bugs did not surface in compilation, static analysis, or unit tests; they only appeared when specific interactive paths were exercised in the running application (right-clicking a tab, confirming the picker after a terminal had already exited, returning to a workspace whose pane index was corrupted). The recurrence across four review iterations across two distinct pickers (workspace-move and import-worktree) confirmed that the underlying patterns — GPUI's window-lease exclusivity and the non-symmetry of cross-workspace item transfer — are a reliable source of subtle runtime failures and are not obvious from reading GPUI's API surface alone.
 
 The same root patterns also reproduced in the import-worktree picker: async closures calling `Entity::update` with the wrong context type, the wrong sequencing of `upsert_workspace` vs. `open_local_workspace_path_and_resolve`, and the assumption that cross-crate globals are always initialized. Documenting both pieces of guidance together is warranted because both pickers were implemented in the same PR and the lessons are directly transferable to any future picker or modal that touches workspace state.
 
@@ -127,7 +127,7 @@ Moving a tab (`Item`) from a `Pane` in workspace A to a `Pane` in workspace B is
    }
    ```
 
-6. **Register the tab-context-menu action on the item's element via `cx.listener`, not via `workspace.register_action`.** A workspace-level action handler resolves the source pane through `workspace.active_pane()`, which is the workspace's last-focused pane — wrong when the user right-clicked a tab in an inactive split. Registering via `.on_action(cx.listener(TerminalView::move_to_another_workspace))` on the element routes through the correct item entity. Inside that handler, resolve the source pane with `workspace.pane_for(&self_entity)`, which finds the pane that actually contains the item regardless of focus state.
+6. **Handle the tab-context-menu action on the item's element via `cx.listener`, not only via `workspace.register_action`.** A workspace-level action handler resolves the source pane through `workspace.active_pane()`, which is the workspace's last-focused pane — wrong when the user right-clicked a tab in an inactive split. Registering via `.on_action(cx.listener(TerminalView::move_to_another_workspace))` on the element routes through the correct item entity. Inside that handler, resolve the source pane with `workspace.pane_for(&self_entity)`, which finds the pane that actually contains the item regardless of focus state. A workspace-level `register_action` handler can still exist as a command-palette fallback (`MoveTerminalToAnotherWorkspace` has one that acts on `active_pane()`), but the context-menu path must not depend on it.
 
 7. **Use `SuperzentStore::try_global` rather than `SuperzentStore::global` in any code path that may run outside a fully initialized application.** `::global` panics if the store was not registered, which occurs in visual test runners and headless CLI contexts. `::try_global` returns `Option<Entity<SuperzentStore>>`; use the returned `Option` to provide a graceful display-name fallback rather than crashing.
 
@@ -161,7 +161,7 @@ Apply this guidance whenever you are:
 
 ## Examples
 
-The following files in the `tab-move-workspace` branch contain correct implementations of each pattern:
+The following files contain correct implementations of each pattern:
 
 **`crates/terminal_view/src/terminal_view.rs`**
 
@@ -195,4 +195,3 @@ The following files in the `tab-move-workspace` branch contain correct implement
 ## Related
 
 - [`docs/solutions/ui-bugs/managed-workspace-create-progress-toasts-can-fail-to-appear-after-local-open-2026-04-12.md`](../ui-bugs/managed-workspace-create-progress-toasts-can-fail-to-appear-after-local-open-2026-04-12.md) — Same underlying GPUI principle (hold a live `Entity` directly rather than re-resolving indirectly), applied to status toasts and workspace open flows.
-- [`docs/plans/2026-04-16-001-feat-move-terminal-to-workspace-and-import-worktree-plan.md`](../../plans/2026-04-16-001-feat-move-terminal-to-workspace-and-import-worktree-plan.md) — Origin plan. Note that Units 2 and 3 prose recommended `WindowHandle::*` patterns that the implementation intentionally replaced with `window.root::<T>()`; the implementation in this doc supersedes that approach.

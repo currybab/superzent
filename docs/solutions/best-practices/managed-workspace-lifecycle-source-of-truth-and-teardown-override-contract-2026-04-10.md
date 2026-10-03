@@ -113,7 +113,5 @@ In the blocked-config branch, the prompt must explicitly say that normal delete 
 
 ## Related
 
-- [managed-terminal-popup-notifications-2026-04-04.md](/Users/junpark/codingcoding/.superzent-worktrees/superzent/worktree-setup/docs/solutions/integration-issues/managed-terminal-popup-notifications-2026-04-04.md) — similar pattern: fix the earliest lifecycle/config stage instead of patching the final UI symptom
-- [default-build-next-edit-surface-restoration-2026-04-05.md](/Users/junpark/codingcoding/.superzent-worktrees/superzent/worktree-setup/docs/solutions/integration-issues/default-build-next-edit-surface-restoration-2026-04-05.md) — another example of narrowing sources of truth and removing helper-level coupling
-- Related requirements: `docs/brainstorms/2026-04-10-managed-workspace-lifecycle-compaction-requirements.md`
-- Related plan: `docs/plans/2026-04-10-001-refactor-managed-workspace-lifecycle-compaction-plan.md`
+- [managed-terminal-popup-notifications-2026-04-04.md](../integration-issues/managed-terminal-popup-notifications-2026-04-04.md) — similar pattern: fix the earliest lifecycle/config stage instead of patching the final UI symptom
+- [default-build-next-edit-surface-restoration-2026-04-05.md](../integration-issues/default-build-next-edit-surface-restoration-2026-04-05.md) — another example of narrowing sources of truth and removing helper-level coupling

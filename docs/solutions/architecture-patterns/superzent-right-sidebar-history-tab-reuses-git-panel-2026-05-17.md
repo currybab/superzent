@@ -38,9 +38,18 @@ When a new top-level Superzent sidebar tab is another mode of an existing panel,
 For the history sidebar work, `SuperzentRightSidebar` owns `RightSidebarTab::History`, while `GitPanel` owns `GitPanelTab::History` and the commit-history rendering. The bridge is intentionally small:
 
 ```rust
-fn set_active_tab(&mut self, tab: RightSidebarTab, cx: &mut Context<Self>) {
+fn set_active_tab(
+    &mut self,
+    tab: RightSidebarTab,
+    focus_content: bool,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+) {
     self.tab = tab;
     self.sync_git_panel_tab(cx);
+    if focus_content {
+        self.focus_active_tab_content(window, cx);
+    }
     cx.notify();
 }
 
@@ -64,8 +73,7 @@ Keep legacy actions predictable. In Superzent, the Git panel toggle/focus action
 ```rust
 .on_action(
     cx.listener(|this, _: &git_ui::git_panel::ToggleFocus, window, cx| {
-        this.set_active_tab(RightSidebarTab::Changes, cx);
-        window.focus(&this.focus_handle, cx);
+        this.set_active_tab(RightSidebarTab::Changes, true, window, cx);
     }),
 )
 ```

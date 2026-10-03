@@ -135,8 +135,6 @@ current selection.
 
 ## Related Issues
 
-- [docs/plans/2026-04-16-001-fix-workspace-creation-review-findings-plan.md](../../plans/2026-04-16-001-fix-workspace-creation-review-findings-plan.md)
-- [docs/plans/2026-04-15-001-feat-workspace-creation-preset-control-plan.md](../../plans/2026-04-15-001-feat-workspace-creation-preset-control-plan.md)
 - [restore-field-level-managed-workspace-default-saves-2026-04-13.md](./restore-field-level-managed-workspace-default-saves-2026-04-13.md)
 - [managed-workspace-create-progress-toasts-can-fail-to-appear-after-local-open-2026-04-12.md](../ui-bugs/managed-workspace-create-progress-toasts-can-fail-to-appear-after-local-open-2026-04-12.md)
 - Verified with `cargo test -p superzent_ui --lib`
