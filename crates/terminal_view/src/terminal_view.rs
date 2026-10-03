@@ -445,13 +445,13 @@ impl TerminalView {
 
     fn render_tab_attention(&self, tab_attention: TerminalTabAttention) -> AnyElement {
         // Overlaid in the tab's leading padding, left of the icon, so the tab keeps its
-        // width when the dot appears.
+        // width when the dot appears. The offset is in rems so it scales with the dot.
         let dot = |color| {
             div()
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .left(px(-9.))
+                .left(-rems_from_px(9.))
                 .flex()
                 .items_center()
                 .child(Indicator::dot().color(color))
