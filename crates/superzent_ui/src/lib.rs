@@ -234,6 +234,41 @@ fn toggle_superzent_right_sidebar(
 struct NotificationTarget {
     workspace_id: String,
     terminal_id: String,
+    notification: TerminalLifecycleNotification,
+    workspace_name: String,
+    placement: PopupPlacement,
+}
+
+// A popup is placed once when it opens and windows can't be moved afterwards, so
+// a display change (unplugged monitor, new resolution) is handled by reopening it.
+#[cfg(feature = "acp_tabs")]
+const NOTIFICATION_PLACEMENT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+#[cfg(feature = "acp_tabs")]
+#[derive(Clone, Copy, PartialEq)]
+struct PopupPlacement {
+    display_id: gpui::DisplayId,
+    visible_bounds: gpui::Bounds<gpui::Pixels>,
+}
+
+#[cfg(feature = "acp_tabs")]
+fn primary_popup_display(
+    cx: &App,
+) -> Option<(std::rc::Rc<dyn gpui::PlatformDisplay>, PopupPlacement)> {
+    let display = cx
+        .primary_display()
+        .or_else(|| cx.displays().into_iter().next())?;
+    let placement = PopupPlacement {
+        display_id: display.id(),
+        visible_bounds: display.visible_bounds(),
+    };
+    Some((display, placement))
+}
+
+#[cfg(feature = "acp_tabs")]
+fn popup_needs_reposition(opened: &PopupPlacement, current: Option<&PopupPlacement>) -> bool {
+    // With no display at all there is nowhere better to put it.
+    current.is_some_and(|current| current != opened)
 }
 
 struct GlobalAttentionController(Entity<WorkspaceAttentionController>);
@@ -364,6 +399,8 @@ struct WorkspaceAttentionController {
     notification_subscriptions: Vec<Subscription>,
     #[cfg(feature = "acp_tabs")]
     active_notification_target: Option<NotificationTarget>,
+    #[cfg(feature = "acp_tabs")]
+    notification_placement_watch: Option<Task<Result<()>>>,
     #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
     notification_hotkeys: Option<NotificationHotkeys>,
     _hook_task: Task<Result<()>>,
@@ -450,6 +487,8 @@ impl WorkspaceAttentionController {
             notification_subscriptions: Vec::new(),
             #[cfg(feature = "acp_tabs")]
             active_notification_target: None,
+            #[cfg(feature = "acp_tabs")]
+            notification_placement_watch: None,
             #[cfg(all(target_os = "macos", feature = "acp_tabs"))]
             notification_hotkeys: None,
             _hook_task: hook_task,
@@ -1037,10 +1076,7 @@ impl WorkspaceAttentionController {
         }
         self.dismiss_notifications(cx);
 
-        let Some(screen) = cx
-            .primary_display()
-            .or_else(|| cx.displays().into_iter().next())
-        else {
+        let Some((screen, placement)) = primary_popup_display(cx) else {
             if debug_terminal_notifications_enabled() {
                 log::warn!("superzent popup aborted: no display available");
             }
@@ -1049,6 +1085,7 @@ impl WorkspaceAttentionController {
 
         let title = SharedString::from(notification.title());
         let caption = SharedString::from(notification.caption());
+        let workspace_name_text = workspace_name.to_string();
         let workspace_name = SharedString::from(workspace_name.to_string());
         let icon = notification.icon();
         let options = AgentNotification::window_options(screen, cx);
@@ -1102,7 +1139,23 @@ impl WorkspaceAttentionController {
         self.active_notification_target = Some(NotificationTarget {
             workspace_id: workspace_id.clone(),
             terminal_id: terminal_id.clone(),
+            notification,
+            workspace_name: workspace_name_text,
+            placement,
         });
+        self.notification_placement_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(NOTIFICATION_PLACEMENT_CHECK_INTERVAL)
+                    .await;
+                let keep_watching = this.update(cx, |this, cx| {
+                    this.reposition_notification_if_display_changed(cx)
+                })?;
+                if !keep_watching {
+                    return Ok(());
+                }
+            }
+        }));
         #[cfg(target_os = "macos")]
         self.register_notification_hotkeys();
         self.notification_subscriptions
@@ -1144,6 +1197,7 @@ impl WorkspaceAttentionController {
     #[cfg(feature = "acp_tabs")]
     fn dismiss_notifications(&mut self, cx: &mut Context<Self>) {
         self.active_notification_target = None;
+        self.notification_placement_watch = None;
         #[cfg(target_os = "macos")]
         self.unregister_notification_hotkeys();
         for window in self.notifications.drain(..) {
@@ -1159,6 +1213,37 @@ impl WorkspaceAttentionController {
 
     #[cfg(not(feature = "acp_tabs"))]
     fn dismiss_notifications(&mut self, _cx: &mut Context<Self>) {}
+
+    /// Returns whether to keep watching the visible popup's placement.
+    #[cfg(feature = "acp_tabs")]
+    fn reposition_notification_if_display_changed(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(target) = self.active_notification_target.as_ref() else {
+            return false;
+        };
+        let current_placement = primary_popup_display(cx).map(|(_, placement)| placement);
+        if !popup_needs_reposition(&target.placement, current_placement.as_ref()) {
+            return true;
+        }
+
+        let notification = target.notification;
+        let terminal_id = target.terminal_id.clone();
+        let workspace_id = target.workspace_id.clone();
+        let workspace_name = target.workspace_name.clone();
+        let this = cx.entity();
+        // Reopening replaces this watch task, so it has to run after the current poll.
+        cx.defer(move |cx| {
+            this.update(cx, |this, cx| {
+                this.show_popup_notification(
+                    notification,
+                    &terminal_id,
+                    &workspace_id,
+                    &workspace_name,
+                    cx,
+                );
+            });
+        });
+        false
+    }
 
     #[cfg(feature = "acp_tabs")]
     fn open_active_notification_workspace(&mut self, cx: &mut Context<Self>) {
@@ -10219,6 +10304,37 @@ mod tests {
         assert!(acp_thread_is_busy(ThreadStatus::Generating, false));
         assert!(!acp_thread_is_busy(ThreadStatus::Generating, true));
         assert!(!acp_thread_is_busy(ThreadStatus::Idle, false));
+    }
+
+    #[cfg(feature = "acp_tabs")]
+    fn popup_placement(display_id: u32, width: f32) -> PopupPlacement {
+        PopupPlacement {
+            display_id: gpui::DisplayId::new(display_id),
+            visible_bounds: gpui::Bounds {
+                origin: gpui::point(px(0.), px(25.)),
+                size: gpui::size(px(width), px(900.)),
+            },
+        }
+    }
+
+    #[cfg(feature = "acp_tabs")]
+    #[test]
+    fn popup_repositions_when_its_display_changes() {
+        let opened = popup_placement(1, 1440.);
+
+        assert!(!popup_needs_reposition(
+            &opened,
+            Some(&popup_placement(1, 1440.))
+        ));
+        assert!(popup_needs_reposition(
+            &opened,
+            Some(&popup_placement(2, 1440.))
+        ));
+        assert!(popup_needs_reposition(
+            &opened,
+            Some(&popup_placement(1, 1920.))
+        ));
+        assert!(!popup_needs_reposition(&opened, None));
     }
 
     #[test]
