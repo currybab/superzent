@@ -76,7 +76,7 @@ pub use crate::external_tabs::{
     open_external_acp_tab, pane_has_external_acp_item, show_external_acp_history,
 };
 pub use crate::inline_assistant::InlineAssistant;
-pub use crate::ui::{AgentNotification, AgentNotificationEvent};
+pub use crate::ui::{AgentNotification, AgentNotificationEvent, ExternalAgentNotifications};
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
 pub(crate) use conversation_view::ConversationView as ConnectionView;
 pub(crate) use conversation_view::ConversationView;

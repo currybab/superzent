@@ -2,11 +2,12 @@ use std::time::Instant;
 
 use acp_thread::{AcpThread, AcpThreadEvent, AgentThreadEntry, ThreadStatus, ToolCallStatus};
 use agent_ui::{ThreadView, external_acp_tab_threads};
-use gpui::{AnyWindowHandle, App, Context, Entity, EntityId, Subscription, Window};
+use gpui::{AnyWindowHandle, App, Context, Entity, EntityId, Subscription, Window, WindowHandle};
 use ui::IconName;
+use workspace::{MultiWorkspace, Workspace};
 
 use crate::{
-    WorkspaceAttentionController,
+    TerminalLifecycleNotification, WorkspaceAttentionController,
     agent_list::{AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget},
     matched_workspace_id_for_candidate_locations, ordered_multi_workspace_windows,
     workspace_location_candidates,
@@ -91,15 +92,21 @@ impl WorkspaceAttentionController {
     ) {
         if is_subagent {
             // A subagent's approval requests show on its parent conversation's row.
-            let subscription = cx.subscribe(&thread, |_, _, event, cx| {
-                if matches!(
-                    event,
-                    AcpThreadEvent::ToolAuthorizationRequested(_)
-                        | AcpThreadEvent::ToolAuthorizationReceived(_)
-                ) {
-                    cx.notify();
-                }
-            });
+            let subscription =
+                cx.subscribe(&thread, |controller, subagent, event, cx| match event {
+                    AcpThreadEvent::ToolAuthorizationRequested(_) => {
+                        if let Some(parent_id) = controller.acp_parent_thread_id(&subagent, cx) {
+                            controller.notify_unless_viewed(
+                                TerminalLifecycleNotification::PermissionRequest,
+                                parent_id,
+                                cx,
+                            );
+                        }
+                        cx.notify();
+                    }
+                    AcpThreadEvent::ToolAuthorizationReceived(_) => cx.notify(),
+                    _ => {}
+                });
             let thread_id = thread.entity_id();
             self.acp_subagent_subscriptions
                 .insert(thread_id, subscription);
@@ -148,6 +155,15 @@ impl WorkspaceAttentionController {
             AcpThreadEvent::Stopped(_) | AcpThreadEvent::Error | AcpThreadEvent::Refusal => {
                 session.working_since = None;
                 session.needs_review = !viewed;
+                self.notify_unless_viewed(TerminalLifecycleNotification::Completed, thread_id, cx);
+                cx.notify();
+            }
+            AcpThreadEvent::ToolAuthorizationRequested(_) => {
+                self.notify_unless_viewed(
+                    TerminalLifecycleNotification::PermissionRequest,
+                    thread_id,
+                    cx,
+                );
                 cx.notify();
             }
             AcpThreadEvent::NewEntry
@@ -167,7 +183,6 @@ impl WorkspaceAttentionController {
             // The agent reports its commands and options once the session is set up, by
             // which time its tab shows the thread and can be listed.
             AcpThreadEvent::TitleUpdated
-            | AcpThreadEvent::ToolAuthorizationRequested(_)
             | AcpThreadEvent::ToolAuthorizationReceived(_)
             | AcpThreadEvent::LoadError(_)
             | AcpThreadEvent::PromptCapabilitiesUpdated
@@ -178,6 +193,27 @@ impl WorkspaceAttentionController {
             | AcpThreadEvent::Retry(_)
             | AcpThreadEvent::SubagentSpawned(_) => {}
         }
+    }
+
+    fn notify_unless_viewed(
+        &mut self,
+        notification: TerminalLifecycleNotification,
+        thread_id: EntityId,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.acp_thread_viewed(thread_id, cx) {
+            self.maybe_show_acp_notification(notification, thread_id, cx);
+        }
+    }
+
+    fn acp_parent_thread_id(&self, subagent: &Entity<AcpThread>, cx: &App) -> Option<EntityId> {
+        let parent_session_id = subagent.read(cx).parent_session_id()?.clone();
+        self.acp_threads
+            .iter()
+            .filter_map(|thread| thread.upgrade())
+            .find(|thread| thread.read(cx).session_id() == &parent_session_id)
+            .map(|thread| thread.entity_id())
+            .filter(|thread_id| self.acp_sessions.contains_key(thread_id))
     }
 
     fn acp_thread_viewed(&self, thread_id: EntityId, cx: &App) -> bool {
@@ -194,8 +230,17 @@ impl WorkspaceAttentionController {
         cx: &mut Context<Self>,
     ) {
         self.focused_acp_thread = Some(FocusedAcpThread { thread_id, window });
-        if window_active && let Some(session) = self.acp_sessions.get_mut(&thread_id) {
-            session.needs_review = false;
+        if window_active {
+            if let Some(session) = self.acp_sessions.get_mut(&thread_id) {
+                session.needs_review = false;
+            }
+            if self
+                .active_notification_target
+                .as_ref()
+                .is_some_and(|target| target.target == AgentListTarget::AcpThread(thread_id))
+            {
+                self.dismiss_notifications(cx);
+            }
         }
         cx.notify();
     }
@@ -268,42 +313,58 @@ impl WorkspaceAttentionController {
         entries
     }
 
-    pub(crate) fn open_acp_thread(&mut self, thread_id: EntityId, cx: &mut Context<Self>) {
-        for window in ordered_multi_workspace_windows(cx) {
-            let Some((workspace, item_id)) = window.read(cx).ok().and_then(|multi_workspace| {
-                multi_workspace.workspaces().iter().find_map(|workspace| {
-                    external_acp_tab_threads(workspace.read(cx), cx)
-                        .into_iter()
-                        .find(|tab| tab.thread.entity_id() == thread_id)
-                        .map(|tab| (workspace.clone(), tab.item_id))
-                })
-            }) else {
-                continue;
-            };
-
-            cx.activate(true);
-            let activated = window.update(cx, |multi_workspace, window, cx| {
-                window.activate_window();
-                multi_workspace.activate(workspace.clone(), cx);
-                workspace.update(cx, |workspace, cx| {
-                    let item = workspace.panes().iter().find_map(|pane| {
-                        pane.read(cx)
-                            .items()
-                            .find(|item| item.item_id() == item_id)
-                            .map(|item| item.boxed_clone())
-                    });
-                    if let Some(item) = item {
-                        workspace.activate_item(item.as_ref(), true, true, window, cx);
-                    }
-                });
-            });
-            if let Err(error) = activated {
-                log::error!("failed to open ACP thread {thread_id:?}: {error:#}");
-            }
-            return;
-        }
-        log::warn!("cannot open ACP thread {thread_id:?}: no tab shows it");
+    pub(crate) fn acp_thread_workspace_id(&self, thread_id: EntityId, cx: &App) -> Option<String> {
+        let (_, workspace, _) = find_acp_tab(thread_id, cx)?;
+        matched_workspace_id_for_candidate_locations(
+            &workspace_location_candidates(&workspace, cx),
+            self.store.read(cx).workspaces(),
+            None,
+        )
     }
+
+    pub(crate) fn open_acp_thread(&mut self, thread_id: EntityId, cx: &mut Context<Self>) {
+        let Some((window, workspace, item_id)) = find_acp_tab(thread_id, cx) else {
+            log::warn!("cannot open ACP thread {thread_id:?}: no tab shows it");
+            return;
+        };
+        cx.activate(true);
+        let activated = window.update(cx, |multi_workspace, window, cx| {
+            window.activate_window();
+            multi_workspace.activate(workspace.clone(), cx);
+            workspace.update(cx, |workspace, cx| {
+                let item = workspace.panes().iter().find_map(|pane| {
+                    pane.read(cx)
+                        .items()
+                        .find(|item| item.item_id() == item_id)
+                        .map(|item| item.boxed_clone())
+                });
+                if let Some(item) = item {
+                    workspace.activate_item(item.as_ref(), true, true, window, cx);
+                }
+            });
+        });
+        if let Err(error) = activated {
+            log::error!("failed to open ACP thread {thread_id:?}: {error:#}");
+        }
+    }
+}
+
+/// The window, workspace, and tab item showing an ACP conversation.
+fn find_acp_tab(
+    thread_id: EntityId,
+    cx: &App,
+) -> Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>, EntityId)> {
+    ordered_multi_workspace_windows(cx)
+        .into_iter()
+        .find_map(|window| {
+            let multi_workspace = window.read(cx).ok()?;
+            multi_workspace.workspaces().iter().find_map(|workspace| {
+                external_acp_tab_threads(workspace.read(cx), cx)
+                    .into_iter()
+                    .find(|tab| tab.thread.entity_id() == thread_id)
+                    .map(|tab| (window, workspace.clone(), tab.item_id))
+            })
+        })
 }
 
 /// Tracks focus on a top-level conversation the way terminal focus is tracked, so a turn

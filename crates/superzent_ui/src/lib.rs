@@ -243,7 +243,7 @@ fn toggle_superzent_right_sidebar(
 #[cfg(feature = "acp_tabs")]
 struct NotificationTarget {
     workspace_id: String,
-    terminal_id: String,
+    target: AgentListTarget,
     notification: TerminalLifecycleNotification,
     workspace_name: String,
     placement: PopupPlacement,
@@ -700,7 +700,9 @@ impl WorkspaceAttentionController {
         if self
             .active_notification_target
             .as_ref()
-            .is_some_and(|target| target.terminal_id == terminal_id)
+            .is_some_and(|target| {
+                target.target == AgentListTarget::Terminal(terminal_id.to_string())
+            })
         {
             self.dismiss_notifications(cx);
         }
@@ -1406,14 +1408,65 @@ impl WorkspaceAttentionController {
             return;
         }
 
-        self.show_popup_notification(notification, terminal_id, workspace_id, workspace_name, cx);
+        self.show_popup_notification(
+            notification,
+            AgentListTarget::Terminal(terminal_id.to_string()),
+            workspace_id,
+            workspace_name,
+            cx,
+        );
+    }
+
+    #[cfg(feature = "acp_tabs")]
+    fn maybe_show_acp_notification(
+        &mut self,
+        notification: TerminalLifecycleNotification,
+        thread_id: EntityId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self
+            .acp_thread_workspace_id(thread_id, cx)
+            .and_then(|workspace_id| self.store.read(cx).workspace(&workspace_id).cloned())
+        else {
+            log::debug!("no notification for ACP thread {thread_id:?}: no workspace shows it");
+            return;
+        };
+        let mode = TerminalSettings::get_global(cx).agent_notifications;
+        if !should_show_terminal_notification(mode, &workspace.id, &self.store, cx) {
+            return;
+        }
+        self.show_popup_notification(
+            notification,
+            AgentListTarget::AcpThread(thread_id),
+            &workspace.id,
+            &workspace_notification_title(&workspace),
+            cx,
+        );
+    }
+
+    #[cfg(feature = "acp_tabs")]
+    fn activate_notification_target(
+        &mut self,
+        workspace_id: &str,
+        target: &AgentListTarget,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            AgentListTarget::Terminal(terminal_id) => {
+                self.handle_native_notification_activation(workspace_id, Some(terminal_id), cx);
+            }
+            AgentListTarget::AcpThread(thread_id) => {
+                self.dismiss_notifications(cx);
+                self.open_acp_thread(*thread_id, cx);
+            }
+        }
     }
 
     #[cfg(feature = "acp_tabs")]
     fn show_popup_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
-        terminal_id: &str,
+        target: AgentListTarget,
         workspace_id: &str,
         workspace_name: &str,
         cx: &mut Context<Self>,
@@ -1434,16 +1487,11 @@ impl WorkspaceAttentionController {
         };
 
         let title = SharedString::from(notification.title());
-        let caption = SharedString::from(notification.caption());
+        let caption = SharedString::from(notification.caption(&target));
         let workspace_name_text = workspace_name.to_string();
         let workspace_name = SharedString::from(workspace_name.to_string());
         let icon = notification.icon();
         let options = AgentNotification::window_options(screen, cx);
-        let action_label = if self.live_terminal_view(terminal_id).is_some() {
-            "Open Tab"
-        } else {
-            "Open Workspace"
-        };
 
         let screen_window = match cx.open_window(options, {
             move |_window, cx| {
@@ -1454,7 +1502,6 @@ impl WorkspaceAttentionController {
                         icon,
                         Some(workspace_name.clone()),
                     )
-                    .with_action_label(action_label)
                 })
             }
         }) {
@@ -1488,10 +1535,9 @@ impl WorkspaceAttentionController {
         // a display change leaves the old popup (and its placement watch) to retry.
         self.dismiss_notifications(cx);
         let workspace_id = workspace_id.to_string();
-        let terminal_id = terminal_id.to_string();
         self.active_notification_target = Some(NotificationTarget {
             workspace_id: workspace_id.clone(),
-            terminal_id: terminal_id.clone(),
+            target: target.clone(),
             notification,
             workspace_name: workspace_name_text,
             placement,
@@ -1515,11 +1561,7 @@ impl WorkspaceAttentionController {
             .push(
                 cx.subscribe(&pop_up, move |this, _, event, cx| match event {
                     AgentNotificationEvent::Accepted => {
-                        this.handle_native_notification_activation(
-                            &workspace_id,
-                            Some(&terminal_id),
-                            cx,
-                        );
+                        this.activate_notification_target(&workspace_id, &target, cx);
                     }
                     AgentNotificationEvent::Dismissed => {
                         this.dismiss_notifications(cx);
@@ -1533,7 +1575,7 @@ impl WorkspaceAttentionController {
     fn show_popup_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
-        _terminal_id: &str,
+        _target: AgentListTarget,
         workspace_id: &str,
         _workspace_name: &str,
         _cx: &mut Context<Self>,
@@ -1579,7 +1621,7 @@ impl WorkspaceAttentionController {
         }
 
         let notification = target.notification;
-        let terminal_id = target.terminal_id.clone();
+        let notification_target = target.target.clone();
         let workspace_id = target.workspace_id.clone();
         let workspace_name = target.workspace_name.clone();
         let this = cx.entity();
@@ -1589,7 +1631,7 @@ impl WorkspaceAttentionController {
             this.update(cx, |this, cx| {
                 this.show_popup_notification(
                     notification,
-                    &terminal_id,
+                    notification_target,
                     &workspace_id,
                     &workspace_name,
                     cx,
@@ -1604,11 +1646,7 @@ impl WorkspaceAttentionController {
         let Some(target) = self.active_notification_target.take() else {
             return;
         };
-        self.handle_native_notification_activation(
-            &target.workspace_id,
-            Some(&target.terminal_id),
-            cx,
-        );
+        self.activate_notification_target(&target.workspace_id, &target.target, cx);
     }
 
     #[cfg(not(feature = "acp_tabs"))]
@@ -1696,10 +1734,11 @@ impl TerminalLifecycleNotification {
     }
 
     #[cfg(feature = "acp_tabs")]
-    fn caption(self) -> &'static str {
-        match self {
-            Self::Completed => "Managed terminal task completed",
-            Self::PermissionRequest => "Approval is required to continue",
+    fn caption(self, target: &AgentListTarget) -> &'static str {
+        match (self, target) {
+            (Self::Completed, AgentListTarget::Terminal(_)) => "Managed terminal task completed",
+            (Self::Completed, AgentListTarget::AcpThread(_)) => "The agent finished its turn",
+            (Self::PermissionRequest, _) => "Approval is required to continue",
         }
     }
 
@@ -1718,7 +1757,11 @@ pub fn init(cx: &mut App) {
     }
 
     #[cfg(feature = "acp_tabs")]
-    acp_tabs::init(cx);
+    {
+        acp_tabs::init(cx);
+        // ACP conversations notify through the same popups as terminal agents.
+        cx.set_global(agent_ui::ExternalAgentNotifications);
+    }
 
     let attention_controller = cx.new(WorkspaceAttentionController::new);
     cx.set_global(GlobalAttentionController(attention_controller.clone()));

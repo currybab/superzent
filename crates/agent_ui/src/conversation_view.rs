@@ -76,7 +76,7 @@ use crate::entry_view_state::{EntryViewEvent, ViewEvent};
 use crate::message_editor::{MessageEditor, MessageEditorEvent};
 use crate::profile_selector::{ProfileProvider, ProfileSelector};
 use crate::thread_metadata_store::ThreadMetadataStore;
-use crate::ui::{AgentNotification, AgentNotificationEvent};
+use crate::ui::{AgentNotification, AgentNotificationEvent, ExternalAgentNotifications};
 use crate::{
     Agent, AgentDiffPane, AgentInitialContent, AgentPanel, AllowAlways, AllowOnce,
     AuthorizeToolCall, ClearMessageQueue, CycleFavoriteModels, CycleModeSelector,
@@ -2411,7 +2411,7 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.notifications.is_empty() {
+        if !self.notifications.is_empty() || cx.has_global::<ExternalAgentNotifications>() {
             return;
         }
 
