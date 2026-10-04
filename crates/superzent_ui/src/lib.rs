@@ -3,6 +3,7 @@ mod acp_tabs;
 #[cfg(feature = "acp_tabs")]
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 
+mod agent_list;
 mod import_worktree_picker;
 mod pending_keystroke_indicator;
 pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
@@ -10,6 +11,10 @@ pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 #[cfg(feature = "acp_tabs")]
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
+use agent_list::{
+    AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_process_alive,
+    agent_task_title, clean_terminal_title, terminal_title_is_a_summary,
+};
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
     AgentNotification, AgentNotificationEvent, open_external_acp_tab, pane_has_external_acp_item,
@@ -57,7 +62,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 #[cfg(target_os = "macos")]
 use std::{
@@ -66,6 +71,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
+    AgentKind,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -88,7 +94,7 @@ use ui::{
 };
 use uuid::Uuid;
 use workspace::{
-    AppState as WorkspaceAppState, ModalView, MultiWorkspace, MultiWorkspaceEvent,
+    AppState as WorkspaceAppState, Item as _, ModalView, MultiWorkspace, MultiWorkspaceEvent,
     NextWorkspaceInWindow, OpenOptions, Pane, PreviousWorkspaceInWindow,
     SerializedWorkspaceLocation, Sidebar as WorkspaceSidebar, SidebarEvent, Toast, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
@@ -364,6 +370,18 @@ struct AttentionQueueEntry {
     sequence: u64,
 }
 
+struct AgentSessionInfo {
+    kind: Option<AgentKind>,
+    first_prompt: Option<String>,
+    // Launch order, which keeps rows in place within an agent list group.
+    sequence: u64,
+    running: bool,
+    // The agent left the terminal's foreground without reporting its exit (killed,
+    // crashed or suspended). Whatever holds the foreground next is not the agent, so
+    // it stays unlisted until the agent reports again.
+    lost: bool,
+}
+
 #[derive(Clone)]
 struct LiveTerminalAttention {
     workspace_id: String,
@@ -389,6 +407,12 @@ struct WorkspaceAttentionController {
     // (or for agents that never do), the launch itself is the only busy signal.
     preset_terminals: Vec<TrackedPresetTerminal>,
     hook_reporting_terminals: BTreeSet<String>,
+    // Agent CLIs that reported a hook from a terminal, kept after the agent exits while
+    // its finished work is unreviewed.
+    agent_sessions: BTreeMap<String, AgentSessionInfo>,
+    next_agent_sequence: u64,
+    working_since: BTreeMap<String, Instant>,
+    agent_titles: BTreeMap<String, String>,
     // Agent panel and ACP tab conversations, which quitting stops along with their
     // agent servers.
     acp_threads: Vec<WeakEntity<AcpThread>>,
@@ -479,6 +503,10 @@ impl WorkspaceAttentionController {
             next_attention_sequence: 0,
             preset_terminals: Vec::new(),
             hook_reporting_terminals: BTreeSet::new(),
+            agent_sessions: BTreeMap::new(),
+            next_agent_sequence: 0,
+            working_since: BTreeMap::new(),
+            agent_titles: BTreeMap::new(),
             acp_threads: Vec::new(),
             focused_terminal: None,
             #[cfg(feature = "acp_tabs")]
@@ -535,6 +563,9 @@ impl WorkspaceAttentionController {
         self.terminal_views_by_terminal.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
+        self.agent_sessions.remove(terminal_id);
+        self.working_since.remove(terminal_id);
+        self.agent_titles.remove(terminal_id);
         self.clear_focused_terminal(terminal_id);
         // Closing the tab from inside its workspace is a deliberate dismissal. Otherwise
         // (e.g. the whole workspace went away) leave the review for the next activation.
@@ -556,6 +587,7 @@ impl WorkspaceAttentionController {
         if let Some(workspace_id) = workspace_id {
             self.recompute_workspace_attention(&workspace_id, cx);
         }
+        cx.notify();
     }
 
     fn is_terminal_in_view(&self, terminal_id: &str, cx: &App) -> bool {
@@ -593,10 +625,51 @@ impl WorkspaceAttentionController {
         if window_active {
             self.mark_terminal_viewed(terminal_id, cx);
         }
+        cx.notify();
     }
 
-    fn handle_terminal_focus_out(&mut self, terminal_id: &str) {
+    fn handle_terminal_focus_out(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
         self.clear_focused_terminal(terminal_id);
+        cx.notify();
+    }
+
+    fn handle_agent_process_changed(
+        &mut self,
+        terminal_id: &str,
+        agent_in_foreground: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.agent_sessions.contains_key(terminal_id) {
+            return;
+        }
+        // An agent that crashed or was killed never reports its stop or exit. The session
+        // itself stays open, since a suspended agent (`Ctrl-Z`, then `fg`) comes back and
+        // its next hook restores the attention.
+        if !agent_in_foreground {
+            if let Some(session) = self.agent_sessions.get_mut(terminal_id) {
+                session.lost = true;
+            }
+            if let Some(attention) = self.live_terminal_attention.remove(terminal_id) {
+                self.sync_terminal_tab_attention(terminal_id, cx);
+                self.recompute_workspace_attention(&attention.workspace_id, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_agent_title_changed(
+        &mut self,
+        terminal_id: &str,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.agent_sessions.contains_key(terminal_id) {
+            return;
+        }
+        if self.agent_titles.get(terminal_id) != Some(&title) {
+            self.agent_titles.insert(terminal_id.to_string(), title);
+            cx.notify();
+        }
     }
 
     fn mark_terminal_viewed(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
@@ -637,6 +710,19 @@ impl WorkspaceAttentionController {
     fn sync_terminal_tab_attention(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
         let tab_attention = self.terminal_tab_attention(terminal_id, cx);
         self.update_attention_queue(terminal_id, tab_attention, cx);
+        match tab_attention {
+            Some(TerminalTabAttention::Working) => {
+                self.working_since
+                    .entry(terminal_id.to_string())
+                    .or_insert_with(Instant::now);
+            }
+            // An approval pauses the turn rather than ending it.
+            Some(TerminalTabAttention::NeedsApproval) => {}
+            Some(TerminalTabAttention::NeedsReview) | None => {
+                self.working_since.remove(terminal_id);
+            }
+        }
+        cx.notify();
         let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
             return;
         };
@@ -732,38 +818,83 @@ impl WorkspaceAttentionController {
         self.handle_native_notification_activation(&workspace_id, Some(&terminal_id), cx);
     }
 
-    fn handle_terminal_input(
-        &mut self,
-        terminal_id: &str,
-        workspace_id: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let current_status = self
-            .live_terminal_attention
-            .get(terminal_id)
-            .map(|attention| &attention.status);
-        let Some(next_status) = next_terminal_input_attention_status(current_status) else {
+    fn handle_terminal_input(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        let Some(current) = self.live_terminal_attention.get(terminal_id) else {
             return;
         };
-        if current_status == Some(&next_status) {
+        let Some(next_status) = next_terminal_input_attention_status(Some(&current.status)) else {
+            return;
+        };
+        if current.status == next_status {
             return;
         }
+        // The workspace the last hook resolved, which follows a terminal moved to another
+        // workspace, unlike the one it was launched in.
+        let workspace_id = current.workspace_id.clone();
 
         // Reused agent terminals can take a fresh prompt before the next start hook lands.
         // Treat outbound input as "work resumed", but never downgrade a pending permission.
-        self.live_terminal_attention.insert(
+        self.set_live_terminal_attention(terminal_id, &workspace_id, next_status, cx);
+        self.clear_workspace_attention_for_activity(&workspace_id, cx);
+        self.recompute_workspace_attention(&workspace_id, cx);
+    }
+
+    fn set_live_terminal_attention(
+        &mut self,
+        terminal_id: &str,
+        workspace_id: &str,
+        status: WorkspaceAttentionStatus,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.live_terminal_attention.insert(
             terminal_id.to_string(),
             LiveTerminalAttention {
                 workspace_id: workspace_id.to_string(),
-                status: next_status,
+                status,
             },
         );
         self.sync_terminal_tab_attention(terminal_id, cx);
-        self.clear_workspace_attention_for_activity(workspace_id, cx);
-        self.recompute_workspace_attention(workspace_id, cx);
+        self.recompute_moved_terminal_workspace(previous, workspace_id, cx);
+    }
+
+    /// A terminal moved to another workspace leaves its old workspace's attention behind.
+    fn recompute_moved_terminal_workspace(
+        &mut self,
+        previous: Option<LiveTerminalAttention>,
+        workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = previous
+            && previous.workspace_id != workspace_id
+        {
+            self.recompute_workspace_attention(&previous.workspace_id, cx);
+        }
     }
 
     fn handle_hook_event(&mut self, event: AgentHookEvent, cx: &mut Context<Self>) {
+        let session_running = self
+            .agent_sessions
+            .get(&event.terminal_id)
+            .map(|session| session.running);
+        if !agent_hook_event_applies(session_running, &event.event_type) {
+            return;
+        }
+        self.track_agent_session(&event);
+        match event.event_type {
+            AgentHookEventType::SessionStart => {
+                cx.notify();
+                return;
+            }
+            AgentHookEventType::SessionEnd => {
+                self.end_agent_session(&event.terminal_id, cx);
+                return;
+            }
+            AgentHookEventType::Start
+            | AgentHookEventType::PermissionRequest
+            | AgentHookEventType::Stop => {}
+        }
+        // Only activity counts: a launched agent that never reports work (Codex's log
+        // watcher can miss its first turn) keeps the preset session as its busy signal.
         self.hook_reporting_terminals
             .insert(event.terminal_id.clone());
         if debug_terminal_notifications_enabled() {
@@ -810,27 +941,24 @@ impl WorkspaceAttentionController {
         }
 
         match event.event_type {
+            AgentHookEventType::SessionStart | AgentHookEventType::SessionEnd => {}
             AgentHookEventType::Start => {
-                self.live_terminal_attention.insert(
-                    event.terminal_id.clone(),
-                    LiveTerminalAttention {
-                        workspace_id: workspace_id.clone(),
-                        status: WorkspaceAttentionStatus::Working,
-                    },
+                self.set_live_terminal_attention(
+                    &event.terminal_id,
+                    &workspace_id,
+                    WorkspaceAttentionStatus::Working,
+                    cx,
                 );
-                self.sync_terminal_tab_attention(&event.terminal_id, cx);
                 self.clear_workspace_attention_for_activity(&workspace_id, cx);
                 self.recompute_workspace_attention(&workspace_id, cx);
             }
             AgentHookEventType::PermissionRequest => {
-                self.live_terminal_attention.insert(
-                    event.terminal_id.clone(),
-                    LiveTerminalAttention {
-                        workspace_id: workspace_id.clone(),
-                        status: WorkspaceAttentionStatus::Permission,
-                    },
+                self.set_live_terminal_attention(
+                    &event.terminal_id,
+                    &workspace_id,
+                    WorkspaceAttentionStatus::Permission,
+                    cx,
                 );
-                self.sync_terminal_tab_attention(&event.terminal_id, cx);
                 self.clear_workspace_attention_for_activity(&workspace_id, cx);
                 self.recompute_workspace_attention(&workspace_id, cx);
                 self.maybe_show_terminal_notification(
@@ -842,7 +970,8 @@ impl WorkspaceAttentionController {
                 );
             }
             AgentHookEventType::Stop => {
-                self.live_terminal_attention.remove(&event.terminal_id);
+                let previous = self.live_terminal_attention.remove(&event.terminal_id);
+                self.recompute_moved_terminal_workspace(previous, &workspace_id, cx);
                 if self.is_terminal_in_view(&event.terminal_id, cx) {
                     self.sync_terminal_tab_attention(&event.terminal_id, cx);
                     self.recompute_workspace_attention(&workspace_id, cx);
@@ -885,12 +1014,154 @@ impl WorkspaceAttentionController {
         }
     }
 
+    fn track_agent_session(&mut self, event: &AgentHookEvent) {
+        let running = event.event_type != AgentHookEventType::SessionEnd;
+        if let Some(session) = self.agent_sessions.get_mut(&event.terminal_id) {
+            // Only the agent reports hooks, so it is back in this terminal.
+            session.lost = false;
+            match event.event_type {
+                AgentHookEventType::SessionStart => {
+                    session.running = true;
+                    // A new session (including Claude's `/clear`) is a new task.
+                    session.first_prompt = None;
+                    // Nested agents report activity through the outer agent's terminal but
+                    // never its session start, so only that (or a first sighting) names it.
+                    if event.agent.is_some() {
+                        session.kind = event.agent;
+                    }
+                }
+                AgentHookEventType::SessionEnd => session.running = false,
+                AgentHookEventType::Start
+                | AgentHookEventType::PermissionRequest
+                | AgentHookEventType::Stop => {
+                    if session.kind.is_none() {
+                        session.kind = event.agent;
+                    }
+                    if session.first_prompt.is_none() {
+                        session.first_prompt = event.prompt.clone();
+                    }
+                }
+            }
+            return;
+        }
+        self.next_agent_sequence += 1;
+        self.agent_sessions.insert(
+            event.terminal_id.clone(),
+            AgentSessionInfo {
+                kind: event.agent,
+                first_prompt: event.prompt.clone(),
+                sequence: self.next_agent_sequence,
+                running,
+                lost: false,
+            },
+        );
+    }
+
+    fn end_agent_session(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        // An agent that exits mid-turn never reports its stop.
+        if let Some(attention) = self.live_terminal_attention.remove(terminal_id) {
+            self.sync_terminal_tab_attention(terminal_id, cx);
+            self.recompute_workspace_attention(&attention.workspace_id, cx);
+        }
+        cx.notify();
+    }
+
+    /// The workspace whose window currently holds the terminal's tab. A terminal can be
+    /// moved to another workspace after its agent captured the original workspace id.
+    fn current_workspace_id_for_terminal(&self, terminal_id: &str, cx: &App) -> Option<String> {
+        let terminal_view = self.live_terminal_view(terminal_id)?;
+        let workspace_entries = self.store.read(cx).workspaces();
+        let launch_workspace_id = self.workspace_ids_by_terminal.get(terminal_id);
+        ordered_multi_workspace_windows(cx)
+            .into_iter()
+            .find_map(|window| {
+                let multi_workspace = window.read(cx).ok()?;
+                let workspace = multi_workspace.workspaces().iter().find(|workspace| {
+                    locate_terminal_view(workspace.read(cx), &terminal_view, cx).is_some()
+                })?;
+                Some(matched_workspace_id_for_candidate_locations(
+                    &workspace_location_candidates(workspace, cx),
+                    workspace_entries,
+                    launch_workspace_id.map(String::as_str),
+                ))
+            })
+            .flatten()
+    }
+
+    fn agent_terminal_workspace_id(&self, terminal_id: &str, cx: &App) -> Option<String> {
+        self.current_workspace_id_for_terminal(terminal_id, cx)
+            .or_else(|| {
+                self.live_terminal_attention
+                    .get(terminal_id)
+                    .map(|attention| attention.workspace_id.clone())
+            })
+            .or_else(|| {
+                self.store
+                    .read(cx)
+                    .unreviewed_terminal_workspace(terminal_id)
+                    .map(str::to_string)
+            })
+            .or_else(|| self.workspace_ids_by_terminal.get(terminal_id).cloned())
+    }
+
+    fn agent_list_entries(&self, cx: &App) -> Vec<AgentListEntry> {
+        let focused_terminal_id = self.focused_terminal_id();
+        self.agent_sessions
+            .iter()
+            .filter_map(|(terminal_id, session)| {
+                let terminal_view = self.live_terminal_view(terminal_id)?;
+                let terminal_view = terminal_view.read(cx);
+                let terminal = terminal_view.terminal().read(cx);
+                let group =
+                    AgentListGroup::for_attention(self.terminal_tab_attention(terminal_id, cx));
+                if !agent_is_listed(
+                    group,
+                    session.running && !session.lost,
+                    terminal_runs_agent(terminal),
+                ) {
+                    return None;
+                }
+                let tab_title = terminal_view.tab_content_text(0, cx);
+                Some(AgentListEntry {
+                    terminal_id: terminal_id.clone(),
+                    group,
+                    title: agent_task_title(
+                        terminal_title_is_a_summary(session.kind, session.running)
+                            .then_some(terminal.breadcrumb_text.as_str()),
+                        session.first_prompt.as_deref(),
+                        &tab_title,
+                    ),
+                    name: tab_title.to_string(),
+                    kind: session.kind,
+                    workspace_id: self.agent_terminal_workspace_id(terminal_id, cx),
+                    working_since: self.working_since.get(terminal_id).copied(),
+                    sequence: session.sequence,
+                    focused: focused_terminal_id == Some(terminal_id.as_str()),
+                })
+            })
+            .collect()
+    }
+
+    fn open_agent_terminal(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.agent_terminal_workspace_id(terminal_id, cx) else {
+            log::warn!("cannot open agent terminal {terminal_id}: no workspace holds it");
+            return;
+        };
+        self.activate_workspace_terminal(&workspace_id, Some(terminal_id), cx);
+    }
+
     fn resolve_workspace_for_event(
         &self,
         event: &AgentHookEvent,
         cx: &App,
     ) -> Option<WorkspaceEntry> {
         let store = self.store.read(cx);
+        if let Some(workspace) = self
+            .current_workspace_id_for_terminal(&event.terminal_id, cx)
+            .and_then(|workspace_id| store.workspace(&workspace_id))
+        {
+            return Some(workspace.clone());
+        }
         if let Some(workspace_id) = event.workspace_id.as_deref() {
             return store.workspace(workspace_id).cloned();
         }
@@ -946,6 +1217,15 @@ impl WorkspaceAttentionController {
         cx: &mut Context<Self>,
     ) {
         self.dismiss_notifications(cx);
+        self.activate_workspace_terminal(workspace_id, terminal_id, cx);
+    }
+
+    fn activate_workspace_terminal(
+        &mut self,
+        workspace_id: &str,
+        terminal_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         let terminal_view =
             terminal_id.and_then(|terminal_id| self.live_terminal_view(terminal_id));
 
@@ -1404,12 +1684,40 @@ pub fn init(cx: &mut App) {
                 (terminal_id, workspace_id)
             };
 
+            cx.subscribe(&terminal, {
+                let terminal_id = terminal_id.clone();
+                let attention_controller = attention_controller.clone();
+                move |_, terminal, event: &TerminalEvent, cx| match event {
+                    TerminalEvent::BreadcrumbsChanged => {
+                        // Agents animate status glyphs in their title, so only a change in
+                        // the title text itself is worth a sidebar refresh.
+                        let title = clean_terminal_title(&terminal.read(cx).breadcrumb_text);
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.handle_agent_title_changed(&terminal_id, title, cx);
+                        });
+                    }
+                    // The foreground process changed, e.g. an agent exited without
+                    // reporting it.
+                    TerminalEvent::TitleChanged => {
+                        let agent_in_foreground = terminal_runs_agent(terminal.read(cx));
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.handle_agent_process_changed(
+                                &terminal_id,
+                                agent_in_foreground,
+                                cx,
+                            );
+                        });
+                    }
+                    _ => {}
+                }
+            })
+            .detach();
             attention_controller.update(cx, |controller, cx| {
                 controller.register_terminal(
                     terminal,
                     terminal_view_handle,
                     terminal_id.clone(),
-                    workspace_id.clone(),
+                    workspace_id,
                     cx,
                 );
             });
@@ -1424,10 +1732,6 @@ pub fn init(cx: &mut App) {
                 );
             }
 
-            let Some(workspace_id) = workspace_id else {
-                return;
-            };
-
             let terminal_id = terminal_id.clone();
             let attention_controller = attention_controller.clone();
             cx.subscribe(&cx.entity(), move |_, _, event: &TerminalEvent, cx| {
@@ -1436,7 +1740,7 @@ pub fn init(cx: &mut App) {
                 }
 
                 attention_controller.update(cx, |controller, cx| {
-                    controller.handle_terminal_input(&terminal_id, &workspace_id, cx);
+                    controller.handle_terminal_input(&terminal_id, cx);
                 });
             })
             .detach();
@@ -4406,6 +4710,8 @@ pub struct SuperzentSidebar {
     rename_target: Option<SidebarRenameTarget>,
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
+    agent_list: Vec<AgentListEntry>,
+    frozen_agent_groups: Option<BTreeMap<String, AgentListGroup>>,
     _git_store_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -4441,6 +4747,24 @@ impl SuperzentSidebar {
             ),
         );
 
+        let attention_controller = cx
+            .try_global::<GlobalAttentionController>()
+            .map(|controller| controller.0.clone());
+        if let Some(attention_controller) = &attention_controller {
+            subscriptions.push(cx.observe(attention_controller, |this, controller, cx| {
+                this.agent_list = controller.read(cx).agent_list_entries(cx);
+                cx.notify();
+            }));
+        }
+        // The list reads every workspace, some of which may be leased by whatever is
+        // creating this sidebar.
+        if let Some(attention_controller) = attention_controller {
+            cx.defer_in(window, move |this, _, cx| {
+                this.agent_list = attention_controller.read(cx).agent_list_entries(cx);
+                cx.notify();
+            });
+        }
+
         let mut this = Self {
             store,
             multi_workspace: weak_multi_workspace,
@@ -4451,6 +4775,8 @@ impl SuperzentSidebar {
             rename_target: None,
             rename_editor: None,
             rename_editor_subscription: None,
+            agent_list: Vec::new(),
+            frozen_agent_groups: None,
             _git_store_subscriptions: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -5938,6 +6264,10 @@ impl Focusable for SuperzentSidebar {
 
 impl Render for SuperzentSidebar {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A list that is gone never reports the pointer leaving it.
+        if self.agent_list.is_empty() || self.store.read(cx).agents_collapsed() {
+            self.frozen_agent_groups = None;
+        }
         let projects = self.store.read(cx).projects().to_vec();
         let project_content = if projects.is_empty() {
             vec![
@@ -5979,8 +6309,11 @@ impl Render for SuperzentSidebar {
             .border_r_1()
             .border_color(cx.theme().colors().border)
             .child(
+                // Framed like the workspace beside it, so rows along the bottom edge
+                // (the Agents header and the status bar) line up.
                 v_flex()
                     .border_t_1()
+                    .border_b_1()
                     .border_color(cx.theme().colors().border)
                     .h_full()
                     .child(
@@ -6034,7 +6367,8 @@ impl Render for SuperzentSidebar {
                                         }
                                     })),
                             ),
-                    ),
+                    )
+                    .children(self.render_agents_section(cx)),
             )
             .children(self.context_menu.as_ref().map(|(menu, position, _)| {
                 deferred(
@@ -8311,6 +8645,15 @@ fn inferred_project_id_for_live_workspace(
         .map(|project| project.id.clone())
 }
 
+fn terminal_runs_agent(terminal: &Terminal) -> bool {
+    agent_process_alive(
+        terminal
+            .task()
+            .map(|task| task.status == terminal::TaskStatus::Running),
+        terminal.has_foreground_job(),
+    )
+}
+
 fn observe_terminal_view_focus(
     terminal_view: &TerminalView,
     terminal_id: &str,
@@ -8335,8 +8678,8 @@ fn observe_terminal_view_focus(
         let terminal_id = terminal_id.to_string();
         let attention_controller = attention_controller.clone();
         move |_, _, _, cx| {
-            attention_controller.update(cx, |controller, _| {
-                controller.handle_terminal_focus_out(&terminal_id);
+            attention_controller.update(cx, |controller, cx| {
+                controller.handle_terminal_focus_out(&terminal_id, cx);
             });
         }
     })
