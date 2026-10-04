@@ -8,6 +8,7 @@ pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 mod agent_list;
 mod import_worktree_picker;
 mod pending_keystroke_indicator;
+mod screen_agents;
 pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 
 #[cfg(feature = "acp_tabs")]
@@ -15,7 +16,7 @@ use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
     AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget, agent_hook_event_applies,
-    agent_is_listed, agent_kind_icon, agent_process_alive, agent_task_title, clean_terminal_title,
+    agent_icon, agent_is_listed, agent_process_alive, agent_task_title, clean_terminal_title,
     terminal_title_is_a_summary,
 };
 #[cfg(feature = "acp_tabs")]
@@ -74,7 +75,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
-    AgentKind,
+    AgentKind, ScreenAgent,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -375,6 +376,8 @@ struct AttentionQueueEntry {
 
 struct AgentSessionInfo {
     kind: Option<AgentKind>,
+    // An agent without hooks, whose state is read from its screen.
+    screen_agent: Option<ScreenAgent>,
     first_prompt: Option<String>,
     // Launch order, which keeps rows in place within an agent list group.
     sequence: u64,
@@ -416,6 +419,7 @@ struct WorkspaceAttentionController {
     next_agent_sequence: u64,
     working_since: BTreeMap<String, Instant>,
     agent_titles: BTreeMap<String, String>,
+    screen_agents: BTreeMap<String, screen_agents::ScreenAgentTracker>,
     // Agent panel and ACP tab conversations, which quitting stops along with their
     // agent servers.
     acp_threads: Vec<WeakEntity<AcpThread>>,
@@ -516,6 +520,7 @@ impl WorkspaceAttentionController {
             next_agent_sequence: 0,
             working_since: BTreeMap::new(),
             agent_titles: BTreeMap::new(),
+            screen_agents: BTreeMap::new(),
             acp_threads: Vec::new(),
             #[cfg(feature = "acp_tabs")]
             acp_sessions: BTreeMap::new(),
@@ -581,6 +586,7 @@ impl WorkspaceAttentionController {
         self.agent_sessions.remove(terminal_id);
         self.working_since.remove(terminal_id);
         self.agent_titles.remove(terminal_id);
+        self.screen_agents.remove(terminal_id);
         self.clear_focused_terminal(terminal_id);
         // Closing the tab from inside its workspace is a deliberate dismissal. Otherwise
         // (e.g. the whole workspace went away) leave the review for the next activation.
@@ -664,6 +670,7 @@ impl WorkspaceAttentionController {
             if let Some(session) = self.agent_sessions.get_mut(terminal_id) {
                 session.lost = true;
             }
+            self.sync_terminal_tab_icon(terminal_id, cx);
             if let Some(attention) = self.live_terminal_attention.remove(terminal_id) {
                 self.sync_terminal_tab_attention(terminal_id, cx);
                 self.recompute_workspace_attention(&attention.workspace_id, cx);
@@ -720,6 +727,24 @@ impl WorkspaceAttentionController {
                 .has_unreviewed_terminal(terminal_id)
                 .then_some(TerminalTabAttention::NeedsReview),
         }
+    }
+
+    fn sync_terminal_tab_icon(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        let icon = self
+            .agent_sessions
+            .get(terminal_id)
+            .filter(|session| session.running && !session.lost)
+            .filter(|session| session.kind.is_some() || session.screen_agent.is_some())
+            .map(|session| agent_icon(session.kind, session.screen_agent));
+        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
+            return;
+        };
+        // Hook events can arrive while the terminal view is being updated.
+        cx.defer(move |cx| {
+            terminal_view.update(cx, |terminal_view, cx| {
+                terminal_view.set_tab_agent_icon(icon, cx);
+            });
+        });
     }
 
     fn sync_terminal_tab_attention(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
@@ -895,6 +920,7 @@ impl WorkspaceAttentionController {
             return;
         }
         self.track_agent_session(&event);
+        self.sync_terminal_tab_icon(&event.terminal_id, cx);
         match event.event_type {
             AgentHookEventType::SessionStart => {
                 cx.notify();
@@ -1043,6 +1069,7 @@ impl WorkspaceAttentionController {
                     // never its session start, so only that (or a first sighting) names it.
                     if event.agent.is_some() {
                         session.kind = event.agent;
+                        session.screen_agent = None;
                     }
                 }
                 AgentHookEventType::SessionEnd => session.running = false,
@@ -1064,6 +1091,7 @@ impl WorkspaceAttentionController {
             event.terminal_id.clone(),
             AgentSessionInfo {
                 kind: event.agent,
+                screen_agent: None,
                 first_prompt: event.prompt.clone(),
                 sequence: self.next_agent_sequence,
                 running,
@@ -1154,8 +1182,11 @@ impl WorkspaceAttentionController {
                         session.first_prompt.as_deref(),
                         &tab_title,
                     ),
-                    name: tab_title.to_string(),
-                    icon: AgentListIcon::Named(agent_kind_icon(session.kind)),
+                    name: session
+                        .screen_agent
+                        .map(|agent| agent.display_name().to_string())
+                        .unwrap_or_else(|| tab_title.to_string()),
+                    icon: AgentListIcon::Named(agent_icon(session.kind, session.screen_agent)),
                     workspace_id: self.agent_terminal_workspace_id(terminal_id, cx),
                     working_since: self.working_since.get(terminal_id).copied(),
                     sequence: session.sequence,
@@ -1755,6 +1786,12 @@ pub fn init(cx: &mut App) {
                                 agent_in_foreground,
                                 cx,
                             );
+                            controller.refresh_screen_agent(&terminal_id, &terminal, cx);
+                        });
+                    }
+                    TerminalEvent::Wakeup => {
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.handle_terminal_output(&terminal_id, &terminal, cx);
                         });
                     }
                     _ => {}

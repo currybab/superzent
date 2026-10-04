@@ -3,6 +3,7 @@ pub mod mappings;
 pub use alacritty_terminal;
 
 mod pty_info;
+pub use pty_info::ProcessInfo;
 mod terminal_hyperlinks;
 pub mod terminal_settings;
 
@@ -1298,6 +1299,33 @@ impl Terminal {
         &self.last_content
     }
 
+    /// The bottom screenful of the terminal as plain text, regardless of where the user has
+    /// scrolled. It ends at the cursor or the last non-blank row, whichever is lower, so an
+    /// agent that clears the rows below its output is still read in full.
+    pub fn bottom_screen_text(&self) -> String {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let screen_lines = grid.screen_lines() as i32;
+        let row_text = |line: i32| {
+            let row = &grid[Line(line)];
+            let text = (0..grid.columns())
+                .map(|column| &row[Column(column)])
+                .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+                .map(|cell| cell.c)
+                .collect::<String>();
+            text.trim_end().to_string()
+        };
+        let last_non_blank = (0..screen_lines)
+            .rev()
+            .find(|line| !row_text(*line).is_empty())
+            .unwrap_or(0);
+        let bottom = last_non_blank.max(grid.cursor.point.line.0);
+        let top = (bottom - screen_lines + 1).max(-(grid.history_size() as i32));
+        let mut text = (top..=bottom).map(row_text).collect::<Vec<_>>().join("\n");
+        text.truncate(text.trim_end().len());
+        text
+    }
+
     pub fn set_cursor_shape(&mut self, cursor_shape: CursorShape) {
         self.term_config.default_cursor_style = cursor_shape.into();
         self.term.lock().set_options(self.term_config.clone());
@@ -2209,6 +2237,15 @@ impl Terminal {
         };
         self.pid()
             .is_some_and(|pid| pid != pid_getter.fallback_pid())
+    }
+
+    /// The process holding the terminal's foreground, as of the last output. Not tracked for
+    /// task terminals, whose process is the task's own command.
+    pub fn foreground_process_info(&self) -> Option<ProcessInfo> {
+        match &self.terminal_type {
+            TerminalType::Pty { info, .. } => info.current.read().clone(),
+            TerminalType::DisplayOnly => None,
+        }
     }
 
     pub fn pid_getter(&self) -> Option<&ProcessIdGetter> {
@@ -3149,6 +3186,28 @@ mod tests {
 
         assert!(line1_col0, "First line should start at column 0");
         assert!(line2_col0, "Second line should start at column 0");
+    }
+
+    #[gpui::test]
+    async fn test_bottom_screen_text_reads_the_rows_up_to_the_cursor(cx: &mut TestAppContext) {
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .unwrap()
+            .subscribe(cx)
+        });
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_output("✳ Thinking…\n\n(esc to cancel)   \n".as_bytes(), cx);
+        });
+        let text = terminal.read_with(cx, |terminal, _| terminal.bottom_screen_text());
+        assert_eq!(text, "✳ Thinking…\n\n(esc to cancel)");
     }
 
     #[gpui::test]

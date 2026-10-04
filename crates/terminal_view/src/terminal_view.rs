@@ -159,6 +159,7 @@ pub struct TerminalView {
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
     tab_attention: Option<TerminalTabAttention>,
+    tab_agent_icon: Option<IconName>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
 }
@@ -347,6 +348,7 @@ impl TerminalView {
             rename_editor: None,
             rename_editor_subscription: None,
             tab_attention: None,
+            tab_agent_icon: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
         }
@@ -463,6 +465,15 @@ impl TerminalView {
     ) {
         if self.tab_attention != tab_attention {
             self.tab_attention = tab_attention;
+            cx.emit(ItemEvent::UpdateTab);
+            cx.notify();
+        }
+    }
+
+    /// Shows the agent running in the terminal in place of the terminal icon.
+    pub fn set_tab_agent_icon(&mut self, icon: Option<IconName>, cx: &mut Context<Self>) {
+        if self.tab_agent_icon != icon {
+            self.tab_agent_icon = icon;
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
@@ -1472,6 +1483,17 @@ impl Item for TerminalView {
                 }
             },
             None => (IconName::Terminal, Color::Muted, None),
+        };
+        // A finished task keeps its outcome icon.
+        let (icon, icon_color) = match self.tab_agent_icon {
+            Some(agent_icon)
+                if terminal
+                    .task()
+                    .is_none_or(|task| task.status == TaskStatus::Running) =>
+            {
+                (agent_icon, Color::Muted)
+            }
+            _ => (icon, icon_color),
         };
 
         let self_handle = self.self_handle.clone();

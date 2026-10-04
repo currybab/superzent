@@ -4,7 +4,7 @@ use std::{
 };
 
 use gpui::{AnyElement, ClickEvent, EntityId, SharedString};
-use superzent_agent::{AgentHookEventType, AgentKind};
+use superzent_agent::{AgentHookEventType, AgentKind, ScreenAgent};
 use terminal_view::{TerminalTabAttention, render_attention_dot};
 use ui::{Icon, Indicator, ListItem, prelude::*};
 use workspace::status_bar_height;
@@ -207,11 +207,14 @@ fn agent_location_label(project_name: Option<&str>, workspace_title: &str) -> St
     }
 }
 
-pub(crate) fn agent_kind_icon(kind: Option<AgentKind>) -> IconName {
-    match kind {
-        Some(AgentKind::Claude) => IconName::AiClaude,
-        Some(AgentKind::Codex) => IconName::AiOpenAi,
-        None => IconName::Terminal,
+pub(crate) fn agent_icon(kind: Option<AgentKind>, screen_agent: Option<ScreenAgent>) -> IconName {
+    match (kind, screen_agent.map(ScreenAgent::id)) {
+        (Some(AgentKind::Claude), _) => IconName::AiClaude,
+        (Some(AgentKind::Codex), _) => IconName::AiOpenAi,
+        (None, Some("gemini")) => IconName::AiGemini,
+        (None, Some("copilot")) => IconName::Copilot,
+        (None, Some(_)) => IconName::Sparkle,
+        (None, None) => IconName::Terminal,
     }
 }
 
