@@ -164,17 +164,19 @@ impl WorkspaceAttentionController {
                 }
                 cx.notify();
             }
+            // The agent reports its commands and options once the session is set up, by
+            // which time its tab shows the thread and can be listed.
             AcpThreadEvent::TitleUpdated
             | AcpThreadEvent::ToolAuthorizationRequested(_)
             | AcpThreadEvent::ToolAuthorizationReceived(_)
-            | AcpThreadEvent::LoadError(_) => cx.notify(),
-            AcpThreadEvent::TokenUsageUpdated
-            | AcpThreadEvent::Retry(_)
-            | AcpThreadEvent::SubagentSpawned(_)
+            | AcpThreadEvent::LoadError(_)
             | AcpThreadEvent::PromptCapabilitiesUpdated
             | AcpThreadEvent::AvailableCommandsUpdated(_)
             | AcpThreadEvent::ModeUpdated(_)
-            | AcpThreadEvent::ConfigOptionsUpdated(_) => {}
+            | AcpThreadEvent::ConfigOptionsUpdated(_) => cx.notify(),
+            AcpThreadEvent::TokenUsageUpdated
+            | AcpThreadEvent::Retry(_)
+            | AcpThreadEvent::SubagentSpawned(_) => {}
         }
     }
 
@@ -241,10 +243,6 @@ impl WorkspaceAttentionController {
                         continue;
                     };
                     let thread = tab.thread.read(cx);
-                    // A tab nobody has prompted yet has no agent at work.
-                    if thread.entries().is_empty() {
-                        continue;
-                    }
                     entries.push(AgentListEntry {
                         target: AgentListTarget::AcpThread(thread_id),
                         group: acp_thread_group(
