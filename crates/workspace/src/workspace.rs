@@ -110,7 +110,7 @@ use sqlez::{
     statement::Statement,
 };
 use status_bar::StatusBar;
-pub use status_bar::StatusItemView;
+pub use status_bar::{StatusItemView, status_bar_height};
 use std::{
     any::TypeId,
     borrow::Cow,

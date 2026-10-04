@@ -6,7 +6,8 @@ use std::{
 use gpui::{AnyElement, ClickEvent, SharedString};
 use superzent_agent::{AgentHookEventType, AgentKind};
 use terminal_view::{TerminalTabAttention, render_attention_dot};
-use ui::{ButtonSize, Icon, Indicator, ListItem, prelude::*};
+use ui::{Icon, Indicator, ListItem, prelude::*};
+use workspace::status_bar_height;
 
 use crate::{GlobalAttentionController, SuperzentSidebar, workspace_notification_title};
 
@@ -245,14 +246,11 @@ impl SuperzentSidebar {
             })
         };
 
-        // Sized like the status bar, a row of buttons with the same padding, so the
-        // collapsed section lines up with it.
-        let header_height = ButtonSize::Default.rems() + DynamicSpacing::Base04.rems(cx) * 2.;
-
         h_flex()
             .id("agent-list-header")
             .px_2()
-            .h(header_height)
+            // Lines the collapsed section up with the status bar beside it.
+            .h(status_bar_height(cx))
             .gap_1()
             .items_center()
             .cursor_pointer()
