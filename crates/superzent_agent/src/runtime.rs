@@ -629,9 +629,16 @@ if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
   esac
 fi
 
+# Only these payloads carry the prompt; tool events carry tool output, which can be
+# large, and Claude waits for every hook to finish.
+_superzent_payload=""
+case "$EVENT_TYPE" in
+  UserPromptSubmit|agent-turn-complete) _superzent_payload="$INPUT" ;;
+esac
+
 # The payload goes through stdin: as an argument, a long final reply can exceed the
 # command-line length limit and keep curl from starting at all.
-_superzent_status=$(printf '%s' "$INPUT" | curl -sS "$SUPERZENT_AGENT_HOOK_URL" \
+_superzent_status=$(printf '%s' "$_superzent_payload" | curl -sS "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
   -H 'Expect:' \
@@ -1364,6 +1371,46 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
         assert_eq!(event.event_type, AgentHookEventType::Start);
         assert_eq!(event.agent, Some(AgentKind::Claude));
         assert_eq!(event.prompt.as_deref(), Some("Ship it & \"tag\" v0.6.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notify_script_only_sends_payloads_that_carry_the_prompt() {
+        let (addr, receiver) = spawn_test_hook_server();
+        let directory = tempfile::tempdir().expect("create notify test directory");
+        let notify_script = directory.path().join("notify.sh");
+        write_executable_file(&notify_script, notify_script_content())
+            .expect("write notification hook");
+
+        for (payload, expected_prompt) in [
+            // Tool events carry tool output, which can be large and is never needed.
+            (
+                r#"{"hook_event_name":"PostToolUse","prompt":"not a prompt"}"#,
+                None,
+            ),
+            (
+                r#"{"type":"agent-turn-complete","input-messages":["Rename the store"]}"#,
+                Some("Rename the store"),
+            ),
+        ] {
+            let output = smol::block_on(
+                smol::process::Command::new("bash")
+                    .arg(&notify_script)
+                    .arg(payload)
+                    .env(
+                        AGENT_HOOK_URL_ENV_VAR,
+                        format!("http://{addr}{HOOK_ENDPOINT_PATH}"),
+                    )
+                    .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+                    .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
+                    .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                    .output(),
+            )
+            .expect("run notify script");
+            assert!(output.status.success(), "{output:?}");
+            let event = receiver.recv_blocking().expect("receive hook event");
+            assert_eq!(event.prompt.as_deref(), expected_prompt, "{payload}");
+        }
     }
 
     #[test]
