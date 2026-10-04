@@ -629,10 +629,25 @@ impl WorkspaceAttentionController {
         cx.notify();
     }
 
-    fn handle_agent_process_changed(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
-        if self.agent_sessions.contains_key(terminal_id) {
-            cx.notify();
+    fn handle_agent_process_changed(
+        &mut self,
+        terminal_id: &str,
+        agent_in_foreground: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.agent_sessions.contains_key(terminal_id) {
+            return;
         }
+        // An agent that crashed or was killed never reports its stop or exit. The session
+        // itself stays open, since a suspended agent (`Ctrl-Z`, then `fg`) comes back and
+        // its next hook restores the attention.
+        if !agent_in_foreground
+            && let Some(attention) = self.live_terminal_attention.remove(terminal_id)
+        {
+            self.sync_terminal_tab_attention(terminal_id, cx);
+            self.recompute_workspace_attention(&attention.workspace_id, cx);
+        }
+        cx.notify();
     }
 
     fn handle_agent_title_changed(
@@ -1668,8 +1683,13 @@ pub fn init(cx: &mut App) {
                     // The foreground process changed, e.g. an agent exited without
                     // reporting it.
                     TerminalEvent::TitleChanged => {
+                        let agent_in_foreground = terminal.read(cx).has_foreground_job();
                         attention_controller.update(cx, |controller, cx| {
-                            controller.handle_agent_process_changed(&terminal_id, cx);
+                            controller.handle_agent_process_changed(
+                                &terminal_id,
+                                agent_in_foreground,
+                                cx,
+                            );
                         });
                     }
                     _ => {}
