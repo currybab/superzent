@@ -13,7 +13,7 @@ use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
     AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_task_title,
-    clean_terminal_title,
+    clean_terminal_title, terminal_title_is_a_summary,
 };
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
@@ -1094,9 +1094,9 @@ impl WorkspaceAttentionController {
                 Some(AgentListEntry {
                     terminal_id: terminal_id.clone(),
                     group,
-                    // Once the agent exits, the shell may own the terminal title.
                     title: agent_task_title(
-                        session.running.then_some(terminal.breadcrumb_text.as_str()),
+                        terminal_title_is_a_summary(session.kind, session.running)
+                            .then_some(terminal.breadcrumb_text.as_str()),
                         session.first_prompt.as_deref(),
                         &tab_title,
                     ),

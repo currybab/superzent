@@ -125,6 +125,12 @@ pub(crate) fn clean_terminal_title(terminal_title: &str) -> String {
         .to_string()
 }
 
+/// Claude Code puts a summary of the task in the terminal title. Other agents leave
+/// whatever the shell set there, and once an agent exits the shell owns it again.
+pub(crate) fn terminal_title_is_a_summary(kind: Option<AgentKind>, session_running: bool) -> bool {
+    session_running && kind == Some(AgentKind::Claude)
+}
+
 /// Like ACP thread titles: the agent's own summary once it sets one (Claude Code puts it
 /// in the terminal title), otherwise the first prompt of the session. An agent that has
 /// neither has no task to name yet.
@@ -581,6 +587,16 @@ mod tests {
             agent_task_title(Some("✳ Codex Preset"), Some("Ship it"), "Codex Preset").as_deref(),
             Some("Ship it")
         );
+    }
+
+    #[test]
+    fn only_agents_known_to_summarize_get_their_terminal_title_read() {
+        assert!(terminal_title_is_a_summary(Some(AgentKind::Claude), true));
+        // Codex leaves whatever the shell put in the title, such as `user@host: ~/dir`.
+        assert!(!terminal_title_is_a_summary(Some(AgentKind::Codex), true));
+        assert!(!terminal_title_is_a_summary(None, true));
+        // Once the agent exits, the shell owns the title again.
+        assert!(!terminal_title_is_a_summary(Some(AgentKind::Claude), false));
     }
 
     #[test]
