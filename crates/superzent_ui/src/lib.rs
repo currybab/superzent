@@ -6261,8 +6261,11 @@ impl Render for SuperzentSidebar {
             .border_r_1()
             .border_color(cx.theme().colors().border)
             .child(
+                // Framed like the workspace beside it, so rows along the bottom edge
+                // (the Agents header and the status bar) line up.
                 v_flex()
                     .border_t_1()
+                    .border_b_1()
                     .border_color(cx.theme().colors().border)
                     .h_full()
                     .child(
