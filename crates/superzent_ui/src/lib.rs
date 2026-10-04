@@ -376,6 +376,10 @@ struct AgentSessionInfo {
     // Launch order, which keeps rows in place within an agent list group.
     sequence: u64,
     running: bool,
+    // The agent left the terminal's foreground without reporting its exit (killed,
+    // crashed or suspended). Whatever holds the foreground next is not the agent, so
+    // it stays unlisted until the agent reports again.
+    lost: bool,
 }
 
 #[derive(Clone)]
@@ -641,11 +645,14 @@ impl WorkspaceAttentionController {
         // An agent that crashed or was killed never reports its stop or exit. The session
         // itself stays open, since a suspended agent (`Ctrl-Z`, then `fg`) comes back and
         // its next hook restores the attention.
-        if !agent_in_foreground
-            && let Some(attention) = self.live_terminal_attention.remove(terminal_id)
-        {
-            self.sync_terminal_tab_attention(terminal_id, cx);
-            self.recompute_workspace_attention(&attention.workspace_id, cx);
+        if !agent_in_foreground {
+            if let Some(session) = self.agent_sessions.get_mut(terminal_id) {
+                session.lost = true;
+            }
+            if let Some(attention) = self.live_terminal_attention.remove(terminal_id) {
+                self.sync_terminal_tab_attention(terminal_id, cx);
+                self.recompute_workspace_attention(&attention.workspace_id, cx);
+            }
         }
         cx.notify();
     }
@@ -1008,6 +1015,8 @@ impl WorkspaceAttentionController {
     fn track_agent_session(&mut self, event: &AgentHookEvent) {
         let running = event.event_type != AgentHookEventType::SessionEnd;
         if let Some(session) = self.agent_sessions.get_mut(&event.terminal_id) {
+            // Only the agent reports hooks, so it is back in this terminal.
+            session.lost = false;
             match event.event_type {
                 AgentHookEventType::SessionStart => {
                     session.running = true;
@@ -1041,6 +1050,7 @@ impl WorkspaceAttentionController {
                 first_prompt: event.prompt.clone(),
                 sequence: self.next_agent_sequence,
                 running,
+                lost: false,
             },
         );
     }
@@ -1102,7 +1112,11 @@ impl WorkspaceAttentionController {
                 let terminal = terminal_view.terminal().read(cx);
                 let group =
                     AgentListGroup::for_attention(self.terminal_tab_attention(terminal_id, cx));
-                if !agent_is_listed(group, session.running, terminal.has_foreground_job()) {
+                if !agent_is_listed(
+                    group,
+                    session.running && !session.lost,
+                    terminal.has_foreground_job(),
+                ) {
                     return None;
                 }
                 let tab_title = terminal_view.tab_content_text(0, cx);
