@@ -6,7 +6,7 @@ use std::{
 use gpui::{AnyElement, ClickEvent, SharedString};
 use superzent_agent::{AgentHookEventType, AgentKind};
 use terminal_view::{TerminalTabAttention, render_attention_dot};
-use ui::{Icon, Indicator, ListItem, prelude::*};
+use ui::{Icon, Indicator, LineHeightStyle, ListItem, prelude::*};
 use workspace::status_bar_height;
 
 use crate::{GlobalAttentionController, SuperzentSidebar, workspace_notification_title};
@@ -332,6 +332,13 @@ impl SuperzentSidebar {
                 .into_any_element(),
         };
 
+        // The title gets the whole first line; everything else shares a muted second line.
+        let details = [location, elapsed]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+
         ListItem::new(SharedString::from(format!("agent-{}", entry.terminal_id)))
             .spacing(ui::ListItemSpacing::Dense)
             .rounded()
@@ -341,40 +348,30 @@ impl SuperzentSidebar {
                 v_flex()
                     .w_full()
                     .min_w_0()
-                    .py_0p5()
+                    .child(
+                        Label::new(entry.title.clone())
+                            .size(LabelSize::Small)
+                            .line_height_style(LineHeightStyle::UiLabel)
+                            .truncate(),
+                    )
                     .child(
                         h_flex()
                             .w_full()
-                            .gap_1p5()
-                            .items_center()
+                            .min_w_0()
+                            .gap_1()
                             .child(
                                 Icon::new(agent_kind_icon(entry.kind))
                                     .size(IconSize::XSmall)
                                     .color(Color::Muted),
                             )
                             .child(
-                                div().flex_1().min_w_0().child(
-                                    Label::new(entry.title.clone())
-                                        .size(LabelSize::Small)
-                                        .truncate(),
-                                ),
-                            )
-                            .when_some(elapsed, |this, elapsed| {
-                                this.child(
-                                    Label::new(elapsed)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                            }),
-                    )
-                    .when_some(location, |this, location| {
-                        this.child(
-                            Label::new(location)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .truncate(),
-                        )
-                    }),
+                                Label::new(details)
+                                    .size(LabelSize::XSmall)
+                                    .line_height_style(LineHeightStyle::UiLabel)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
+                    ),
             )
             .on_click({
                 let terminal_id = entry.terminal_id.clone();
