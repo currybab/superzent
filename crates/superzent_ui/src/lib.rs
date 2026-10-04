@@ -5175,6 +5175,29 @@ impl SuperzentSidebar {
         });
     }
 
+    fn move_workspace_after(
+        &mut self,
+        dragged: &DraggedWorkspaceRow,
+        target_workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if dragged.workspace_id == target_workspace_id {
+            return;
+        }
+
+        self.store.update(cx, |store, cx| {
+            let next_workspace_id = store
+                .workspaces_for_project(&dragged.project_id)
+                .into_iter()
+                .skip_while(|workspace| workspace.id != target_workspace_id)
+                .skip(1)
+                .find(|workspace| workspace.id != dragged.workspace_id)
+                .map(|workspace| workspace.id.clone());
+
+            store.reorder_workspace(&dragged.workspace_id, next_workspace_id.as_deref(), cx);
+        });
+    }
+
     fn move_project(
         &mut self,
         dragged: &DraggedProjectRow,
@@ -5446,6 +5469,7 @@ impl SuperzentSidebar {
     fn render_project_drop_zone(
         &self,
         target_project_id: Option<&str>,
+        show_divider: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -5453,10 +5477,15 @@ impl SuperzentSidebar {
                 Some(target_project_id) => format!("project-drop-zone-{target_project_id}"),
                 None => "project-drop-zone-end".to_string(),
             })
+            .flex()
+            .items_center()
             .mx_2()
             .my_0p5()
             .h(px(4.))
             .rounded_sm()
+            .when(show_divider, |this| {
+                this.child(div().w_full().h_px().bg(cx.theme().colors().border_variant))
+            })
             .drag_over::<DraggedProjectRow>(|style, _, _, cx| {
                 style.bg(cx.theme().colors().drop_target_background)
             })
@@ -5511,42 +5540,59 @@ impl SuperzentSidebar {
             ))
     }
 
-    fn render_workspace_drop_zone(
+    fn render_workspace_unit_drop_target(
         &self,
-        project_id: &str,
-        target_workspace_id: Option<&str>,
+        workspace: &WorkspaceEntry,
+        position: ProjectDropPosition,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let target_workspace_id = workspace.id.clone();
+        let project_id = workspace.project_id.clone();
+        let drop_target_background = cx.theme().colors().drop_target_background;
+
         div()
-            .id(match target_workspace_id {
-                Some(target_workspace_id) => {
-                    format!("workspace-drop-zone-{project_id}-{target_workspace_id}")
-                }
-                None => format!("workspace-drop-zone-{project_id}-end"),
+            .id(format!(
+                "workspace-unit-drop-target-{target_workspace_id}-{position:?}"
+            ))
+            .invisible()
+            .absolute()
+            .left_0()
+            .right_0()
+            .h(DefiniteLength::Fraction(0.5))
+            .when(position == ProjectDropPosition::Before, |this| this.top_0())
+            .when(position == ProjectDropPosition::After, |this| {
+                this.bottom_0()
             })
-            .mx_3()
-            .my_0p5()
-            .h(px(4.))
             .rounded_sm()
+            .bg(drop_target_background)
             .drag_over::<DraggedWorkspaceRow>({
-                let project_id = project_id.to_string();
-                move |style, dragged, _, cx| {
-                    if dragged.project_id == project_id {
-                        style.bg(cx.theme().colors().drop_target_background)
+                let target_workspace_id = target_workspace_id.clone();
+                let project_id = project_id.clone();
+                move |style, dragged, _, _| {
+                    if dragged.project_id == project_id
+                        && dragged.workspace_id != target_workspace_id
+                    {
+                        style.visible()
                     } else {
                         style
                     }
                 }
             })
-            .on_drop(cx.listener({
-                let project_id = project_id.to_string();
-                let target_workspace_id = target_workspace_id.map(str::to_owned);
-                move |this, dragged: &DraggedWorkspaceRow, _, cx| {
-                    if dragged.project_id == project_id {
-                        this.move_workspace(dragged, target_workspace_id.as_deref(), cx);
+            .on_drop(
+                cx.listener(move |this, dragged: &DraggedWorkspaceRow, _, cx| {
+                    if dragged.project_id != project_id {
+                        return;
                     }
-                }
-            }))
+                    match position {
+                        ProjectDropPosition::Before => {
+                            this.move_workspace(dragged, Some(&target_workspace_id), cx);
+                        }
+                        ProjectDropPosition::After => {
+                            this.move_workspace_after(dragged, &target_workspace_id, cx);
+                        }
+                    }
+                }),
+            )
     }
 
     fn render_project(
@@ -5583,56 +5629,44 @@ impl SuperzentSidebar {
                         ListItem::new(format!("project-{}", project.id))
                             .spacing(ui::ListItemSpacing::Dense)
                             .rounded()
-                            .start_slot(h_flex().gap_1p5().items_center().child(Icon::new(
-                                if is_collapsed {
+                            .start_slot(
+                                Icon::new(if is_collapsed {
                                     IconName::ChevronRight
                                 } else {
                                     IconName::ChevronDown
-                                },
-                            )))
-                            .end_slot(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Chip::new(project_workspace_label(workspaces.len()))
-                                            .label_color(Color::Muted),
-                                    )
-                                    .child(
-                                        IconButton::new(
-                                            format!("project-new-{}", project.id),
-                                            IconName::Plus,
-                                        )
-                                        .shape(ui::IconButtonShape::Square)
-                                        .icon_color(Color::Muted)
-                                        .on_click(
-                                            cx.listener({
-                                                let project_id = project.id.clone();
-                                                move |this, _: &ClickEvent, window, cx| {
-                                                    this.store.update(cx, |store, cx| {
-                                                        store.set_active_workspace(
-                                                            store
-                                                                .primary_workspace_for_project(
-                                                                    &project_id,
-                                                                )
-                                                                .map(|workspace| {
-                                                                    workspace.id.clone()
-                                                                }),
-                                                            cx,
-                                                        );
-                                                    });
-                                                    if let Some(workspace) =
-                                                        this.current_workspace_entity(cx)
-                                                    {
-                                                        run_new_workspace_from_store(
-                                                            workspace, window, cx,
-                                                        );
-                                                    }
-                                                }
-                                            }),
-                                        ),
-                                    ),
+                                })
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
                             )
+                            .end_hover_slot(
+                                IconButton::new(
+                                    format!("project-new-{}", project.id),
+                                    IconName::Plus,
+                                )
+                                .shape(ui::IconButtonShape::Square)
+                                .icon_size(IconSize::Small)
+                                .icon_color(Color::Muted)
+                                .tooltip(|window, cx| {
+                                    ui::Tooltip::text("New workspace")(window, cx)
+                                })
+                                .on_click(cx.listener({
+                                    let project_id = project.id.clone();
+                                    move |this, _: &ClickEvent, window, cx| {
+                                        this.store.update(cx, |store, cx| {
+                                            store.set_active_workspace(
+                                                store
+                                                    .primary_workspace_for_project(&project_id)
+                                                    .map(|workspace| workspace.id.clone()),
+                                                cx,
+                                            );
+                                        });
+                                        if let Some(workspace) = this.current_workspace_entity(cx) {
+                                            run_new_workspace_from_store(workspace, window, cx);
+                                        }
+                                    }
+                                })),
+                            )
+                            .end_hover_gradient_overlay(true)
                             .on_secondary_mouse_down(cx.listener({
                                 let project = project.clone();
                                 move |this, event: &MouseDownEvent, window, cx| {
@@ -5660,11 +5694,9 @@ impl SuperzentSidebar {
                             }))
                             .child(
                                 v_flex()
-                                    .w_full()
-                                    .h(px(48.))
-                                    .justify_center()
-                                    .gap_0p5()
+                                    .flex_1()
                                     .min_w_0()
+                                    .py_1()
                                     .child(self.render_project_title(project, cx))
                                     .child(
                                         Label::new(project.display_root())
@@ -5685,7 +5717,6 @@ impl SuperzentSidebar {
                         })
                         .collect::<Vec<_>>(),
                 )
-                .child(self.render_workspace_drop_zone(&project.id, None, cx))
             })
             .child(self.render_project_unit_drop_target(
                 &project.id,
@@ -5718,17 +5749,18 @@ impl SuperzentSidebar {
             label: workspace_sidebar_title(workspace),
         };
         let branch_subtitle = workspace_branch_subtitle(workspace);
-        let has_branch_subtitle = branch_subtitle.is_some();
-        let row_status_pill = match workspace_row_status_kind(workspace, is_open_in_current_window)
-        {
-            WorkspaceRowStatusKind::Hidden => None,
-            WorkspaceRowStatusKind::Open => Some(render_workspace_open_pill(cx)),
-            WorkspaceRowStatusKind::GitChanges => render_workspace_git_status_pill(workspace, cx),
+        // Closed workspaces fade back so the ones open in this window stand out.
+        let (title_color, detail_color) = if is_open_in_current_window {
+            (Color::Default, Color::Muted)
+        } else {
+            (Color::Muted, Color::Placeholder)
         };
+        let git_status = workspace_row_git_status(workspace, is_open_in_current_window)
+            .map(render_workspace_git_status);
 
         v_flex()
+            .relative()
             .w_full()
-            .child(self.render_workspace_drop_zone(&workspace.project_id, Some(&workspace.id), cx))
             .child(
                 div()
                     .id(format!("workspace-row-wrap-{}", workspace.id))
@@ -5751,12 +5783,17 @@ impl SuperzentSidebar {
                                     .child(render_workspace_attention_indicator(
                                         &workspace.id,
                                         &attention_status,
+                                        is_open_in_current_window,
                                         cx,
                                     ))
-                                    .child(Icon::new(match workspace.kind {
-                                        WorkspaceKind::Primary => IconName::Folder,
-                                        WorkspaceKind::Worktree => IconName::GitBranch,
-                                    })),
+                                    .child(
+                                        Icon::new(match workspace.kind {
+                                            WorkspaceKind::Primary => IconName::Folder,
+                                            WorkspaceKind::Worktree => IconName::GitBranch,
+                                        })
+                                        .size(IconSize::Small)
+                                        .color(detail_color),
+                                    ),
                             )
                             .when(workspace.managed && is_deleting, |this| {
                                 this.end_slot(
@@ -5769,7 +5806,7 @@ impl SuperzentSidebar {
                                 )
                             })
                             .when(workspace.managed && !is_deleting, |this| {
-                                this.end_hover_slot(
+                                this.end_hover_gradient_overlay(true).end_hover_slot(
                                     IconButton::new(
                                         format!("delete-{}", workspace.id),
                                         IconName::Trash,
@@ -5838,48 +5875,45 @@ impl SuperzentSidebar {
                                 );
                             }))
                             .child(
-                                v_flex()
+                                h_flex()
                                     .w_full()
                                     .min_w_0()
-                                    .h(px(48.))
                                     .py_1()
-                                    .justify_center()
+                                    .gap_2()
                                     .child(
-                                        h_flex()
-                                            .w_full()
-                                            .gap_2()
-                                            .items_center()
-                                            .child(
-                                                v_flex()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .when_some(branch_subtitle, |this, branch| {
-                                                        this.gap_0p5()
-                                                            .child(self.render_workspace_title(
-                                                                workspace, cx,
-                                                            ))
-                                                            .child(
-                                                                Label::new(branch)
-                                                                    .size(LabelSize::XSmall)
-                                                                    .color(Color::Muted)
-                                                                    .truncate(),
-                                                            )
-                                                    })
-                                                    .when(!has_branch_subtitle, |this| {
-                                                        this.child(
-                                                            self.render_workspace_title(
-                                                                workspace, cx,
-                                                            ),
-                                                        )
-                                                    }),
-                                            )
-                                            .when_some(row_status_pill, |this, row_status_pill| {
-                                                this.child(row_status_pill)
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(self.render_workspace_title(
+                                                workspace,
+                                                title_color,
+                                                cx,
+                                            ))
+                                            .when_some(branch_subtitle, |this, branch| {
+                                                this.child(
+                                                    Label::new(branch)
+                                                        .size(LabelSize::XSmall)
+                                                        .color(detail_color)
+                                                        .truncate(),
+                                                )
                                             }),
-                                    ),
+                                    )
+                                    .when_some(git_status, |this, git_status| {
+                                        this.child(git_status)
+                                    }),
                             ),
                     ),
             )
+            .child(self.render_workspace_unit_drop_target(
+                workspace,
+                ProjectDropPosition::Before,
+                cx,
+            ))
+            .child(self.render_workspace_unit_drop_target(
+                workspace,
+                ProjectDropPosition::After,
+                cx,
+            ))
     }
 
     fn render_project_title(
@@ -5911,6 +5945,7 @@ impl SuperzentSidebar {
 
         Label::new(project.name.clone())
             .size(LabelSize::Small)
+            .weight(gpui::FontWeight::MEDIUM)
             .truncate()
             .into_any_element()
     }
@@ -5918,6 +5953,7 @@ impl SuperzentSidebar {
     fn render_workspace_title(
         &self,
         workspace: &WorkspaceEntry,
+        color: Color,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         if self.is_renaming_workspace(&workspace.id)
@@ -5942,16 +5978,11 @@ impl SuperzentSidebar {
                 .into_any_element();
         }
 
-        match workspace.kind {
-            WorkspaceKind::Primary => Label::new(workspace_display_name(workspace))
-                .size(LabelSize::Small)
-                .truncate()
-                .into_any_element(),
-            WorkspaceKind::Worktree => Label::new(workspace_sidebar_title(workspace))
-                .size(LabelSize::Small)
-                .truncate()
-                .into_any_element(),
-        }
+        Label::new(workspace_sidebar_title(workspace))
+            .size(LabelSize::Small)
+            .color(color)
+            .truncate()
+            .into_any_element()
     }
 
     fn refresh_workspace_metadata(
@@ -6284,14 +6315,17 @@ impl Render for SuperzentSidebar {
             ]
         } else {
             let mut content = Vec::with_capacity(projects.len() * 2 + 1);
-            for project in &projects {
+            for (index, project) in projects.iter().enumerate() {
                 content.push(
-                    self.render_project_drop_zone(Some(&project.id), cx)
+                    self.render_project_drop_zone(Some(&project.id), index > 0, cx)
                         .into_any_element(),
                 );
                 content.push(self.render_project(project, window, cx).into_any_element());
             }
-            content.push(self.render_project_drop_zone(None, cx).into_any_element());
+            content.push(
+                self.render_project_drop_zone(None, false, cx)
+                    .into_any_element(),
+            );
             content
         };
 
@@ -9611,47 +9645,30 @@ fn workspace_id_for_terminal_unregister(
         .or_else(|| tracked_workspace_id.map(ToOwned::to_owned))
 }
 
-fn workspace_row_status_kind(
+fn workspace_row_git_status(
     workspace: &WorkspaceEntry,
     is_open_in_current_window: bool,
-) -> WorkspaceRowStatusKind {
+) -> Option<WorkspaceGitStatusVisualSummary> {
     if !is_open_in_current_window {
-        return WorkspaceRowStatusKind::Hidden;
+        return None;
     }
-
-    if workspace_git_status_visual_summary(workspace).is_some() {
-        WorkspaceRowStatusKind::GitChanges
-    } else {
-        WorkspaceRowStatusKind::Open
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorkspaceRowStatusKind {
-    Hidden,
-    Open,
-    GitChanges,
-}
-
-fn render_workspace_open_pill(cx: &mut Context<SuperzentSidebar>) -> gpui::AnyElement {
-    Chip::new("Open")
-        .label_color(Color::Muted)
-        .bg_color(cx.theme().colors().element_background)
-        .border_color(cx.theme().colors().border_variant)
-        .into_any_element()
+    workspace_git_status_visual_summary(workspace)
 }
 
 fn render_workspace_attention_indicator(
     workspace_id: &str,
     attention_status: &WorkspaceAttentionStatus,
+    is_open_in_current_window: bool,
     _cx: &mut Context<SuperzentSidebar>,
 ) -> AnyElement {
     match attention_status {
+        // An idle open workspace keeps a gray dot, like an idle agent, so the dot alone tells
+        // which workspaces are open.
         WorkspaceAttentionStatus::Idle => div()
             .w_3()
             .items_center()
             .justify_center()
-            .opacity(0.)
+            .when(!is_open_in_current_window, |this| this.opacity(0.))
             .child(Indicator::dot().color(Color::Muted))
             .into_any_element(),
         WorkspaceAttentionStatus::Review => div()
@@ -9937,11 +9954,7 @@ fn workspace_git_status_visual_summary(
     })
 }
 
-fn render_workspace_git_status_pill(
-    workspace: &WorkspaceEntry,
-    cx: &mut Context<SuperzentSidebar>,
-) -> Option<gpui::AnyElement> {
-    let summary = workspace_git_status_visual_summary(workspace)?;
+fn render_workspace_git_status(summary: WorkspaceGitStatusVisualSummary) -> gpui::AnyElement {
     let has_sync = summary.ahead_commits > 0 || summary.behind_commits > 0;
     let has_diff = summary.added_lines > 0 || summary.deleted_lines > 0;
     let has_file_status = summary.changed_files > 0 && !has_diff;
@@ -9949,83 +9962,75 @@ fn render_workspace_git_status_pill(
         && summary.untracked_files == summary.changed_files
         && !has_diff;
 
-    Some(
-        h_flex()
-            .gap_1()
-            .items_center()
-            .flex_none()
-            .px_2()
-            .py_0p5()
-            .border_1()
-            .rounded_md()
-            .border_color(cx.theme().colors().border_variant)
-            .bg(cx.theme().colors().element_background)
-            .when(has_sync, |this| {
-                this.child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .when(summary.behind_commits > 0, |this| {
-                            this.child(
-                                Label::new(format!("↓{}", summary.behind_commits))
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Warning),
-                            )
-                        })
-                        .when(summary.ahead_commits > 0, |this| {
-                            this.child(
-                                Label::new(format!("↑{}", summary.ahead_commits))
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Success),
-                            )
-                        }),
-                )
-            })
-            .when(has_sync && (has_diff || has_file_status), |this| {
-                this.child(Label::new("·").size(LabelSize::XSmall).color(Color::Muted))
-            })
-            .when(has_diff, |this| {
-                this.child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .when(summary.added_lines > 0, |this| {
-                            this.child(
-                                Label::new(format!("+{}", summary.added_lines))
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Success),
-                            )
-                        })
-                        .when(summary.deleted_lines > 0, |this| {
-                            this.child(
-                                Label::new(format!("-{}", summary.deleted_lines))
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Error),
-                            )
-                        }),
-                )
-            })
-            .when(has_file_status, |this| {
-                this.child(
-                    Label::new(if is_untracked_only {
-                        format!("{} new", summary.untracked_files)
-                    } else {
-                        format!(
-                            "{} file{}",
-                            summary.changed_files,
-                            if summary.changed_files == 1 { "" } else { "s" }
+    h_flex()
+        .gap_1()
+        .items_center()
+        .flex_none()
+        .when(has_sync, |this| {
+            this.child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .when(summary.behind_commits > 0, |this| {
+                        this.child(
+                            Label::new(format!("↓{}", summary.behind_commits))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Warning),
                         )
                     })
-                    .size(LabelSize::XSmall)
-                    .color(if is_untracked_only {
-                        Color::Created
-                    } else {
-                        Color::Muted
+                    .when(summary.ahead_commits > 0, |this| {
+                        this.child(
+                            Label::new(format!("↑{}", summary.ahead_commits))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Success),
+                        )
                     }),
-                )
-            })
-            .into_any_element(),
-    )
+            )
+        })
+        .when(has_sync && (has_diff || has_file_status), |this| {
+            this.child(Label::new("·").size(LabelSize::XSmall).color(Color::Muted))
+        })
+        .when(has_diff, |this| {
+            this.child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .when(summary.added_lines > 0, |this| {
+                        this.child(
+                            Label::new(format!("+{}", summary.added_lines))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Success),
+                        )
+                    })
+                    .when(summary.deleted_lines > 0, |this| {
+                        this.child(
+                            Label::new(format!("-{}", summary.deleted_lines))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Error),
+                        )
+                    }),
+            )
+        })
+        .when(has_file_status, |this| {
+            this.child(
+                Label::new(if is_untracked_only {
+                    format!("{} new", summary.untracked_files)
+                } else {
+                    format!(
+                        "{} file{}",
+                        summary.changed_files,
+                        if summary.changed_files == 1 { "" } else { "s" }
+                    )
+                })
+                .size(LabelSize::XSmall)
+                .color(if is_untracked_only {
+                    Color::Created
+                } else {
+                    Color::Muted
+                }),
+            )
+        })
+        .into_any_element()
 }
 
 fn workspace_branch_label(workspace: &WorkspaceEntry) -> String {
@@ -10918,7 +10923,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_row_status_kind_hides_closed_workspaces_even_with_cached_git_summary() {
+    fn workspace_row_git_status_hides_closed_workspaces_even_with_cached_git_summary() {
         let mut workspace = workspace_entry(WorkspaceKind::Primary);
         workspace.git_summary = Some(GitChangeSummary {
             changed_files: 2,
@@ -10927,25 +10932,19 @@ mod tests {
             ..GitChangeSummary::default()
         });
 
-        assert_eq!(
-            workspace_row_status_kind(&workspace, false),
-            WorkspaceRowStatusKind::Hidden
-        );
+        assert_eq!(workspace_row_git_status(&workspace, false), None);
     }
 
     #[test]
-    fn workspace_row_status_kind_shows_open_for_open_workspace_without_visual_git_summary() {
+    fn workspace_row_git_status_is_empty_for_open_workspace_without_visual_git_summary() {
         let mut workspace = workspace_entry(WorkspaceKind::Primary);
         workspace.git_status = WorkspaceGitStatus::Unavailable;
 
-        assert_eq!(
-            workspace_row_status_kind(&workspace, true),
-            WorkspaceRowStatusKind::Open
-        );
+        assert_eq!(workspace_row_git_status(&workspace, true), None);
     }
 
     #[test]
-    fn workspace_row_status_kind_shows_git_changes_for_open_workspace_with_changes() {
+    fn workspace_row_git_status_shows_changes_for_open_workspace() {
         let mut workspace = workspace_entry(WorkspaceKind::Primary);
         workspace.git_summary = Some(GitChangeSummary {
             changed_files: 3,
@@ -10955,8 +10954,8 @@ mod tests {
         });
 
         assert_eq!(
-            workspace_row_status_kind(&workspace, true),
-            WorkspaceRowStatusKind::GitChanges
+            workspace_row_git_status(&workspace, true).map(|summary| summary.added_lines),
+            Some(12)
         );
     }
 
