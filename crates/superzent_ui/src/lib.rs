@@ -1,4 +1,6 @@
 #[cfg(feature = "acp_tabs")]
+mod acp_agents;
+#[cfg(feature = "acp_tabs")]
 mod acp_tabs;
 #[cfg(feature = "acp_tabs")]
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
@@ -12,8 +14,9 @@ pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
-    AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_process_alive,
-    agent_task_title, clean_terminal_title, terminal_title_is_a_summary,
+    AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget, agent_hook_event_applies,
+    agent_is_listed, agent_kind_icon, agent_process_alive, agent_task_title, clean_terminal_title,
+    terminal_title_is_a_summary,
 };
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
@@ -416,6 +419,12 @@ struct WorkspaceAttentionController {
     // Agent panel and ACP tab conversations, which quitting stops along with their
     // agent servers.
     acp_threads: Vec<WeakEntity<AcpThread>>,
+    #[cfg(feature = "acp_tabs")]
+    acp_sessions: BTreeMap<gpui::EntityId, acp_agents::AcpSessionInfo>,
+    #[cfg(feature = "acp_tabs")]
+    acp_subagent_subscriptions: BTreeMap<gpui::EntityId, Subscription>,
+    #[cfg(feature = "acp_tabs")]
+    focused_acp_thread: Option<acp_agents::FocusedAcpThread>,
     focused_terminal: Option<FocusedTerminal>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -508,6 +517,12 @@ impl WorkspaceAttentionController {
             working_since: BTreeMap::new(),
             agent_titles: BTreeMap::new(),
             acp_threads: Vec::new(),
+            #[cfg(feature = "acp_tabs")]
+            acp_sessions: BTreeMap::new(),
+            #[cfg(feature = "acp_tabs")]
+            acp_subagent_subscriptions: BTreeMap::new(),
+            #[cfg(feature = "acp_tabs")]
+            focused_acp_thread: None,
             focused_terminal: None,
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
@@ -1105,6 +1120,14 @@ impl WorkspaceAttentionController {
     }
 
     fn agent_list_entries(&self, cx: &App) -> Vec<AgentListEntry> {
+        #[allow(unused_mut)]
+        let mut entries = self.terminal_agent_list_entries(cx);
+        #[cfg(feature = "acp_tabs")]
+        entries.extend(self.acp_agent_list_entries(cx));
+        entries
+    }
+
+    fn terminal_agent_list_entries(&self, cx: &App) -> Vec<AgentListEntry> {
         let focused_terminal_id = self.focused_terminal_id();
         self.agent_sessions
             .iter()
@@ -1123,7 +1146,7 @@ impl WorkspaceAttentionController {
                 }
                 let tab_title = terminal_view.tab_content_text(0, cx);
                 Some(AgentListEntry {
-                    terminal_id: terminal_id.clone(),
+                    target: AgentListTarget::Terminal(terminal_id.clone()),
                     group,
                     title: agent_task_title(
                         terminal_title_is_a_summary(session.kind, session.running)
@@ -1132,7 +1155,7 @@ impl WorkspaceAttentionController {
                         &tab_title,
                     ),
                     name: tab_title.to_string(),
-                    kind: session.kind,
+                    icon: AgentListIcon::Named(agent_kind_icon(session.kind)),
                     workspace_id: self.agent_terminal_workspace_id(terminal_id, cx),
                     working_since: self.working_since.get(terminal_id).copied(),
                     sequence: session.sequence,
@@ -1653,14 +1676,40 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new({
         let attention_controller = attention_controller.clone();
-        move |_: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
-            let thread = cx.entity().downgrade();
-            attention_controller.update(cx, |controller, _| {
+        move |thread: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
+            #[cfg(feature = "acp_tabs")]
+            let is_subagent = thread.parent_session_id().is_some();
+            #[cfg(not(feature = "acp_tabs"))]
+            let _ = thread;
+            let thread = cx.entity();
+            attention_controller.update(cx, |controller, cx| {
                 controller
                     .acp_threads
                     .retain(|thread| thread.upgrade().is_some());
-                controller.acp_threads.push(thread);
+                controller.acp_threads.push(thread.downgrade());
+                #[cfg(feature = "acp_tabs")]
+                controller.track_acp_thread(thread, is_subagent, cx);
+                #[cfg(not(feature = "acp_tabs"))]
+                let _ = cx;
             });
+        }
+    })
+    .detach();
+
+    #[cfg(feature = "acp_tabs")]
+    cx.observe_new({
+        let attention_controller = attention_controller.clone();
+        move |thread_view: &mut agent_ui::ThreadView,
+              window,
+              cx: &mut Context<agent_ui::ThreadView>| {
+            if let Some(window) = window {
+                acp_agents::observe_thread_view_focus(
+                    thread_view,
+                    &attention_controller,
+                    window,
+                    cx,
+                );
+            }
         }
     })
     .detach();

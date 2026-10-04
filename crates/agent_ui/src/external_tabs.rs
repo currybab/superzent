@@ -1,7 +1,7 @@
 use std::{any::Any, path::PathBuf, rc::Rc};
 
 use acp_thread::{
-    AgentConnection, AgentSessionInfo, AgentSessionList, AgentSessionListRequest,
+    AcpThread, AgentConnection, AgentSessionInfo, AgentSessionList, AgentSessionListRequest,
     AgentSessionListResponse, SessionListUpdate,
 };
 use agent::ThreadStore;
@@ -216,6 +216,30 @@ pub fn active_external_acp_agent_name_in_pane(pane: &Pane, cx: &App) -> Option<S
 pub fn pane_has_external_acp_item(pane: &Pane) -> bool {
     pane.active_item_as::<ExternalAcpTabItem>().is_some()
         || pane.active_item_as::<ExternalAcpHistoryItem>().is_some()
+}
+
+/// The conversation an ACP tab shows, for listing it outside the tab.
+pub struct ExternalAcpTabThread {
+    pub item_id: EntityId,
+    pub thread: Entity<AcpThread>,
+    pub display_name: SharedString,
+    pub icon_path: Option<SharedString>,
+}
+
+pub fn external_acp_tab_threads(workspace: &Workspace, cx: &App) -> Vec<ExternalAcpTabThread> {
+    workspace
+        .items_of_type::<ExternalAcpTabItem>(cx)
+        .filter_map(|item| {
+            let tab = item.read(cx);
+            let thread = tab.connection_view.read(cx).parent_thread(cx)?;
+            Some(ExternalAcpTabThread {
+                item_id: item.entity_id(),
+                thread: thread.read(cx).thread.clone(),
+                display_name: tab.display_name.clone(),
+                icon_path: tab.icon_path.clone(),
+            })
+        })
+        .collect()
 }
 
 pub fn focus_external_acp_tab(

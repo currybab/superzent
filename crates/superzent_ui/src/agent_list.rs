@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{AnyElement, ClickEvent, SharedString};
+use gpui::{AnyElement, ClickEvent, EntityId, SharedString};
 use superzent_agent::{AgentHookEventType, AgentKind};
 use terminal_view::{TerminalTabAttention, render_attention_dot};
 use ui::{Icon, Indicator, ListItem, prelude::*};
@@ -48,14 +48,38 @@ impl AgentListGroup {
     }
 }
 
+/// Where an agent runs: an agent CLI in a terminal, or an ACP conversation in a tab.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AgentListTarget {
+    Terminal(String),
+    #[cfg_attr(not(feature = "acp_tabs"), allow(dead_code))]
+    AcpThread(EntityId),
+}
+
+impl AgentListTarget {
+    pub(crate) fn key(&self) -> String {
+        match self {
+            Self::Terminal(terminal_id) => format!("terminal-{terminal_id}"),
+            Self::AcpThread(thread_id) => format!("acp-{}", thread_id.as_u64()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AgentListIcon {
+    Named(IconName),
+    #[cfg_attr(not(feature = "acp_tabs"), allow(dead_code))]
+    External(SharedString),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AgentListEntry {
-    pub(crate) terminal_id: String,
+    pub(crate) target: AgentListTarget,
     pub(crate) group: AgentListGroup,
     pub(crate) title: Option<String>,
     /// The tab's name, shown when there is neither a task title nor a workspace.
     pub(crate) name: String,
-    pub(crate) kind: Option<AgentKind>,
+    pub(crate) icon: AgentListIcon,
     pub(crate) workspace_id: Option<String>,
     pub(crate) working_since: Option<Instant>,
     pub(crate) sequence: u64,
@@ -109,7 +133,7 @@ pub(crate) fn group_agent_entries<'a>(
     let mut groups = BTreeMap::<AgentListGroup, Vec<&AgentListEntry>>::new();
     for entry in entries {
         let group = frozen_groups
-            .get(&entry.terminal_id)
+            .get(&entry.target.key())
             .copied()
             .unwrap_or(entry.group);
         groups.entry(group).or_default().push(entry);
@@ -183,7 +207,7 @@ fn agent_location_label(project_name: Option<&str>, workspace_title: &str) -> St
     }
 }
 
-fn agent_kind_icon(kind: Option<AgentKind>) -> IconName {
+pub(crate) fn agent_kind_icon(kind: Option<AgentKind>) -> IconName {
     match kind {
         Some(AgentKind::Claude) => IconName::AiClaude,
         Some(AgentKind::Codex) => IconName::AiOpenAi,
@@ -191,7 +215,7 @@ fn agent_kind_icon(kind: Option<AgentKind>) -> IconName {
     }
 }
 
-fn open_agent_terminal(terminal_id: String, cx: &mut App) {
+fn open_agent(target: AgentListTarget, cx: &mut App) {
     let Some(controller) = cx
         .try_global::<GlobalAttentionController>()
         .map(|controller| controller.0.clone())
@@ -201,8 +225,14 @@ fn open_agent_terminal(terminal_id: String, cx: &mut App) {
     // Opening the tab updates the window this click is dispatched in, which is leased
     // until dispatch returns.
     cx.defer(move |cx| {
-        controller.update(cx, |controller, cx| {
-            controller.open_agent_terminal(&terminal_id, cx);
+        controller.update(cx, |controller, cx| match &target {
+            AgentListTarget::Terminal(terminal_id) => {
+                controller.open_agent_terminal(terminal_id, cx)
+            }
+            #[cfg(feature = "acp_tabs")]
+            AgentListTarget::AcpThread(thread_id) => controller.open_acp_thread(*thread_id, cx),
+            #[cfg(not(feature = "acp_tabs"))]
+            AgentListTarget::AcpThread(_) => {}
         });
     });
 }
@@ -336,7 +366,8 @@ impl SuperzentSidebar {
             .working_since
             .filter(|_| entry.group == AgentListGroup::Working)
             .map(|working_since| format_agent_elapsed(working_since.elapsed()));
-        let dot_id = format!("agent-row-{}", entry.terminal_id);
+        let key = entry.target.key();
+        let dot_id = format!("agent-row-{key}");
         let dot = match entry.group.attention() {
             Some(attention) => render_attention_dot(dot_id, attention),
             None => div()
@@ -352,9 +383,12 @@ impl SuperzentSidebar {
                 .min_w_0()
                 .gap(icon_gap)
                 .child(
-                    Icon::new(agent_kind_icon(entry.kind))
-                        .size(kind_icon_size)
-                        .color(Color::Muted),
+                    match &entry.icon {
+                        AgentListIcon::Named(icon) => Icon::new(*icon),
+                        AgentListIcon::External(path) => Icon::from_external_svg(path.clone()),
+                    }
+                    .size(kind_icon_size)
+                    .color(Color::Muted),
                 )
                 .child(
                     div()
@@ -402,15 +436,15 @@ impl SuperzentSidebar {
                 .into_any_element(),
         };
 
-        ListItem::new(SharedString::from(format!("agent-{}", entry.terminal_id)))
+        ListItem::new(SharedString::from(format!("agent-{key}")))
             .spacing(ui::ListItemSpacing::Dense)
             .rounded()
             .toggle_state(entry.focused)
             .start_slot(dot)
             .child(content)
             .on_click({
-                let terminal_id = entry.terminal_id.clone();
-                move |_: &ClickEvent, _, cx| open_agent_terminal(terminal_id.clone(), cx)
+                let target = entry.target.clone();
+                move |_: &ClickEvent, _, cx| open_agent(target.clone(), cx)
             })
             .into_any_element()
     }
@@ -419,7 +453,7 @@ impl SuperzentSidebar {
         self.frozen_agent_groups = hovered.then(|| {
             self.agent_list
                 .iter()
-                .map(|entry| (entry.terminal_id.clone(), entry.group))
+                .map(|entry| (entry.target.key(), entry.group))
                 .collect()
         });
         cx.notify();
@@ -432,11 +466,11 @@ mod tests {
 
     fn entry(terminal_id: &str, group: AgentListGroup, sequence: u64) -> AgentListEntry {
         AgentListEntry {
-            terminal_id: terminal_id.to_string(),
+            target: AgentListTarget::Terminal(terminal_id.to_string()),
             group,
             title: None,
             name: terminal_id.to_string(),
-            kind: None,
+            icon: AgentListIcon::Named(IconName::Terminal),
             workspace_id: None,
             working_since: None,
             sequence,
@@ -455,7 +489,7 @@ mod tests {
                     group,
                     entries
                         .into_iter()
-                        .map(|entry| entry.terminal_id.clone())
+                        .map(|entry| entry.name.clone())
                         .collect(),
                 )
             })
@@ -561,8 +595,11 @@ mod tests {
             entry("new", AgentListGroup::Working, 3),
         ];
         let frozen_groups = BTreeMap::from([
-            ("finished".to_string(), AgentListGroup::Working),
-            ("still-working".to_string(), AgentListGroup::Working),
+            ("terminal-finished".to_string(), AgentListGroup::Working),
+            (
+                "terminal-still-working".to_string(),
+                AgentListGroup::Working,
+            ),
         ]);
 
         assert_eq!(
