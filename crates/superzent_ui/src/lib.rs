@@ -872,8 +872,6 @@ impl WorkspaceAttentionController {
     }
 
     fn handle_hook_event(&mut self, event: AgentHookEvent, cx: &mut Context<Self>) {
-        self.hook_reporting_terminals
-            .insert(event.terminal_id.clone());
         let session_running = self
             .agent_sessions
             .get(&event.terminal_id)
@@ -895,6 +893,10 @@ impl WorkspaceAttentionController {
             | AgentHookEventType::PermissionRequest
             | AgentHookEventType::Stop => {}
         }
+        // Only activity counts: a launched agent that never reports work (Codex's log
+        // watcher can miss its first turn) keeps the preset session as its busy signal.
+        self.hook_reporting_terminals
+            .insert(event.terminal_id.clone());
         if debug_terminal_notifications_enabled() {
             log::info!(
                 "superzent notification hook received: type={:?} terminal_id={} workspace_id={:?} session_id={:?} cwd={:?}",
