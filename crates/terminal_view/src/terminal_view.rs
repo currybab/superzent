@@ -1450,9 +1450,8 @@ impl Item for TerminalView {
 
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
         Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
-            let terminal = self.terminal().read(cx);
-            let title = terminal.title(false);
-            let pid = terminal.pid_getter()?.fallback_pid();
+            let title = self.dynamic_title(false, cx);
+            let pid = self.terminal().read(cx).pid_getter()?.fallback_pid();
 
             move |_, _| {
                 v_flex()
