@@ -85,6 +85,7 @@ impl ProcessIdGetter {
 
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
+    pub pid: u32,
     pub name: String,
     pub cwd: PathBuf,
     pub argv: Vec<String>,
@@ -173,6 +174,7 @@ impl PtyProcessInfo {
         let cwd = process.cwd().map_or(PathBuf::new(), |p| p.to_owned());
 
         let info = ProcessInfo {
+            pid: process.pid().as_u32(),
             name: process.name().to_str()?.to_owned(),
             cwd,
             argv: process
@@ -194,11 +196,7 @@ impl PtyProcessInfo {
         let has_changed = cx.background_executor().spawn(async move {
             let previous = this.current.read().clone();
             let current = this.load();
-            let has_changed = match (previous.as_ref(), current.as_ref()) {
-                (None, None) => false,
-                (Some(prev), Some(now)) => prev.cwd != now.cwd || prev.name != now.name,
-                _ => true,
-            };
+            let has_changed = process_info_changed(previous.as_ref(), current.as_ref());
             if has_changed {
                 *this.current.write() = current;
             }
@@ -217,5 +215,52 @@ impl PtyProcessInfo {
 
     pub fn pid(&self) -> Option<Pid> {
         self.pid_getter.pid()
+    }
+}
+
+/// A new foreground process counts even when its name and cwd match the last one, like a
+/// bash script exiting back to a bash shell, so listeners can tell a job has ended.
+fn process_info_changed(previous: Option<&ProcessInfo>, current: Option<&ProcessInfo>) -> bool {
+    match (previous, current) {
+        (None, None) => false,
+        (Some(previous), Some(current)) => {
+            previous.pid != current.pid
+                || previous.cwd != current.cwd
+                || previous.name != current.name
+        }
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process(pid: u32, name: &str, cwd: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.to_string(),
+            cwd: PathBuf::from(cwd),
+            argv: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_new_foreground_process_counts_as_a_change_even_with_the_same_name() {
+        // A bash wrapper exiting back to the bash shell keeps the name and cwd.
+        assert!(process_info_changed(
+            Some(&process(10, "bash", "/repo")),
+            Some(&process(20, "bash", "/repo")),
+        ));
+        assert!(process_info_changed(
+            Some(&process(10, "bash", "/repo")),
+            Some(&process(10, "bash", "/repo/src")),
+        ));
+        assert!(process_info_changed(None, Some(&process(10, "zsh", "/"))));
+        assert!(!process_info_changed(
+            Some(&process(10, "zsh", "/repo")),
+            Some(&process(10, "zsh", "/repo")),
+        ));
+        assert!(!process_info_changed(None, None));
     }
 }
