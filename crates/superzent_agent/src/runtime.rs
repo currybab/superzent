@@ -27,6 +27,7 @@ pub const AGENT_DEBUG_HOOKS_ENV_VAR: &str = "SUPERZENT_DEBUG_HOOKS";
 const AGENT_KIND_ENV_VAR: &str = "SUPERZENT_AGENT_KIND";
 
 const HOOK_ENDPOINT_PATH: &str = "/agent-hook";
+const PROMPT_TITLE_MAX_CHARS: usize = 120;
 const NOTIFY_SCRIPT_FILE_NAME: &str = "notify.sh";
 const WRAPPER_MARKER: &str = "# Superzent agent wrapper v1";
 
@@ -75,6 +76,8 @@ pub struct AgentHookEvent {
     pub session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub agent: Option<AgentKind>,
+    /// The first line of the user's prompt, when the hook payload carries one.
+    pub prompt: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -300,6 +303,9 @@ fn handle_hook_connection(
     subscribers: &Mutex<Vec<smol::channel::Sender<AgentHookEvent>>>,
 ) -> Result<()> {
     const MAX_REQUEST_HEAD_BYTES: u64 = 16 * 1024;
+    // Payloads can carry a whole prompt or Codex's last reply; anything past this is
+    // dropped, which only costs the prompt title.
+    const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024;
 
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -308,10 +314,10 @@ fn handle_hook_connection(
         .set_write_timeout(Some(Duration::from_secs(5)))
         .context("set hook connection write timeout")?;
 
-    let mut reader = BufReader::new(stream.take(MAX_REQUEST_HEAD_BYTES));
+    let mut reader = BufReader::new(stream);
+    let mut head = (&mut reader).take(MAX_REQUEST_HEAD_BYTES);
     let mut request_line = String::new();
-    reader
-        .read_line(&mut request_line)
+    head.read_line(&mut request_line)
         .context("read hook request line")?;
     let url = request_line
         .split_whitespace()
@@ -320,13 +326,20 @@ fn handle_hook_connection(
         .to_string();
 
     // Drain the remaining headers so curl finishes sending before we respond and close.
+    let mut content_length = 0;
     let mut line = String::new();
     loop {
         line.clear();
-        match reader.read_line(&mut line) {
+        match head.read_line(&mut line) {
             Ok(0) => break,
             Ok(_) if line == "\r\n" || line == "\n" => break,
-            Ok(_) => {}
+            Ok(_) => {
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse::<u64>().unwrap_or(0);
+                }
+            }
             Err(error) => {
                 log::debug!("failed to read agent hook request headers: {error}");
                 break;
@@ -334,7 +347,17 @@ fn handle_hook_connection(
         }
     }
 
-    let status_line = match parse_request(&url) {
+    let mut body = Vec::new();
+    if content_length > 0 {
+        reader
+            .take(content_length.min(MAX_REQUEST_BODY_BYTES))
+            .read_to_end(&mut body)
+            .context("read hook request body")?;
+    }
+    let body = String::from_utf8_lossy(&body);
+
+    let status_line = match parse_request(&url, Some(body.as_ref()).filter(|body| !body.is_empty()))
+    {
         Ok(Some(event)) => {
             if debug_hooks_enabled() {
                 log::info!(
@@ -371,7 +394,9 @@ fn handle_hook_connection(
     Ok(())
 }
 
-fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
+/// Hook parameters come in the form body from the notify script, or in the query string
+/// from older wrappers that are still running.
+fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>> {
     let url =
         Url::parse(&format!("http://127.0.0.1{url}")).context("failed to parse agent hook url")?;
     if url.path() != HOOK_ENDPOINT_PATH {
@@ -381,7 +406,7 @@ fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
         return Ok(None);
     }
 
-    let query = url.query().unwrap_or_default();
+    let query = body.unwrap_or_else(|| url.query().unwrap_or_default());
     let params: HookRequestParams =
         serde_urlencoded::from_str(query).context("failed to parse hook query parameters")?;
 
@@ -430,6 +455,7 @@ fn parse_request(url: &str) -> Result<Option<AgentHookEvent>> {
             .filter(|session_id| !session_id.trim().is_empty()),
         cwd: params.cwd.map(PathBuf::from),
         agent: params.agent.as_deref().and_then(AgentKind::from_hook_value),
+        prompt: params.payload.as_deref().and_then(prompt_from_hook_payload),
     }))
 }
 
@@ -441,6 +467,8 @@ struct HookRequestParams {
     cwd: Option<String>,
     #[serde(rename = "event_type")]
     event_type: Option<String>,
+    #[serde(rename = "payload")]
+    payload: Option<String>,
     #[serde(rename = "session_id")]
     session_id: Option<String>,
     #[serde(rename = "terminal_id")]
@@ -449,6 +477,21 @@ struct HookRequestParams {
     version: Option<String>,
     #[serde(rename = "workspace_id")]
     workspace_id: Option<String>,
+}
+
+/// Claude sends the prompt as `prompt` when it is submitted; Codex sends the turn's
+/// messages as `input-messages` when the turn completes.
+fn prompt_from_hook_payload(payload: &str) -> Option<String> {
+    let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let prompt = payload
+        .get("prompt")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| payload.get("input-messages")?.as_array()?.first()?.as_str())?;
+    let first_line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    Some(first_line.chars().take(PROMPT_TITLE_MAX_CHARS).collect())
 }
 
 fn map_hook_event_type(event_type: &str) -> Option<AgentHookEventType> {
@@ -586,9 +629,10 @@ if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
   esac
 fi
 
-_superzent_status=$(curl -sSG "$SUPERZENT_AGENT_HOOK_URL" \
+_superzent_status=$(curl -sS "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
+  -H 'Expect:' \
   --data-urlencode "event_type=$EVENT_TYPE" \
   --data-urlencode "terminal_id=$SUPERZENT_TERMINAL_ID" \
   --data-urlencode "workspace_id=$SUPERZENT_WORKSPACE_ID" \
@@ -596,6 +640,7 @@ _superzent_status=$(curl -sSG "$SUPERZENT_AGENT_HOOK_URL" \
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
+  --data-urlencode "payload=$INPUT" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
 _superzent_exit=$?
 [ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') notify.sh dispatched event_type=$EVENT_TYPE curl_exit=$_superzent_exit status=$_superzent_status" >> "$_superzent_debug_log"
@@ -867,6 +912,7 @@ mod tests {
     fn parses_valid_hook_request() {
         let event = parse_request(
             "/agent-hook?event_type=Stop&terminal_id=terminal-1&workspace_id=workspace-1&cwd=%2Ftmp%2Fproject&agent=codex&version=1",
+            None,
         )
         .expect("request should parse")
         .expect("request should produce an event");
@@ -881,9 +927,10 @@ mod tests {
     #[test]
     fn hook_requests_without_a_known_agent_have_no_agent_kind() {
         for agent in ["", "&agent=", "&agent=aider"] {
-            let event = parse_request(&format!(
-                "/agent-hook?event_type=Stop&terminal_id=terminal-1{agent}&version=1"
-            ))
+            let event = parse_request(
+                &format!("/agent-hook?event_type=Stop&terminal_id=terminal-1{agent}&version=1"),
+                None,
+            )
             .expect("request should parse")
             .expect("request should produce an event");
             assert_eq!(event.agent, None, "{agent}");
@@ -892,8 +939,11 @@ mod tests {
 
     #[test]
     fn ignores_version_mismatches() {
-        let event = parse_request("/agent-hook?event_type=Stop&terminal_id=terminal-1&version=999")
-            .expect("request should parse");
+        let event = parse_request(
+            "/agent-hook?event_type=Stop&terminal_id=terminal-1&version=999",
+            None,
+        )
+        .expect("request should parse");
 
         assert_eq!(event, None);
     }
@@ -1230,6 +1280,76 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
         let event = receiver.recv_blocking().expect("receive hook event");
         assert_eq!(event.event_type, AgentHookEventType::Stop);
         assert_eq!(event.terminal_id, "terminal-1");
+    }
+
+    #[test]
+    fn hook_requests_carry_the_prompt_from_the_hook_payload() {
+        let claude_payload = r#"{"hook_event_name":"UserPromptSubmit","prompt":"\n  Fix the \"flaky\" test\nthen push","session_id":"abc"}"#;
+        let codex_payload = r#"{"type":"agent-turn-complete","input-messages":["Rename the store","and more"],"last-assistant-message":"Done"}"#;
+        for (payload, expected) in [
+            (claude_payload, Some("Fix the \"flaky\" test")),
+            (codex_payload, Some("Rename the store")),
+            (r#"{"hook_event_name":"Stop"}"#, None),
+            ("not json", None),
+        ] {
+            let body = serde_urlencoded::to_string([
+                ("event_type", "Stop"),
+                ("terminal_id", "terminal-1"),
+                ("payload", payload),
+            ])
+            .expect("encode hook form");
+            let event = parse_request("/agent-hook", Some(&body))
+                .expect("request should parse")
+                .expect("request should produce an event");
+            assert_eq!(event.terminal_id, "terminal-1");
+            assert_eq!(event.prompt.as_deref(), expected, "{payload}");
+        }
+    }
+
+    #[test]
+    fn prompts_are_capped_to_a_title_length() {
+        let prompt = "가".repeat(PROMPT_TITLE_MAX_CHARS + 50);
+        let payload = serde_json::json!({ "prompt": prompt }).to_string();
+        let title = prompt_from_hook_payload(&payload).expect("prompt title");
+        assert_eq!(title.chars().count(), PROMPT_TITLE_MAX_CHARS);
+        assert_eq!(prompt_from_hook_payload(r#"{"prompt":"  \n "}"#), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notify_script_delivers_the_hook_payload_to_the_server() {
+        let (addr, receiver) = spawn_test_hook_server();
+        let directory = tempfile::tempdir().expect("create notify test directory");
+        let notify_script = directory.path().join("notify.sh");
+        write_executable_file(&notify_script, notify_script_content())
+            .expect("write notification hook");
+        let payload = r#"{"hook_event_name":"UserPromptSubmit","prompt":"Ship it & \"tag\" v0.6.0\nsecond line"}"#;
+
+        let mut child = std::process::Command::new("bash")
+            .arg(&notify_script)
+            .env(
+                AGENT_HOOK_URL_ENV_VAR,
+                format!("http://{addr}{HOOK_ENDPOINT_PATH}"),
+            )
+            .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+            .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
+            .env(AGENT_KIND_ENV_VAR, "claude")
+            .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("run notify script");
+        child
+            .stdin
+            .take()
+            .expect("notify script stdin")
+            .write_all(payload.as_bytes())
+            .expect("write hook payload");
+        assert!(child.wait().expect("wait for notify script").success());
+
+        let event = receiver.recv_blocking().expect("receive hook event");
+        assert_eq!(event.event_type, AgentHookEventType::Start);
+        assert_eq!(event.agent, Some(AgentKind::Claude));
+        assert_eq!(event.prompt.as_deref(), Some("Ship it & \"tag\" v0.6.0"));
     }
 
     #[test]

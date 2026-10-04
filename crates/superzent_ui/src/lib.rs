@@ -13,6 +13,7 @@ use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
     AgentListEntry, AgentListGroup, agent_display_title, agent_hook_event_applies, agent_is_listed,
+    clean_terminal_title,
 };
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
@@ -371,6 +372,7 @@ struct AttentionQueueEntry {
 
 struct AgentSessionInfo {
     kind: Option<AgentKind>,
+    first_prompt: Option<String>,
     // Launch order, which keeps rows in place within an agent list group.
     sequence: u64,
     running: bool,
@@ -994,6 +996,8 @@ impl WorkspaceAttentionController {
             match event.event_type {
                 AgentHookEventType::SessionStart => {
                     session.running = true;
+                    // A new session (including Claude's `/clear`) is a new task.
+                    session.first_prompt = None;
                     // Nested agents report activity through the outer agent's terminal but
                     // never its session start, so only that (or a first sighting) names it.
                     if event.agent.is_some() {
@@ -1007,6 +1011,9 @@ impl WorkspaceAttentionController {
                     if session.kind.is_none() {
                         session.kind = event.agent;
                     }
+                    if session.first_prompt.is_none() {
+                        session.first_prompt = event.prompt.clone();
+                    }
                 }
             }
             return;
@@ -1016,6 +1023,7 @@ impl WorkspaceAttentionController {
             event.terminal_id.clone(),
             AgentSessionInfo {
                 kind: event.agent,
+                first_prompt: event.prompt.clone(),
                 sequence: self.next_agent_sequence,
                 running,
             },
@@ -1085,8 +1093,10 @@ impl WorkspaceAttentionController {
                 Some(AgentListEntry {
                     terminal_id: terminal_id.clone(),
                     group,
+                    // Once the agent exits, the shell may own the terminal title.
                     title: agent_display_title(
-                        &terminal.breadcrumb_text,
+                        session.running.then_some(terminal.breadcrumb_text.as_str()),
+                        session.first_prompt.as_deref(),
                         &terminal_view.tab_content_text(0, cx),
                     ),
                     kind: session.kind,
@@ -1648,7 +1658,7 @@ pub fn init(cx: &mut App) {
                     TerminalEvent::BreadcrumbsChanged => {
                         // Agents animate status glyphs in their title, so only a change in
                         // the title text itself is worth a sidebar refresh.
-                        let title = agent_display_title(&terminal.read(cx).breadcrumb_text, "");
+                        let title = clean_terminal_title(&terminal.read(cx).breadcrumb_text);
                         attention_controller.update(cx, |controller, cx| {
                             controller.handle_agent_title_changed(&terminal_id, title, cx);
                         });

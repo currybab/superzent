@@ -115,22 +115,42 @@ pub(crate) fn group_agent_entries<'a>(
         .collect()
 }
 
-/// Agents such as Claude Code put a summary of the task in the terminal title, prefixed
-/// with an animated status glyph.
-pub(crate) fn agent_display_title(terminal_title: &str, tab_title: &str) -> String {
-    let terminal_title = terminal_title
+/// Agents such as Claude Code prefix the terminal title with an animated status glyph.
+pub(crate) fn clean_terminal_title(terminal_title: &str) -> String {
+    terminal_title
         .trim_start_matches(|character: char| !character.is_alphanumeric())
-        .trim();
-    if !terminal_title.is_empty() {
-        return terminal_title.to_string();
-    }
-    let tab_title = tab_title.trim();
-    if tab_title.is_empty() {
-        "Agent".to_string()
-    } else {
-        tab_title.to_string()
-    }
+        .trim()
+        .to_string()
 }
+
+/// Like ACP thread titles: the agent's own summary once it sets one (Claude Code puts it
+/// in the terminal title), otherwise the first prompt of the session.
+pub(crate) fn agent_display_title(
+    terminal_title: Option<&str>,
+    first_prompt: Option<&str>,
+    tab_title: &str,
+) -> String {
+    let tab_title = tab_title.trim();
+    let summary = terminal_title.map(clean_terminal_title).filter(|title| {
+        !title.is_empty()
+            && !title.eq_ignore_ascii_case(tab_title)
+            && !AGENT_NAMES
+                .iter()
+                .any(|agent_name| title.eq_ignore_ascii_case(agent_name))
+    });
+    summary
+        .or_else(|| {
+            first_prompt
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| (!tab_title.is_empty()).then(|| tab_title.to_string()))
+        .unwrap_or_else(|| "Agent".to_string())
+}
+
+// Titles agents show before they have anything to summarize.
+const AGENT_NAMES: [&str; 3] = ["Claude Code", "Claude", "Codex"];
 
 pub(crate) fn format_agent_elapsed(elapsed: Duration) -> String {
     let minutes = elapsed.as_secs() / 60;
@@ -514,15 +534,39 @@ mod tests {
     }
 
     #[test]
-    fn display_title_prefers_the_agent_title_without_status_glyphs() {
+    fn display_title_prefers_the_agent_summary_then_the_first_prompt() {
         assert_eq!(
-            agent_display_title("✳ Refactor the store", "claude"),
+            agent_display_title(
+                Some("✳ Refactor the store"),
+                Some("refactor store"),
+                "claude"
+            ),
             "Refactor the store"
         );
-        assert_eq!(agent_display_title("⠐ 리뷰 정리", "claude"), "리뷰 정리");
-        assert_eq!(agent_display_title("  ", "Codex"), "Codex");
-        assert_eq!(agent_display_title("✳", " codex "), "codex");
-        assert_eq!(agent_display_title("", ""), "Agent");
+        assert_eq!(
+            agent_display_title(Some("⠐ 리뷰 정리"), None, "claude"),
+            "리뷰 정리"
+        );
+        // A title naming only the agent is no summary.
+        for generic in ["✳ Claude Code", "codex", "Claude"] {
+            assert_eq!(
+                agent_display_title(Some(generic), Some("Fix the flaky test"), "claude"),
+                "Fix the flaky test",
+                "{generic}"
+            );
+        }
+        assert_eq!(
+            agent_display_title(Some("✳ Codex Preset"), Some("Ship it"), "Codex Preset"),
+            "Ship it"
+        );
+        assert_eq!(agent_display_title(None, Some("  "), " codex "), "codex");
+        assert_eq!(agent_display_title(Some("✳"), None, ""), "Agent");
+    }
+
+    #[test]
+    fn terminal_titles_drop_leading_status_glyphs() {
+        assert_eq!(clean_terminal_title("✳ Refactor"), "Refactor");
+        assert_eq!(clean_terminal_title("  ⠐  "), "");
     }
 
     #[test]
