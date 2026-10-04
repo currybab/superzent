@@ -3,8 +3,22 @@ use gpui::{
     AnyView, App, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window,
 };
 use std::any::TypeId;
-use ui::{h_flex, prelude::*};
+use ui::{ButtonSize, h_flex, prelude::*};
 use util::ResultExt;
+
+/// The height of the status bar below its top border: a row of buttons and its padding.
+/// UI along the bottom edge of the window sizes itself from this to line up with it.
+pub fn status_bar_height(cx: &App) -> Rems {
+    status_bar_row_height() + status_bar_vertical_padding(cx) * 2.
+}
+
+fn status_bar_row_height() -> Rems {
+    ButtonSize::Default.rems()
+}
+
+fn status_bar_vertical_padding(cx: &App) -> Rems {
+    DynamicSpacing::Base04.rems(cx)
+}
 
 pub trait StatusItemView: Render {
     /// Event callback that is triggered when the active pane item changes.
@@ -48,6 +62,7 @@ impl StatusItemStrip {
 
     fn render_left_tools(&self) -> impl IntoElement {
         h_flex()
+            .min_h(status_bar_row_height())
             .gap_1()
             .overflow_x_hidden()
             .children(self.left_items.iter().map(|item| item.to_any()))
@@ -55,6 +70,7 @@ impl StatusItemStrip {
 
     fn render_right_tools(&self) -> impl IntoElement {
         h_flex()
+            .min_h(status_bar_row_height())
             .gap_1()
             .overflow_x_hidden()
             .children(self.right_items.iter().rev().map(|item| item.to_any()))
@@ -153,7 +169,7 @@ impl Render for StatusBar {
             .w_full()
             .justify_between()
             .gap(DynamicSpacing::Base08.rems(cx))
-            .py(DynamicSpacing::Base04.rems(cx))
+            .py(status_bar_vertical_padding(cx))
             .px(DynamicSpacing::Base06.rems(cx))
             .border_t_1()
             .border_color(cx.theme().colors().border)
