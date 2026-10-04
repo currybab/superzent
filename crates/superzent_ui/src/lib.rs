@@ -12,7 +12,7 @@ pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
-    AgentListEntry, AgentListGroup, agent_display_title, agent_hook_event_applies, agent_is_listed,
+    AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_task_title,
     clean_terminal_title,
 };
 #[cfg(feature = "acp_tabs")]
@@ -1090,15 +1090,17 @@ impl WorkspaceAttentionController {
                 if !agent_is_listed(group, session.running, terminal.has_foreground_job()) {
                     return None;
                 }
+                let tab_title = terminal_view.tab_content_text(0, cx);
                 Some(AgentListEntry {
                     terminal_id: terminal_id.clone(),
                     group,
                     // Once the agent exits, the shell may own the terminal title.
-                    title: agent_display_title(
+                    title: agent_task_title(
                         session.running.then_some(terminal.breadcrumb_text.as_str()),
                         session.first_prompt.as_deref(),
-                        &terminal_view.tab_content_text(0, cx),
+                        &tab_title,
                     ),
+                    name: tab_title.to_string(),
                     kind: session.kind,
                     workspace_id: self.agent_terminal_workspace_id(terminal_id, cx),
                     working_since: self.working_since.get(terminal_id).copied(),

@@ -6,7 +6,7 @@ use std::{
 use gpui::{AnyElement, ClickEvent, SharedString};
 use superzent_agent::{AgentHookEventType, AgentKind};
 use terminal_view::{TerminalTabAttention, render_attention_dot};
-use ui::{Icon, Indicator, LineHeightStyle, ListItem, prelude::*};
+use ui::{Icon, Indicator, ListItem, prelude::*};
 use workspace::status_bar_height;
 
 use crate::{GlobalAttentionController, SuperzentSidebar, workspace_notification_title};
@@ -52,7 +52,9 @@ impl AgentListGroup {
 pub(crate) struct AgentListEntry {
     pub(crate) terminal_id: String,
     pub(crate) group: AgentListGroup,
-    pub(crate) title: String,
+    pub(crate) title: Option<String>,
+    /// The tab's name, shown when there is neither a task title nor a workspace.
+    pub(crate) name: String,
     pub(crate) kind: Option<AgentKind>,
     pub(crate) workspace_id: Option<String>,
     pub(crate) working_since: Option<Instant>,
@@ -124,12 +126,13 @@ pub(crate) fn clean_terminal_title(terminal_title: &str) -> String {
 }
 
 /// Like ACP thread titles: the agent's own summary once it sets one (Claude Code puts it
-/// in the terminal title), otherwise the first prompt of the session.
-pub(crate) fn agent_display_title(
+/// in the terminal title), otherwise the first prompt of the session. An agent that has
+/// neither has no task to name yet.
+pub(crate) fn agent_task_title(
     terminal_title: Option<&str>,
     first_prompt: Option<&str>,
     tab_title: &str,
-) -> String {
+) -> Option<String> {
     let tab_title = tab_title.trim();
     let summary = terminal_title.map(clean_terminal_title).filter(|title| {
         !title.is_empty()
@@ -138,15 +141,12 @@ pub(crate) fn agent_display_title(
                 .iter()
                 .any(|agent_name| title.eq_ignore_ascii_case(agent_name))
     });
-    summary
-        .or_else(|| {
-            first_prompt
-                .map(str::trim)
-                .filter(|prompt| !prompt.is_empty())
-                .map(str::to_string)
-        })
-        .or_else(|| (!tab_title.is_empty()).then(|| tab_title.to_string()))
-        .unwrap_or_else(|| "Agent".to_string())
+    summary.or_else(|| {
+        first_prompt
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map(str::to_string)
+    })
 }
 
 // Titles agents show before they have anything to summarize.
@@ -332,47 +332,70 @@ impl SuperzentSidebar {
                 .into_any_element(),
         };
 
-        // The title gets the whole first line; everything else shares a muted second line.
-        let details = [location, elapsed]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let kind_icon_size = IconSize::XSmall;
+        let icon_gap = DynamicSpacing::Base06.rems(cx);
+        let first_line = |text: String| {
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .gap(icon_gap)
+                .child(
+                    Icon::new(agent_kind_icon(entry.kind))
+                        .size(kind_icon_size)
+                        .color(Color::Muted),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Label::new(text).size(LabelSize::Small).truncate()),
+                )
+        };
+        let content = match entry.title.clone() {
+            // The task gets the whole first line, with the rest on a muted line below it.
+            Some(title) => {
+                let details = [location, elapsed]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .child(first_line(title))
+                    .when(!details.is_empty(), |this| {
+                        this.child(
+                            div().pl(kind_icon_size.rems() + icon_gap).child(
+                                Label::new(details)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
+                        )
+                    })
+                    .into_any_element()
+            }
+            None => h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1()
+                .child(first_line(location.unwrap_or_else(|| entry.name.clone())))
+                .when_some(elapsed, |this, elapsed| {
+                    this.child(
+                        Label::new(elapsed)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                })
+                .into_any_element(),
+        };
 
         ListItem::new(SharedString::from(format!("agent-{}", entry.terminal_id)))
             .spacing(ui::ListItemSpacing::Dense)
             .rounded()
             .toggle_state(entry.focused)
             .start_slot(dot)
-            .child(
-                v_flex()
-                    .w_full()
-                    .min_w_0()
-                    .child(
-                        Label::new(entry.title.clone())
-                            .size(LabelSize::Small)
-                            .line_height_style(LineHeightStyle::UiLabel)
-                            .truncate(),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                Icon::new(agent_kind_icon(entry.kind))
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                Label::new(details)
-                                    .size(LabelSize::XSmall)
-                                    .line_height_style(LineHeightStyle::UiLabel)
-                                    .color(Color::Muted)
-                                    .truncate(),
-                            ),
-                    ),
-            )
+            .child(content)
             .on_click({
                 let terminal_id = entry.terminal_id.clone();
                 move |_: &ClickEvent, _, cx| open_agent_terminal(terminal_id.clone(), cx)
@@ -399,7 +422,8 @@ mod tests {
         AgentListEntry {
             terminal_id: terminal_id.to_string(),
             group,
-            title: terminal_id.to_string(),
+            title: None,
+            name: terminal_id.to_string(),
             kind: None,
             workspace_id: None,
             working_since: None,
@@ -531,33 +555,42 @@ mod tests {
     }
 
     #[test]
-    fn display_title_prefers_the_agent_summary_then_the_first_prompt() {
+    fn task_title_prefers_the_agent_summary_then_the_first_prompt() {
         assert_eq!(
-            agent_display_title(
+            agent_task_title(
                 Some("✳ Refactor the store"),
                 Some("refactor store"),
                 "claude"
-            ),
-            "Refactor the store"
+            )
+            .as_deref(),
+            Some("Refactor the store")
         );
         assert_eq!(
-            agent_display_title(Some("⠐ 리뷰 정리"), None, "claude"),
-            "리뷰 정리"
+            agent_task_title(Some("⠐ 리뷰 정리"), None, "claude").as_deref(),
+            Some("리뷰 정리")
         );
         // A title naming only the agent is no summary.
         for generic in ["✳ Claude Code", "codex", "Claude"] {
             assert_eq!(
-                agent_display_title(Some(generic), Some("Fix the flaky test"), "claude"),
-                "Fix the flaky test",
+                agent_task_title(Some(generic), Some("Fix the flaky test"), "claude").as_deref(),
+                Some("Fix the flaky test"),
                 "{generic}"
             );
         }
         assert_eq!(
-            agent_display_title(Some("✳ Codex Preset"), Some("Ship it"), "Codex Preset"),
-            "Ship it"
+            agent_task_title(Some("✳ Codex Preset"), Some("Ship it"), "Codex Preset").as_deref(),
+            Some("Ship it")
         );
-        assert_eq!(agent_display_title(None, Some("  "), " codex "), "codex");
-        assert_eq!(agent_display_title(Some("✳"), None, ""), "Agent");
+    }
+
+    #[test]
+    fn agents_without_a_summary_or_prompt_have_no_task_title() {
+        assert_eq!(agent_task_title(None, Some("  "), "codex"), None);
+        assert_eq!(
+            agent_task_title(Some("✳ Claude Code"), None, "claude"),
+            None
+        );
+        assert_eq!(agent_task_title(Some("✳"), None, ""), None);
     }
 
     #[test]
