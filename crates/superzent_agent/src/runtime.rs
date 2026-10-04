@@ -629,7 +629,9 @@ if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
   esac
 fi
 
-_superzent_status=$(curl -sS "$SUPERZENT_AGENT_HOOK_URL" \
+# The payload goes through stdin: as an argument, a long final reply can exceed the
+# command-line length limit and keep curl from starting at all.
+_superzent_status=$(printf '%s' "$INPUT" | curl -sS "$SUPERZENT_AGENT_HOOK_URL" \
   --connect-timeout 1 \
   --max-time 2 \
   -H 'Expect:' \
@@ -640,7 +642,7 @@ _superzent_status=$(curl -sS "$SUPERZENT_AGENT_HOOK_URL" \
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
-  --data-urlencode "payload=$INPUT" \
+  --data-urlencode "payload@-" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
 _superzent_exit=$?
 [ "$_superzent_debug_enabled" = "1" ] && echo "$(date '+%H:%M:%S') notify.sh dispatched event_type=$EVENT_TYPE curl_exit=$_superzent_exit status=$_superzent_status" >> "$_superzent_debug_log"
@@ -1318,33 +1320,45 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
     #[cfg(unix)]
     #[test]
     fn notify_script_delivers_the_hook_payload_to_the_server() {
+        use smol::io::AsyncWriteExt as _;
+
         let (addr, receiver) = spawn_test_hook_server();
         let directory = tempfile::tempdir().expect("create notify test directory");
         let notify_script = directory.path().join("notify.sh");
         write_executable_file(&notify_script, notify_script_content())
             .expect("write notification hook");
-        let payload = r#"{"hook_event_name":"UserPromptSubmit","prompt":"Ship it & \"tag\" v0.6.0\nsecond line"}"#;
+        // Larger than a single command-line argument may be on Linux, like a long
+        // final reply, so the payload must not reach curl through argv.
+        let payload = serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Ship it & \"tag\" v0.6.0\nsecond line",
+            "last_assistant_message": "a".repeat(150 * 1024),
+        })
+        .to_string();
 
-        let mut child = std::process::Command::new("bash")
-            .arg(&notify_script)
-            .env(
-                AGENT_HOOK_URL_ENV_VAR,
-                format!("http://{addr}{HOOK_ENDPOINT_PATH}"),
-            )
-            .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
-            .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
-            .env(AGENT_KIND_ENV_VAR, "claude")
-            .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .expect("run notify script");
-        child
-            .stdin
-            .take()
-            .expect("notify script stdin")
-            .write_all(payload.as_bytes())
-            .expect("write hook payload");
-        assert!(child.wait().expect("wait for notify script").success());
+        let output = smol::block_on(async {
+            let mut child = smol::process::Command::new("bash")
+                .arg(&notify_script)
+                .env(
+                    AGENT_HOOK_URL_ENV_VAR,
+                    format!("http://{addr}{HOOK_ENDPOINT_PATH}"),
+                )
+                .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+                .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
+                .env(AGENT_KIND_ENV_VAR, "claude")
+                .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                .stdin(smol::process::Stdio::piped())
+                .spawn()
+                .expect("run notify script");
+            let mut stdin = child.stdin.take().expect("notify script stdin");
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .expect("write hook payload");
+            drop(stdin);
+            child.output().await.expect("wait for notify script")
+        });
+        assert!(output.status.success(), "{output:?}");
 
         let event = receiver.recv_blocking().expect("receive hook event");
         assert_eq!(event.event_type, AgentHookEventType::Start);
