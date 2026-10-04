@@ -98,7 +98,7 @@ use ui::{
 };
 use uuid::Uuid;
 use workspace::{
-    AppState as WorkspaceAppState, Item as _, ModalView, MultiWorkspace, MultiWorkspaceEvent,
+    AppState as WorkspaceAppState, ModalView, MultiWorkspace, MultiWorkspaceEvent,
     NextWorkspaceInWindow, OpenOptions, Pane, PreviousWorkspaceInWindow,
     SerializedWorkspaceLocation, Sidebar as WorkspaceSidebar, SidebarEvent, Toast, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
@@ -670,7 +670,7 @@ impl WorkspaceAttentionController {
             if let Some(session) = self.agent_sessions.get_mut(terminal_id) {
                 session.lost = true;
             }
-            self.sync_terminal_tab_icon(terminal_id, cx);
+            self.sync_terminal_tab_agent(terminal_id, cx);
             if let Some(attention) = self.live_terminal_attention.remove(terminal_id) {
                 self.sync_terminal_tab_attention(terminal_id, cx);
                 self.recompute_workspace_attention(&attention.workspace_id, cx);
@@ -690,6 +690,7 @@ impl WorkspaceAttentionController {
         }
         if self.agent_titles.get(terminal_id) != Some(&title) {
             self.agent_titles.insert(terminal_id.to_string(), title);
+            self.sync_terminal_tab_agent(terminal_id, cx);
             cx.notify();
         }
     }
@@ -729,22 +730,44 @@ impl WorkspaceAttentionController {
         }
     }
 
-    fn sync_terminal_tab_icon(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
-        let icon = self
+    fn sync_terminal_tab_agent(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
+            return;
+        };
+        let controller = cx.entity();
+        let terminal_id = terminal_id.to_string();
+        // Hook events can arrive while the terminal view is being updated, and naming the
+        // tab reads it.
+        cx.defer(move |cx| {
+            let (icon, title) =
+                controller
+                    .read(cx)
+                    .terminal_tab_agent(&terminal_id, &terminal_view, cx);
+            terminal_view.update(cx, |terminal_view, cx| {
+                terminal_view.set_tab_agent(icon, title, cx);
+            });
+        });
+    }
+
+    /// The icon and title a terminal's tab shows while an agent runs in it: the same task
+    /// title as its agent list row, or else the agent's name.
+    fn terminal_tab_agent(
+        &self,
+        terminal_id: &str,
+        terminal_view: &Entity<TerminalView>,
+        cx: &App,
+    ) -> (Option<IconName>, Option<String>) {
+        let Some(session) = self
             .agent_sessions
             .get(terminal_id)
             .filter(|session| session.running && !session.lost)
             .filter(|session| session.kind.is_some() || session.screen_agent.is_some())
-            .map(|session| agent_icon(session.kind, session.screen_agent));
-        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
-            return;
+        else {
+            return (None, None);
         };
-        // Hook events can arrive while the terminal view is being updated.
-        cx.defer(move |cx| {
-            terminal_view.update(cx, |terminal_view, cx| {
-                terminal_view.set_tab_agent_icon(icon, cx);
-            });
-        });
+        let title = terminal_agent_task_title(session, terminal_view.read(cx), cx)
+            .or_else(|| agent_display_name(session.kind, session.screen_agent).map(str::to_string));
+        (Some(agent_icon(session.kind, session.screen_agent)), title)
     }
 
     fn sync_terminal_tab_attention(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
@@ -920,7 +943,7 @@ impl WorkspaceAttentionController {
             return;
         }
         self.track_agent_session(&event);
-        self.sync_terminal_tab_icon(&event.terminal_id, cx);
+        self.sync_terminal_tab_agent(&event.terminal_id, cx);
         match event.event_type {
             AgentHookEventType::SessionStart => {
                 cx.notify();
@@ -1148,10 +1171,12 @@ impl WorkspaceAttentionController {
     }
 
     fn agent_list_entries(&self, cx: &App) -> Vec<AgentListEntry> {
-        #[allow(unused_mut)]
-        let mut entries = self.terminal_agent_list_entries(cx);
+        let entries = self.terminal_agent_list_entries(cx);
         #[cfg(feature = "acp_tabs")]
-        entries.extend(self.acp_agent_list_entries(cx));
+        let entries = entries
+            .into_iter()
+            .chain(self.acp_agent_list_entries(cx))
+            .collect();
         entries
     }
 
@@ -1172,20 +1197,13 @@ impl WorkspaceAttentionController {
                 ) {
                     return None;
                 }
-                let tab_title = terminal_view.tab_content_text(0, cx);
                 Some(AgentListEntry {
                     target: AgentListTarget::Terminal(terminal_id.clone()),
                     group,
-                    title: agent_task_title(
-                        terminal_title_is_a_summary(session.kind, session.running)
-                            .then_some(terminal.breadcrumb_text.as_str()),
-                        session.first_prompt.as_deref(),
-                        &tab_title,
-                    ),
-                    name: session
-                        .screen_agent
-                        .map(|agent| agent.display_name().to_string())
-                        .unwrap_or_else(|| tab_title.to_string()),
+                    title: terminal_agent_task_title(session, terminal_view, cx),
+                    name: agent_display_name(session.kind, session.screen_agent)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| terminal_base_title(terminal_view, cx)),
                     icon: AgentListIcon::Named(agent_icon(session.kind, session.screen_agent)),
                     workspace_id: self.agent_terminal_workspace_id(terminal_id, cx),
                     working_since: self.working_since.get(terminal_id).copied(),
@@ -1707,21 +1725,26 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new({
         let attention_controller = attention_controller.clone();
-        move |thread: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
-            #[cfg(feature = "acp_tabs")]
-            let is_subagent = thread.parent_session_id().is_some();
-            #[cfg(not(feature = "acp_tabs"))]
-            let _ = thread;
-            let thread = cx.entity();
-            attention_controller.update(cx, |controller, cx| {
+        move |_: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
+            let thread = cx.entity().downgrade();
+            attention_controller.update(cx, |controller, _| {
                 controller
                     .acp_threads
                     .retain(|thread| thread.upgrade().is_some());
-                controller.acp_threads.push(thread.downgrade());
-                #[cfg(feature = "acp_tabs")]
+                controller.acp_threads.push(thread);
+            });
+        }
+    })
+    .detach();
+
+    #[cfg(feature = "acp_tabs")]
+    cx.observe_new({
+        let attention_controller = attention_controller.clone();
+        move |thread: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
+            let is_subagent = thread.parent_session_id().is_some();
+            let thread = cx.entity();
+            attention_controller.update(cx, |controller, cx| {
                 controller.track_acp_thread(thread, is_subagent, cx);
-                #[cfg(not(feature = "acp_tabs"))]
-                let _ = cx;
             });
         }
     })
@@ -8763,6 +8786,42 @@ fn inferred_project_id_for_live_workspace(
     store
         .project_for_location(&project_location)
         .map(|project| project.id.clone())
+}
+
+/// What the tab would be called without an agent in it: the user's title for it, or the
+/// terminal's own.
+fn terminal_base_title(terminal_view: &TerminalView, cx: &App) -> String {
+    terminal_view
+        .custom_title()
+        .filter(|title| !title.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| terminal_view.terminal().read(cx).title(true))
+}
+
+fn terminal_agent_task_title(
+    session: &AgentSessionInfo,
+    terminal_view: &TerminalView,
+    cx: &App,
+) -> Option<String> {
+    let terminal = terminal_view.terminal().read(cx);
+    agent_task_title(
+        terminal_title_is_a_summary(session.kind, session.running)
+            .then_some(terminal.breadcrumb_text.as_str()),
+        session.first_prompt.as_deref(),
+        &terminal_base_title(terminal_view, cx),
+    )
+}
+
+fn agent_display_name(
+    kind: Option<AgentKind>,
+    screen_agent: Option<ScreenAgent>,
+) -> Option<&'static str> {
+    match (kind, screen_agent) {
+        (Some(AgentKind::Claude), _) => Some("Claude Code"),
+        (Some(AgentKind::Codex), _) => Some("Codex"),
+        (None, Some(screen_agent)) => Some(screen_agent.display_name()),
+        (None, None) => None,
+    }
 }
 
 fn terminal_runs_agent(terminal: &Terminal) -> bool {

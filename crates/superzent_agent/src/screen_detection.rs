@@ -58,6 +58,13 @@ const AGENTS: &[AgentSpec] = &[
         packages: &[],
     },
     AgentSpec {
+        id: "devin",
+        display_name: "Devin",
+        manifest: include_str!("../agent_detection/devin.toml"),
+        executables: &["devin", "devin-cli"],
+        packages: &[],
+    },
+    AgentSpec {
         id: "gemini",
         display_name: "Gemini CLI",
         manifest: include_str!("../agent_detection/gemini.toml"),
@@ -149,17 +156,21 @@ impl ScreenAgent {
 /// Finds the agent a terminal's foreground process runs, looking through `node`/`bun`
 /// launchers to the script they run.
 pub fn identify_screen_agent(process_name: &str, argv: &[String]) -> Option<ScreenAgent> {
-    let candidates = [Some(process_name), argv.first().map(String::as_str)];
-    for candidate in candidates.into_iter().flatten() {
-        let name = executable_name(candidate);
-        if let Some(agent) = agent_for_executable(&name) {
-            return Some(agent);
-        }
-        if RUNTIMES.contains(&name.as_str()) {
-            return runtime_script(argv).and_then(agent_for_script);
-        }
-    }
-    None
+    let names = [Some(process_name), argv.first().map(String::as_str)]
+        .into_iter()
+        .flatten()
+        .map(executable_name)
+        .collect::<Vec<_>>();
+    names
+        .iter()
+        .find_map(|name| agent_for_executable(name))
+        .or_else(|| {
+            names
+                .iter()
+                .any(|name| RUNTIMES.contains(&name.as_str()))
+                .then(|| runtime_script(argv).and_then(agent_for_script))
+                .flatten()
+        })
 }
 
 fn executable_name(path: &str) -> String {
@@ -489,6 +500,11 @@ mod tests {
     #[test]
     fn agents_are_identified_by_their_executable() {
         assert_eq!(identify_screen_agent("gemini", &[]), Some(agent("gemini")));
+        // A launcher can name the process after its runtime but keep the agent in argv[0].
+        assert_eq!(
+            identify_screen_agent("node", &arguments(&["devin", "--resume"])),
+            Some(agent("devin"))
+        );
         assert_eq!(
             identify_screen_agent("opencode", &arguments(&["/usr/local/bin/opencode"])),
             Some(agent("opencode"))

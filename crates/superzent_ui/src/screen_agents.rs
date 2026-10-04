@@ -128,7 +128,7 @@ impl WorkspaceAttentionController {
             session.kind = None;
             session.screen_agent = Some(agent);
         }
-        self.sync_terminal_tab_icon(terminal_id, cx);
+        self.sync_terminal_tab_agent(terminal_id, cx);
         self.schedule_screen_check(terminal_id, terminal.downgrade(), SCREEN_CHECK_DELAY, cx);
     }
 

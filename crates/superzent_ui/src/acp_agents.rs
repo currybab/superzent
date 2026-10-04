@@ -7,9 +7,7 @@ use ui::IconName;
 
 use crate::{
     WorkspaceAttentionController,
-    agent_list::{
-        AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget, agent_task_title,
-    },
+    agent_list::{AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget},
     matched_workspace_id_for_candidate_locations, ordered_multi_workspace_windows,
     workspace_location_candidates,
 };
@@ -57,6 +55,17 @@ fn thread_awaits_approval(thread: &AcpThread) -> bool {
     })
 }
 
+// What a thread is called until its agent titles it.
+const DEFAULT_THREAD_TITLE: &str = "New Thread";
+
+/// The thread's title once its agent names it. Until then the thread carries the agent's
+/// own name, which says nothing about the task.
+fn acp_thread_title(title: &str, agent_name: &str) -> Option<String> {
+    let title = title.trim();
+    (!title.is_empty() && !title.eq_ignore_ascii_case(agent_name) && title != DEFAULT_THREAD_TITLE)
+        .then(|| title.to_string())
+}
+
 /// The first line of the first prompt, which names the task until the agent titles the
 /// thread.
 fn first_prompt(thread: &AcpThread, cx: &App) -> Option<String> {
@@ -91,8 +100,13 @@ impl WorkspaceAttentionController {
                     cx.notify();
                 }
             });
+            let thread_id = thread.entity_id();
             self.acp_subagent_subscriptions
-                .insert(thread.entity_id(), subscription);
+                .insert(thread_id, subscription);
+            cx.observe_release(&thread, move |controller, _, _| {
+                controller.acp_subagent_subscriptions.remove(&thread_id);
+            })
+            .detach();
             return;
         }
 
@@ -238,11 +252,8 @@ impl WorkspaceAttentionController {
                             session.needs_review,
                             thread.status() == ThreadStatus::Generating,
                         ),
-                        title: agent_task_title(
-                            Some(thread.title().as_ref()),
-                            first_prompt(thread, cx).as_deref(),
-                            &tab.display_name,
-                        ),
+                        title: acp_thread_title(&thread.title(), &tab.display_name)
+                            .or_else(|| first_prompt(thread, cx)),
                         name: tab.display_name.to_string(),
                         icon: tab
                             .icon_path
@@ -351,6 +362,17 @@ pub(crate) fn observe_thread_view_focus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn threads_named_after_their_agent_have_no_title_yet() {
+        assert_eq!(
+            acp_thread_title("[WIP] Fix the store", "Claude Code").as_deref(),
+            Some("[WIP] Fix the store")
+        );
+        assert_eq!(acp_thread_title("Claude Code", "Claude Code"), None);
+        assert_eq!(acp_thread_title("New Thread", "Codex"), None);
+        assert_eq!(acp_thread_title("  ", "Codex"), None);
+    }
 
     #[test]
     fn approval_outranks_review_which_outranks_work() {

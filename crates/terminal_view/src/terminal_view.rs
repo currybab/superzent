@@ -50,7 +50,7 @@ use ui::{
     prelude::*,
     scrollbars::{self, GlobalSetting, ScrollbarVisibility},
 };
-use util::ResultExt;
+use util::{ResultExt, truncate_and_trailoff};
 use workspace::{
     CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
     ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
@@ -160,6 +160,7 @@ pub struct TerminalView {
     rename_editor_subscription: Option<Subscription>,
     tab_attention: Option<TerminalTabAttention>,
     tab_agent_icon: Option<IconName>,
+    tab_agent_title: Option<String>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
 }
@@ -349,6 +350,7 @@ impl TerminalView {
             rename_editor_subscription: None,
             tab_attention: None,
             tab_agent_icon: None,
+            tab_agent_title: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
         }
@@ -470,12 +472,28 @@ impl TerminalView {
         }
     }
 
-    /// Shows the agent running in the terminal in place of the terminal icon.
-    pub fn set_tab_agent_icon(&mut self, icon: Option<IconName>, cx: &mut Context<Self>) {
-        if self.tab_agent_icon != icon {
+    /// Names the tab after the agent running in the terminal and its task, in place of the
+    /// foreground process and its arguments. A title the user gave the tab still wins.
+    pub fn set_tab_agent(
+        &mut self,
+        icon: Option<IconName>,
+        title: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tab_agent_icon != icon || self.tab_agent_title != title {
             self.tab_agent_icon = icon;
+            self.tab_agent_title = title;
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
+        }
+    }
+
+    fn dynamic_title(&self, truncate: bool, cx: &App) -> String {
+        const MAX_CHARS: usize = 25;
+        match &self.tab_agent_title {
+            Some(title) if truncate => truncate_and_trailoff(title, MAX_CHARS),
+            Some(title) => title.clone(),
+            None => self.terminal.read(cx).title(truncate),
         }
     }
 
@@ -508,7 +526,7 @@ impl TerminalView {
             } else {
                 // Only set custom_title if the text differs from the terminal's dynamic title.
                 // This prevents subtle layout changes when clicking away without making changes.
-                let terminal_title = self.terminal.read(cx).title(true);
+                let terminal_title = self.dynamic_title(true, cx);
                 if new_label == terminal_title {
                     None
                 } else {
@@ -558,7 +576,7 @@ impl TerminalView {
         let current_label = self
             .custom_title
             .clone()
-            .unwrap_or_else(|| self.terminal.read(cx).title(true));
+            .unwrap_or_else(|| self.dynamic_title(true, cx));
 
         let rename_editor = cx.new(|cx| Editor::single_line(window, cx));
         let rename_editor_subscription = cx.subscribe_in(&rename_editor, window, {
@@ -1458,7 +1476,7 @@ impl Item for TerminalView {
             .as_ref()
             .filter(|title| !title.trim().is_empty())
             .cloned()
-            .unwrap_or_else(|| terminal.title(true));
+            .unwrap_or_else(|| self.dynamic_title(true, cx));
 
         let (icon, icon_color, rerun_button) = match terminal.task() {
             Some(terminal_task) => match &terminal_task.status {
@@ -1576,8 +1594,7 @@ impl Item for TerminalView {
         if let Some(custom_title) = self.custom_title.as_ref().filter(|l| !l.trim().is_empty()) {
             return custom_title.clone().into();
         }
-        let terminal = self.terminal().read(cx);
-        terminal.title(detail == 0).into()
+        self.dynamic_title(detail == 0, cx).into()
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
