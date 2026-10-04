@@ -77,6 +77,12 @@ pub(crate) fn agent_is_listed(
     }
 }
 
+/// A task terminal (a preset launched with a prompt) runs the agent as its own process,
+/// so it lives as long as the task runs. An interactive shell runs it as a foreground job.
+pub(crate) fn agent_process_alive(task_running: Option<bool>, has_foreground_job: bool) -> bool {
+    task_running.unwrap_or(has_foreground_job)
+}
+
 /// Codex reports activity from a log watcher and its own notify command, which can land
 /// after the wrapper reported the exit; that activity must not revive the agent.
 pub(crate) fn agent_hook_event_applies(
@@ -487,6 +493,18 @@ mod tests {
         }
         // An agent that exited still owes a review of what it finished.
         assert!(agent_is_listed(AgentListGroup::NeedsReview, false, false));
+    }
+
+    #[test]
+    fn task_terminals_run_the_agent_without_a_shell_in_front() {
+        // A preset launched with a prompt runs the agent as the terminal's own process,
+        // so no job ever takes the foreground from a shell.
+        assert!(agent_process_alive(Some(true), false));
+        assert!(!agent_process_alive(Some(false), false));
+        assert!(!agent_process_alive(Some(false), true));
+        // An interactive shell terminal runs the agent as a foreground job.
+        assert!(agent_process_alive(None, true));
+        assert!(!agent_process_alive(None, false));
     }
 
     #[test]

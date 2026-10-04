@@ -12,8 +12,8 @@ pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
-    AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_task_title,
-    clean_terminal_title, terminal_title_is_a_summary,
+    AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_process_alive,
+    agent_task_title, clean_terminal_title, terminal_title_is_a_summary,
 };
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
@@ -1115,7 +1115,7 @@ impl WorkspaceAttentionController {
                 if !agent_is_listed(
                     group,
                     session.running && !session.lost,
-                    terminal.has_foreground_job(),
+                    terminal_runs_agent(terminal),
                 ) {
                     return None;
                 }
@@ -1697,7 +1697,7 @@ pub fn init(cx: &mut App) {
                     // The foreground process changed, e.g. an agent exited without
                     // reporting it.
                     TerminalEvent::TitleChanged => {
-                        let agent_in_foreground = terminal.read(cx).has_foreground_job();
+                        let agent_in_foreground = terminal_runs_agent(terminal.read(cx));
                         attention_controller.update(cx, |controller, cx| {
                             controller.handle_agent_process_changed(
                                 &terminal_id,
@@ -8641,6 +8641,15 @@ fn inferred_project_id_for_live_workspace(
     store
         .project_for_location(&project_location)
         .map(|project| project.id.clone())
+}
+
+fn terminal_runs_agent(terminal: &Terminal) -> bool {
+    agent_process_alive(
+        terminal
+            .task()
+            .map(|task| task.status == terminal::TaskStatus::Running),
+        terminal.has_foreground_job(),
+    )
 }
 
 fn observe_terminal_view_focus(
