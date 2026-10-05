@@ -780,8 +780,7 @@ impl ExternalAcpTabItem {
                 window,
                 cx,
             );
-            connection_view
-                .set_notifies_externally(cx.has_global::<ExternalAgentNotifications>());
+            connection_view.set_notifies_externally(cx.has_global::<ExternalAgentNotifications>());
             connection_view
         })
     }
