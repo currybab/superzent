@@ -19,6 +19,8 @@ const IDLE_CONFIRMATION: Duration = Duration::from_millis(600);
 // never be seen to stop.
 const IDLE_CONFIRMATION_LIMIT: Duration = Duration::from_secs(3);
 const IDLE_RECHECK_DELAY: Duration = Duration::from_millis(250);
+// How often a task terminal's agent is checked for having exited.
+const TASK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// An agent CLI without lifecycle hooks, whose state is read from its screen and reported
 /// as if it came from hooks.
@@ -195,6 +197,14 @@ impl WorkspaceAttentionController {
         let Some(live_terminal) = terminal.upgrade() else {
             return;
         };
+        let is_task = live_terminal.read(cx).task().is_some();
+        if is_task {
+            // A task can exit without printing anything, which leaves no event to react to.
+            self.refresh_screen_agent(terminal_id, &live_terminal, cx);
+        }
+        let Some(tracker) = self.screen_agents.get_mut(terminal_id) else {
+            return;
+        };
         let detection = {
             let live_terminal = live_terminal.read(cx);
             tracker.agent.detect(
@@ -212,13 +222,16 @@ impl WorkspaceAttentionController {
             ScreenStateStep::Keep => tracker.idle_since = None,
             ScreenStateStep::ConfirmIdle { since } => {
                 tracker.idle_since = Some(since);
-                self.schedule_screen_check(terminal_id, terminal, IDLE_RECHECK_DELAY, cx);
+                self.schedule_screen_check(terminal_id, terminal.clone(), IDLE_RECHECK_DELAY, cx);
             }
             ScreenStateStep::Commit(state) => {
                 tracker.state = state;
                 tracker.idle_since = None;
                 self.report_screen_agent_event(terminal_id, hook_event_for_state(state), cx);
             }
+        }
+        if is_task {
+            self.schedule_screen_check(terminal_id, terminal, TASK_POLL_INTERVAL, cx);
         }
     }
 
