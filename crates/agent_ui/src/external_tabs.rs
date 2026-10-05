@@ -242,6 +242,29 @@ pub fn external_acp_tab_threads(workspace: &Workspace, cx: &App) -> Vec<External
         .collect()
 }
 
+/// Brings an ACP tab to the front showing its conversation, leaving its history view if it
+/// was open. Returns whether the workspace holds the tab.
+pub fn activate_external_acp_tab(
+    workspace: &mut Workspace,
+    item_id: EntityId,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    let Some(tab) = workspace
+        .items_of_type::<ExternalAcpTabItem>(cx)
+        .find(|tab| tab.entity_id() == item_id)
+    else {
+        return false;
+    };
+    workspace.activate_item(&tab, true, true, window, cx);
+    tab.update(cx, |tab, cx| {
+        if tab.history_mode == ExternalAcpTabMode::History {
+            tab.hide_history(window, cx);
+        }
+    });
+    true
+}
+
 pub fn focus_external_acp_tab(
     workspace: &mut Workspace,
     window: &mut Window,

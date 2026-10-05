@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use acp_thread::{AcpThread, AcpThreadEvent, AgentThreadEntry, ThreadStatus, ToolCallStatus};
-use agent_ui::{ThreadView, external_acp_tab_threads};
+use agent_ui::{ThreadView, activate_external_acp_tab, external_acp_tab_threads};
 use gpui::{AnyWindowHandle, App, Context, Entity, EntityId, Subscription, Window, WindowHandle};
 use ui::IconName;
 use workspace::{MultiWorkspace, Workspace};
@@ -515,15 +515,7 @@ impl WorkspaceAttentionController {
             window.activate_window();
             multi_workspace.activate(workspace.clone(), cx);
             workspace.update(cx, |workspace, cx| {
-                let item = workspace.panes().iter().find_map(|pane| {
-                    pane.read(cx)
-                        .items()
-                        .find(|item| item.item_id() == item_id)
-                        .map(|item| item.boxed_clone())
-                });
-                if let Some(item) = item {
-                    workspace.activate_item(item.as_ref(), true, true, window, cx);
-                }
+                activate_external_acp_tab(workspace, item_id, window, cx);
             });
         });
         if let Err(error) = activated {
