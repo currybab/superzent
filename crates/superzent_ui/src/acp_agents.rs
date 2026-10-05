@@ -17,6 +17,8 @@ use crate::{
     ordered_multi_workspace_windows, workspace_location_candidates,
 };
 
+const MAX_SUBAGENT_DEPTH: usize = 16;
+
 // Matches the cap on prompts that agent CLIs report through hooks.
 const PROMPT_TITLE_MAX_CHARS: usize = 120;
 
@@ -280,7 +282,7 @@ impl WorkspaceAttentionController {
             return;
         };
         let attention = workspace_attention_for_group(acp_thread_group(
-            self.acp_thread_awaits_approval(thread.read(cx), cx),
+            self.acp_thread_awaits_approval(thread_id, thread.read(cx), cx),
             session.needs_review,
             thread.read(cx).status() == ThreadStatus::Generating,
         ));
@@ -374,14 +376,22 @@ impl WorkspaceAttentionController {
         }
     }
 
+    /// The top-level conversation a subagent works for, through any subagents between.
     fn acp_parent_thread_id(&self, subagent: &Entity<AcpThread>, cx: &App) -> Option<EntityId> {
-        let parent_session_id = subagent.read(cx).parent_session_id()?.clone();
-        self.acp_threads
-            .iter()
-            .filter_map(|thread| thread.upgrade())
-            .find(|thread| thread.read(cx).session_id() == &parent_session_id)
-            .map(|thread| thread.entity_id())
-            .filter(|thread_id| self.acp_sessions.contains_key(thread_id))
+        let mut thread = subagent.clone();
+        // Bounds the walk should the parent links ever form a cycle.
+        for _ in 0..MAX_SUBAGENT_DEPTH {
+            let parent_session_id = thread.read(cx).parent_session_id()?.clone();
+            thread = self
+                .acp_threads
+                .iter()
+                .filter_map(|thread| thread.upgrade())
+                .find(|thread| thread.read(cx).session_id() == &parent_session_id)?;
+            if self.acp_sessions.contains_key(&thread.entity_id()) {
+                return Some(thread.entity_id());
+            }
+        }
+        None
     }
 
     fn acp_thread_viewed(&self, thread_id: EntityId, cx: &App) -> bool {
@@ -425,16 +435,20 @@ impl WorkspaceAttentionController {
         }
     }
 
-    fn acp_thread_awaits_approval(&self, thread: &AcpThread, cx: &App) -> bool {
+    fn acp_thread_awaits_approval(
+        &self,
+        thread_id: EntityId,
+        thread: &AcpThread,
+        cx: &App,
+    ) -> bool {
         thread_awaits_approval(thread)
             || self
                 .acp_threads
                 .iter()
                 .filter_map(|subagent| subagent.upgrade())
                 .any(|subagent| {
-                    let subagent = subagent.read(cx);
-                    subagent.parent_session_id() == Some(thread.session_id())
-                        && thread_awaits_approval(subagent)
+                    thread_awaits_approval(subagent.read(cx))
+                        && self.acp_parent_thread_id(&subagent, cx) == Some(thread_id)
                 })
     }
 
@@ -460,7 +474,7 @@ impl WorkspaceAttentionController {
                     entries.push(AgentListEntry {
                         target: AgentListTarget::AcpThread(thread_id),
                         group: acp_thread_group(
-                            self.acp_thread_awaits_approval(thread, cx),
+                            self.acp_thread_awaits_approval(thread_id, thread, cx),
                             session.needs_review,
                             thread.status() == ThreadStatus::Generating,
                         ),

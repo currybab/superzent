@@ -115,8 +115,12 @@ impl WorkspaceAttentionController {
         if tracked_agent == agent {
             return;
         }
-        if tracked_agent.is_some() {
-            self.screen_agents.remove(terminal_id);
+        if let Some(tracker) = self.screen_agents.remove(terminal_id) {
+            // A one-shot task ending mid-turn has finished its work; an interactive agent
+            // the user quits mid-turn has not.
+            if terminal.read(cx).task().is_some() && tracker.state != ScreenAgentState::Idle {
+                self.report_screen_agent_event(terminal_id, AgentHookEventType::Stop, cx);
+            }
             self.report_screen_agent_event(terminal_id, AgentHookEventType::SessionEnd, cx);
         }
         let Some(agent) = agent else {
