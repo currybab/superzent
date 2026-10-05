@@ -142,8 +142,20 @@ impl WorkspaceAttentionController {
             cx.subscribe(&thread, Self::handle_acp_thread_event),
             cx.observe(&thread, Self::handle_acp_thread_changed),
             cx.observe_release(&thread, move |controller, _, cx| {
-                controller.store.update(cx, |store, _| {
-                    store.forget_unreviewed_terminal(&AgentListTarget::AcpThread(thread_id).key());
+                // Like a terminal tab: closing it from inside its workspace is a deliberate
+                // dismissal, otherwise the review is left for the next activation.
+                let unseen_review_key = AgentListTarget::AcpThread(thread_id).key();
+                controller.store.update(cx, |store, cx| {
+                    let closed_from_active_workspace = store
+                        .unreviewed_terminal_workspace(&unseen_review_key)
+                        .is_some_and(|workspace_id| {
+                            store.active_workspace_id() == Some(workspace_id)
+                        });
+                    if closed_from_active_workspace {
+                        store.mark_terminal_reviewed(&unseen_review_key, cx);
+                    } else {
+                        store.forget_unreviewed_terminal(&unseen_review_key);
+                    }
                 });
                 if let Some(workspace_id) = controller
                     .acp_sessions
