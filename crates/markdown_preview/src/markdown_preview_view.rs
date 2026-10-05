@@ -1529,6 +1529,39 @@ impl Item for MarkdownPreviewView {
     ) -> Option<Box<dyn SearchableItemHandle>> {
         Some(Box::new(handle.clone()))
     }
+
+    fn can_split(&self) -> bool {
+        true
+    }
+
+    fn clone_on_split(
+        &self,
+        _workspace_id: Option<WorkspaceId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Entity<Self>>>
+    where
+        Self: Sized,
+    {
+        let Some(active_editor) = self.active_editor.as_ref() else {
+            return Task::ready(None);
+        };
+
+        let Some(project) = active_editor.editor.read(cx).project() else {
+            return Task::ready(None);
+        };
+
+        let language_registry = project.read(cx).languages().clone();
+
+        Task::ready(Some(MarkdownPreviewView::new(
+            MarkdownPreviewMode::Default,
+            active_editor.editor.clone(),
+            self.workspace.clone(),
+            language_registry,
+            window,
+            cx,
+        )))
+    }
 }
 
 impl Render for MarkdownPreviewView {
@@ -2466,6 +2499,39 @@ mod tests {
                 assert!(actions.is_empty());
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    async fn splitting_preview_clones_into_new_pane(cx: &mut TestAppContext) {
+        let (multi_workspace, _) = open_markdown_file(cx, "note.md", "# Note\n\nBody text\n").await;
+        let _preview = open_preview_for_active_editor(cx, &multi_workspace);
+        cx.run_until_parked();
+
+        let new_pane = multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().clone();
+                workspace.update(cx, |workspace, cx| {
+                    workspace.split_and_clone(
+                        workspace.active_pane().clone(),
+                        workspace::SplitDirection::Right,
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        new_pane.read_with(cx, |pane, _| {
+            assert!(
+                pane.active_item()
+                    .and_then(|item| item.downcast::<MarkdownPreviewView>())
+                    .is_some(),
+                "splitting a preview should clone it into a new pane"
+            );
+        });
     }
 
     #[gpui::test]
