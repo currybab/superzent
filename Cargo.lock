@@ -16957,6 +16957,7 @@ dependencies = [
  "collections",
  "log",
  "paths",
+ "regex",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -16964,6 +16965,7 @@ dependencies = [
  "superzent_model",
  "task",
  "tempfile",
+ "toml 0.8.23",
  "url",
  "uuid",
 ]

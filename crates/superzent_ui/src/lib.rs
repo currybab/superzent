@@ -1,4 +1,6 @@
 #[cfg(feature = "acp_tabs")]
+mod acp_agents;
+#[cfg(feature = "acp_tabs")]
 mod acp_tabs;
 #[cfg(feature = "acp_tabs")]
 pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
@@ -6,14 +8,16 @@ pub use acp_tabs::{FocusAcpTab, NewAcpTab, OpenAcpHistory};
 mod agent_list;
 mod import_worktree_picker;
 mod pending_keystroke_indicator;
+mod screen_agents;
 pub use pending_keystroke_indicator::PendingKeystrokeIndicator;
 
 #[cfg(feature = "acp_tabs")]
 use crate::acp_tabs::{CLAUDE_AGENT_NAME, CODEX_NAME, GEMINI_NAME};
 use acp_thread::{AcpThread, ThreadStatus};
 use agent_list::{
-    AgentListEntry, AgentListGroup, agent_hook_event_applies, agent_is_listed, agent_process_alive,
-    agent_task_title, clean_terminal_title, terminal_title_is_a_summary,
+    AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget, agent_hook_event_applies,
+    agent_icon, agent_is_listed, agent_process_alive, agent_task_title, clean_terminal_title,
+    terminal_title_is_a_summary,
 };
 #[cfg(feature = "acp_tabs")]
 use agent_ui::{
@@ -71,7 +75,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
-    AgentKind,
+    AgentKind, ScreenAgent,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -94,7 +98,7 @@ use ui::{
 };
 use uuid::Uuid;
 use workspace::{
-    AppState as WorkspaceAppState, Item as _, ModalView, MultiWorkspace, MultiWorkspaceEvent,
+    AppState as WorkspaceAppState, ModalView, MultiWorkspace, MultiWorkspaceEvent,
     NextWorkspaceInWindow, OpenOptions, Pane, PreviousWorkspaceInWindow,
     SerializedWorkspaceLocation, Sidebar as WorkspaceSidebar, SidebarEvent, Toast, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
@@ -239,7 +243,7 @@ fn toggle_superzent_right_sidebar(
 #[cfg(feature = "acp_tabs")]
 struct NotificationTarget {
     workspace_id: String,
-    terminal_id: String,
+    target: AgentListTarget,
     notification: TerminalLifecycleNotification,
     workspace_name: String,
     placement: PopupPlacement,
@@ -372,6 +376,8 @@ struct AttentionQueueEntry {
 
 struct AgentSessionInfo {
     kind: Option<AgentKind>,
+    // An agent without hooks, whose state is read from its screen.
+    screen_agent: Option<ScreenAgent>,
     first_prompt: Option<String>,
     // Launch order, which keeps rows in place within an agent list group.
     sequence: u64,
@@ -413,9 +419,16 @@ struct WorkspaceAttentionController {
     next_agent_sequence: u64,
     working_since: BTreeMap<String, Instant>,
     agent_titles: BTreeMap<String, String>,
+    screen_agents: BTreeMap<String, screen_agents::ScreenAgentTracker>,
     // Agent panel and ACP tab conversations, which quitting stops along with their
     // agent servers.
     acp_threads: Vec<WeakEntity<AcpThread>>,
+    #[cfg(feature = "acp_tabs")]
+    acp_sessions: BTreeMap<gpui::EntityId, acp_agents::AcpSessionInfo>,
+    #[cfg(feature = "acp_tabs")]
+    acp_subagent_subscriptions: BTreeMap<gpui::EntityId, Subscription>,
+    #[cfg(feature = "acp_tabs")]
+    focused_acp_thread: Option<acp_agents::FocusedAcpThread>,
     focused_terminal: Option<FocusedTerminal>,
     #[cfg(feature = "acp_tabs")]
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -507,7 +520,14 @@ impl WorkspaceAttentionController {
             next_agent_sequence: 0,
             working_since: BTreeMap::new(),
             agent_titles: BTreeMap::new(),
+            screen_agents: BTreeMap::new(),
             acp_threads: Vec::new(),
+            #[cfg(feature = "acp_tabs")]
+            acp_sessions: BTreeMap::new(),
+            #[cfg(feature = "acp_tabs")]
+            acp_subagent_subscriptions: BTreeMap::new(),
+            #[cfg(feature = "acp_tabs")]
+            focused_acp_thread: None,
             focused_terminal: None,
             #[cfg(feature = "acp_tabs")]
             notifications: Vec::new(),
@@ -566,6 +586,7 @@ impl WorkspaceAttentionController {
         self.agent_sessions.remove(terminal_id);
         self.working_since.remove(terminal_id);
         self.agent_titles.remove(terminal_id);
+        self.screen_agents.remove(terminal_id);
         self.clear_focused_terminal(terminal_id);
         // Closing the tab from inside its workspace is a deliberate dismissal. Otherwise
         // (e.g. the whole workspace went away) leave the review for the next activation.
@@ -649,6 +670,7 @@ impl WorkspaceAttentionController {
             if let Some(session) = self.agent_sessions.get_mut(terminal_id) {
                 session.lost = true;
             }
+            self.sync_terminal_tab_agent(terminal_id, cx);
             if let Some(attention) = self.live_terminal_attention.remove(terminal_id) {
                 self.sync_terminal_tab_attention(terminal_id, cx);
                 self.recompute_workspace_attention(&attention.workspace_id, cx);
@@ -668,6 +690,7 @@ impl WorkspaceAttentionController {
         }
         if self.agent_titles.get(terminal_id) != Some(&title) {
             self.agent_titles.insert(terminal_id.to_string(), title);
+            self.sync_terminal_tab_agent(terminal_id, cx);
             cx.notify();
         }
     }
@@ -677,7 +700,9 @@ impl WorkspaceAttentionController {
         if self
             .active_notification_target
             .as_ref()
-            .is_some_and(|target| target.terminal_id == terminal_id)
+            .is_some_and(|target| {
+                target.target == AgentListTarget::Terminal(terminal_id.to_string())
+            })
         {
             self.dismiss_notifications(cx);
         }
@@ -705,6 +730,46 @@ impl WorkspaceAttentionController {
                 .has_unreviewed_terminal(terminal_id)
                 .then_some(TerminalTabAttention::NeedsReview),
         }
+    }
+
+    fn sync_terminal_tab_agent(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
+        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
+            return;
+        };
+        let controller = cx.entity();
+        let terminal_id = terminal_id.to_string();
+        // Hook events can arrive while the terminal view is being updated, and naming the
+        // tab reads it.
+        cx.defer(move |cx| {
+            let (icon, title) =
+                controller
+                    .read(cx)
+                    .terminal_tab_agent(&terminal_id, &terminal_view, cx);
+            terminal_view.update(cx, |terminal_view, cx| {
+                terminal_view.set_tab_agent(icon, title, cx);
+            });
+        });
+    }
+
+    /// The icon and title a terminal's tab shows while an agent runs in it: the same task
+    /// title as its agent list row, or else the agent's name.
+    fn terminal_tab_agent(
+        &self,
+        terminal_id: &str,
+        terminal_view: &Entity<TerminalView>,
+        cx: &App,
+    ) -> (Option<IconName>, Option<String>) {
+        let Some(session) = self
+            .agent_sessions
+            .get(terminal_id)
+            .filter(|session| session.running && !session.lost)
+            .filter(|session| session.kind.is_some() || session.screen_agent.is_some())
+        else {
+            return (None, None);
+        };
+        let title = terminal_agent_task_title(session, terminal_view.read(cx), cx)
+            .or_else(|| agent_display_name(session.kind, session.screen_agent).map(str::to_string));
+        (Some(agent_icon(session.kind, session.screen_agent)), title)
     }
 
     fn sync_terminal_tab_attention(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
@@ -805,14 +870,31 @@ impl WorkspaceAttentionController {
             return;
         }
 
-        let Some((terminal_id, workspace_id)) =
+        let next_terminal =
             next_attention_terminal(&self.attention_queue, self.focused_terminal_id()).and_then(
                 |terminal_id| {
                     let entry = self.attention_queue.get(terminal_id)?;
-                    Some((terminal_id.to_string(), entry.workspace_id.clone()))
+                    Some((
+                        attention_queue_priority(entry.attention),
+                        entry.sequence,
+                        terminal_id.to_string(),
+                        entry.workspace_id.clone(),
+                    ))
                 },
-            )
-        else {
+            );
+        // ACP conversations wait alongside terminals, ordered by the same rules.
+        #[cfg(feature = "acp_tabs")]
+        if let Some((priority, sequence, thread_id)) = self.next_acp_attention(cx)
+            && next_terminal
+                .as_ref()
+                .is_none_or(|(terminal_priority, terminal_sequence, ..)| {
+                    (priority, sequence) < (*terminal_priority, *terminal_sequence)
+                })
+        {
+            self.open_acp_thread(thread_id, cx);
+            return;
+        }
+        let Some((_, _, terminal_id, workspace_id)) = next_terminal else {
             return;
         };
         self.handle_native_notification_activation(&workspace_id, Some(&terminal_id), cx);
@@ -880,6 +962,7 @@ impl WorkspaceAttentionController {
             return;
         }
         self.track_agent_session(&event);
+        self.sync_terminal_tab_agent(&event.terminal_id, cx);
         match event.event_type {
             AgentHookEventType::SessionStart => {
                 cx.notify();
@@ -1028,6 +1111,7 @@ impl WorkspaceAttentionController {
                     // never its session start, so only that (or a first sighting) names it.
                     if event.agent.is_some() {
                         session.kind = event.agent;
+                        session.screen_agent = None;
                     }
                 }
                 AgentHookEventType::SessionEnd => session.running = false,
@@ -1049,6 +1133,7 @@ impl WorkspaceAttentionController {
             event.terminal_id.clone(),
             AgentSessionInfo {
                 kind: event.agent,
+                screen_agent: None,
                 first_prompt: event.prompt.clone(),
                 sequence: self.next_agent_sequence,
                 running,
@@ -1105,6 +1190,16 @@ impl WorkspaceAttentionController {
     }
 
     fn agent_list_entries(&self, cx: &App) -> Vec<AgentListEntry> {
+        let entries = self.terminal_agent_list_entries(cx);
+        #[cfg(feature = "acp_tabs")]
+        let entries = entries
+            .into_iter()
+            .chain(self.acp_agent_list_entries(cx))
+            .collect();
+        entries
+    }
+
+    fn terminal_agent_list_entries(&self, cx: &App) -> Vec<AgentListEntry> {
         let focused_terminal_id = self.focused_terminal_id();
         self.agent_sessions
             .iter()
@@ -1121,18 +1216,14 @@ impl WorkspaceAttentionController {
                 ) {
                     return None;
                 }
-                let tab_title = terminal_view.tab_content_text(0, cx);
                 Some(AgentListEntry {
-                    terminal_id: terminal_id.clone(),
+                    target: AgentListTarget::Terminal(terminal_id.clone()),
                     group,
-                    title: agent_task_title(
-                        terminal_title_is_a_summary(session.kind, session.running)
-                            .then_some(terminal.breadcrumb_text.as_str()),
-                        session.first_prompt.as_deref(),
-                        &tab_title,
-                    ),
-                    name: tab_title.to_string(),
-                    kind: session.kind,
+                    title: terminal_agent_task_title(session, terminal_view, cx),
+                    name: agent_display_name(session.kind, session.screen_agent)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| terminal_base_title(terminal_view, cx)),
+                    icon: AgentListIcon::Named(agent_icon(session.kind, session.screen_agent)),
                     workspace_id: self.agent_terminal_workspace_id(terminal_id, cx),
                     working_since: self.working_since.get(terminal_id).copied(),
                     sequence: session.sequence,
@@ -1177,7 +1268,12 @@ impl WorkspaceAttentionController {
             .live_terminal_attention
             .values()
             .filter(|attention| attention.workspace_id == workspace_id)
-            .map(|attention| attention.status.clone())
+            .map(|attention| attention.status.clone());
+        #[cfg(feature = "acp_tabs")]
+        let live_attention_status =
+            live_attention_status.chain(self.acp_workspace_attention(workspace_id));
+        let live_attention_status = live_attention_status
+            .filter(|status| *status != WorkspaceAttentionStatus::Idle)
             .max_by_key(attention_priority);
         let review_pending = self
             .store
@@ -1334,14 +1430,65 @@ impl WorkspaceAttentionController {
             return;
         }
 
-        self.show_popup_notification(notification, terminal_id, workspace_id, workspace_name, cx);
+        self.show_popup_notification(
+            notification,
+            AgentListTarget::Terminal(terminal_id.to_string()),
+            workspace_id,
+            workspace_name,
+            cx,
+        );
+    }
+
+    #[cfg(feature = "acp_tabs")]
+    fn maybe_show_acp_notification(
+        &mut self,
+        notification: TerminalLifecycleNotification,
+        thread_id: EntityId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self
+            .acp_thread_workspace_id(thread_id, cx)
+            .and_then(|workspace_id| self.store.read(cx).workspace(&workspace_id).cloned())
+        else {
+            log::debug!("no notification for ACP thread {thread_id:?}: no workspace shows it");
+            return;
+        };
+        let mode = TerminalSettings::get_global(cx).agent_notifications;
+        if !should_show_terminal_notification(mode, &workspace.id, &self.store, cx) {
+            return;
+        }
+        self.show_popup_notification(
+            notification,
+            AgentListTarget::AcpThread(thread_id),
+            &workspace.id,
+            &workspace_notification_title(&workspace),
+            cx,
+        );
+    }
+
+    #[cfg(feature = "acp_tabs")]
+    fn activate_notification_target(
+        &mut self,
+        workspace_id: &str,
+        target: &AgentListTarget,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            AgentListTarget::Terminal(terminal_id) => {
+                self.handle_native_notification_activation(workspace_id, Some(terminal_id), cx);
+            }
+            AgentListTarget::AcpThread(thread_id) => {
+                self.dismiss_notifications(cx);
+                self.open_acp_thread(*thread_id, cx);
+            }
+        }
     }
 
     #[cfg(feature = "acp_tabs")]
     fn show_popup_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
-        terminal_id: &str,
+        target: AgentListTarget,
         workspace_id: &str,
         workspace_name: &str,
         cx: &mut Context<Self>,
@@ -1362,16 +1509,11 @@ impl WorkspaceAttentionController {
         };
 
         let title = SharedString::from(notification.title());
-        let caption = SharedString::from(notification.caption());
+        let caption = SharedString::from(notification.caption(&target));
         let workspace_name_text = workspace_name.to_string();
         let workspace_name = SharedString::from(workspace_name.to_string());
         let icon = notification.icon();
         let options = AgentNotification::window_options(screen, cx);
-        let action_label = if self.live_terminal_view(terminal_id).is_some() {
-            "Open Tab"
-        } else {
-            "Open Workspace"
-        };
 
         let screen_window = match cx.open_window(options, {
             move |_window, cx| {
@@ -1382,7 +1524,6 @@ impl WorkspaceAttentionController {
                         icon,
                         Some(workspace_name.clone()),
                     )
-                    .with_action_label(action_label)
                 })
             }
         }) {
@@ -1416,10 +1557,9 @@ impl WorkspaceAttentionController {
         // a display change leaves the old popup (and its placement watch) to retry.
         self.dismiss_notifications(cx);
         let workspace_id = workspace_id.to_string();
-        let terminal_id = terminal_id.to_string();
         self.active_notification_target = Some(NotificationTarget {
             workspace_id: workspace_id.clone(),
-            terminal_id: terminal_id.clone(),
+            target: target.clone(),
             notification,
             workspace_name: workspace_name_text,
             placement,
@@ -1443,11 +1583,7 @@ impl WorkspaceAttentionController {
             .push(
                 cx.subscribe(&pop_up, move |this, _, event, cx| match event {
                     AgentNotificationEvent::Accepted => {
-                        this.handle_native_notification_activation(
-                            &workspace_id,
-                            Some(&terminal_id),
-                            cx,
-                        );
+                        this.activate_notification_target(&workspace_id, &target, cx);
                     }
                     AgentNotificationEvent::Dismissed => {
                         this.dismiss_notifications(cx);
@@ -1461,7 +1597,7 @@ impl WorkspaceAttentionController {
     fn show_popup_notification(
         &mut self,
         notification: TerminalLifecycleNotification,
-        _terminal_id: &str,
+        _target: AgentListTarget,
         workspace_id: &str,
         _workspace_name: &str,
         _cx: &mut Context<Self>,
@@ -1507,7 +1643,7 @@ impl WorkspaceAttentionController {
         }
 
         let notification = target.notification;
-        let terminal_id = target.terminal_id.clone();
+        let notification_target = target.target.clone();
         let workspace_id = target.workspace_id.clone();
         let workspace_name = target.workspace_name.clone();
         let this = cx.entity();
@@ -1517,7 +1653,7 @@ impl WorkspaceAttentionController {
             this.update(cx, |this, cx| {
                 this.show_popup_notification(
                     notification,
-                    &terminal_id,
+                    notification_target,
                     &workspace_id,
                     &workspace_name,
                     cx,
@@ -1532,11 +1668,7 @@ impl WorkspaceAttentionController {
         let Some(target) = self.active_notification_target.take() else {
             return;
         };
-        self.handle_native_notification_activation(
-            &target.workspace_id,
-            Some(&target.terminal_id),
-            cx,
-        );
+        self.activate_notification_target(&target.workspace_id, &target.target, cx);
     }
 
     #[cfg(not(feature = "acp_tabs"))]
@@ -1624,10 +1756,11 @@ impl TerminalLifecycleNotification {
     }
 
     #[cfg(feature = "acp_tabs")]
-    fn caption(self) -> &'static str {
-        match self {
-            Self::Completed => "Managed terminal task completed",
-            Self::PermissionRequest => "Approval is required to continue",
+    fn caption(self, target: &AgentListTarget) -> &'static str {
+        match (self, target) {
+            (Self::Completed, AgentListTarget::Terminal(_)) => "Managed terminal task completed",
+            (Self::Completed, AgentListTarget::AcpThread(_)) => "The agent finished its turn",
+            (Self::PermissionRequest, _) => "Approval is required to continue",
         }
     }
 
@@ -1646,7 +1779,11 @@ pub fn init(cx: &mut App) {
     }
 
     #[cfg(feature = "acp_tabs")]
-    acp_tabs::init(cx);
+    {
+        acp_tabs::init(cx);
+        // ACP conversations notify through the same popups as terminal agents.
+        cx.set_global(agent_ui::ExternalAgentNotifications);
+    }
 
     let attention_controller = cx.new(WorkspaceAttentionController::new);
     cx.set_global(GlobalAttentionController(attention_controller.clone()));
@@ -1661,6 +1798,37 @@ pub fn init(cx: &mut App) {
                     .retain(|thread| thread.upgrade().is_some());
                 controller.acp_threads.push(thread);
             });
+        }
+    })
+    .detach();
+
+    #[cfg(feature = "acp_tabs")]
+    cx.observe_new({
+        let attention_controller = attention_controller.clone();
+        move |thread: &mut AcpThread, _window, cx: &mut Context<AcpThread>| {
+            let is_subagent = thread.parent_session_id().is_some();
+            let thread = cx.entity();
+            attention_controller.update(cx, |controller, cx| {
+                controller.track_acp_thread(thread, is_subagent, cx);
+            });
+        }
+    })
+    .detach();
+
+    #[cfg(feature = "acp_tabs")]
+    cx.observe_new({
+        let attention_controller = attention_controller.clone();
+        move |thread_view: &mut agent_ui::ThreadView,
+              window,
+              cx: &mut Context<agent_ui::ThreadView>| {
+            if let Some(window) = window {
+                acp_agents::observe_thread_view_focus(
+                    thread_view,
+                    &attention_controller,
+                    window,
+                    cx,
+                );
+            }
         }
     })
     .detach();
@@ -1706,6 +1874,12 @@ pub fn init(cx: &mut App) {
                                 agent_in_foreground,
                                 cx,
                             );
+                            controller.refresh_screen_agent(&terminal_id, &terminal, cx);
+                        });
+                    }
+                    TerminalEvent::Wakeup => {
+                        attention_controller.update(cx, |controller, cx| {
+                            controller.handle_terminal_output(&terminal_id, &terminal, cx);
                         });
                     }
                     _ => {}
@@ -8677,6 +8851,42 @@ fn inferred_project_id_for_live_workspace(
     store
         .project_for_location(&project_location)
         .map(|project| project.id.clone())
+}
+
+/// What the tab would be called without an agent in it: the user's title for it, or the
+/// terminal's own.
+fn terminal_base_title(terminal_view: &TerminalView, cx: &App) -> String {
+    terminal_view
+        .custom_title()
+        .filter(|title| !title.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| terminal_view.terminal().read(cx).title(true))
+}
+
+fn terminal_agent_task_title(
+    session: &AgentSessionInfo,
+    terminal_view: &TerminalView,
+    cx: &App,
+) -> Option<String> {
+    let terminal = terminal_view.terminal().read(cx);
+    agent_task_title(
+        terminal_title_is_a_summary(session.kind, session.running)
+            .then_some(terminal.breadcrumb_text.as_str()),
+        session.first_prompt.as_deref(),
+        &terminal_base_title(terminal_view, cx),
+    )
+}
+
+fn agent_display_name(
+    kind: Option<AgentKind>,
+    screen_agent: Option<ScreenAgent>,
+) -> Option<&'static str> {
+    match (kind, screen_agent) {
+        (Some(AgentKind::Claude), _) => Some("Claude Code"),
+        (Some(AgentKind::Codex), _) => Some("Codex"),
+        (None, Some(screen_agent)) => Some(screen_agent.display_name()),
+        (None, None) => None,
+    }
 }
 
 fn terminal_runs_agent(terminal: &Terminal) -> bool {

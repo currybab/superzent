@@ -321,6 +321,8 @@ pub struct ConversationView {
     focus_handle: FocusHandle,
     notifications: Vec<WindowHandle<AgentNotification>>,
     notification_subscriptions: HashMap<WindowHandle<AgentNotification>, Vec<Subscription>>,
+    // The view's host shows its own notifications for this conversation.
+    notifies_externally: bool,
     auth_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -553,6 +555,7 @@ impl ConversationView {
                 cx,
             ),
             notifications: Vec::new(),
+            notifies_externally: false,
             notification_subscriptions: HashMap::default(),
             auth_task: None,
             _subscriptions: subscriptions,
@@ -1166,6 +1169,10 @@ impl ConversationView {
 
     pub fn workspace(&self) -> &WeakEntity<Workspace> {
         &self.workspace
+    }
+
+    pub(crate) fn set_notifies_externally(&mut self, notifies_externally: bool) {
+        self.notifies_externally = notifies_externally;
     }
 
     pub fn title(&self, _cx: &App) -> SharedString {
@@ -2411,7 +2418,7 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.notifications.is_empty() {
+        if !self.notifications.is_empty() || self.notifies_externally {
             return;
         }
 

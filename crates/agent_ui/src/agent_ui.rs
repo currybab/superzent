@@ -69,13 +69,15 @@ pub use crate::agent_panel::{
     AgentPanel, AgentPanelEvent, ConcreteAssistantPanelDelegate, WorktreeCreationStatus,
 };
 use crate::agent_registry_ui::AgentRegistryPage;
+pub use crate::conversation_view::ThreadView;
 pub use crate::external_tabs::{
-    active_external_acp_agent_name, active_external_acp_agent_name_in_pane, focus_external_acp_tab,
+    ExternalAcpTabThread, activate_external_acp_tab, active_external_acp_agent_name,
+    active_external_acp_agent_name_in_pane, external_acp_tab_threads, focus_external_acp_tab,
     open_external_acp_history, open_external_acp_tab, pane_has_external_acp_item,
     show_external_acp_history,
 };
 pub use crate::inline_assistant::InlineAssistant;
-pub use crate::ui::{AgentNotification, AgentNotificationEvent};
+pub use crate::ui::{AgentNotification, AgentNotificationEvent, ExternalAgentNotifications};
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
 pub(crate) use conversation_view::ConversationView as ConnectionView;
 pub(crate) use conversation_view::ConversationView;

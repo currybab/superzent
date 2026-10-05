@@ -1,7 +1,7 @@
 use std::{any::Any, path::PathBuf, rc::Rc};
 
 use acp_thread::{
-    AgentConnection, AgentSessionInfo, AgentSessionList, AgentSessionListRequest,
+    AcpThread, AgentConnection, AgentSessionInfo, AgentSessionList, AgentSessionListRequest,
     AgentSessionListResponse, SessionListUpdate,
 };
 use agent::ThreadStore;
@@ -22,7 +22,7 @@ use workspace::item::TabContentParams;
 use workspace::{Item, Pane, Toast, Workspace, notifications::NotificationId};
 
 use crate::{
-    Agent, AgentInitialContent, ConnectionView,
+    Agent, AgentInitialContent, ConnectionView, ExternalAgentNotifications,
     agent_connection_store::AgentConnectionStore,
     thread_history::{ThreadHistory, ThreadHistoryEvent, ThreadHistoryOptions},
 };
@@ -216,6 +216,53 @@ pub fn active_external_acp_agent_name_in_pane(pane: &Pane, cx: &App) -> Option<S
 pub fn pane_has_external_acp_item(pane: &Pane) -> bool {
     pane.active_item_as::<ExternalAcpTabItem>().is_some()
         || pane.active_item_as::<ExternalAcpHistoryItem>().is_some()
+}
+
+/// The conversation an ACP tab shows, for listing it outside the tab.
+pub struct ExternalAcpTabThread {
+    pub item_id: EntityId,
+    pub thread: Entity<AcpThread>,
+    pub display_name: SharedString,
+    pub icon_path: Option<SharedString>,
+}
+
+pub fn external_acp_tab_threads(workspace: &Workspace, cx: &App) -> Vec<ExternalAcpTabThread> {
+    workspace
+        .items_of_type::<ExternalAcpTabItem>(cx)
+        .filter_map(|item| {
+            let tab = item.read(cx);
+            let thread = tab.connection_view.read(cx).parent_thread(cx)?;
+            Some(ExternalAcpTabThread {
+                item_id: item.entity_id(),
+                thread: thread.read(cx).thread.clone(),
+                display_name: tab.display_name.clone(),
+                icon_path: tab.icon_path.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Brings an ACP tab to the front showing its conversation, leaving its history view if it
+/// was open. Returns whether the workspace holds the tab.
+pub fn activate_external_acp_tab(
+    workspace: &mut Workspace,
+    item_id: EntityId,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    let Some(tab) = workspace
+        .items_of_type::<ExternalAcpTabItem>(cx)
+        .find(|tab| tab.entity_id() == item_id)
+    else {
+        return false;
+    };
+    workspace.activate_item(&tab, true, true, window, cx);
+    tab.update(cx, |tab, cx| {
+        if tab.history_mode == ExternalAcpTabMode::History {
+            tab.hide_history(window, cx);
+        }
+    });
+    true
 }
 
 pub fn focus_external_acp_tab(
@@ -741,7 +788,7 @@ impl ExternalAcpTabItem {
         });
 
         cx.new(|cx| {
-            ConnectionView::new(
+            let mut connection_view = ConnectionView::new(
                 server,
                 connection_store,
                 connection_key,
@@ -755,7 +802,9 @@ impl ExternalAcpTabItem {
                 None,
                 window,
                 cx,
-            )
+            );
+            connection_view.set_notifies_externally(cx.has_global::<ExternalAgentNotifications>());
+            connection_view
         })
     }
 

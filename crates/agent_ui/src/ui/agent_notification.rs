@@ -8,12 +8,17 @@ use std::rc::Rc;
 use theme;
 use ui::{Render, prelude::*};
 
+/// Set by an embedder that shows its own notifications when an agent in an external ACP
+/// tab finishes or needs approval, so those conversations don't pop up theirs as well.
+pub struct ExternalAgentNotifications;
+
+impl gpui::Global for ExternalAgentNotifications {}
+
 pub struct AgentNotification {
     title: SharedString,
     caption: SharedString,
     icon: IconName,
     project_name: Option<SharedString>,
-    action_label: SharedString,
 }
 
 impl AgentNotification {
@@ -28,13 +33,7 @@ impl AgentNotification {
             caption: caption.into(),
             icon,
             project_name: project_name.map(|name| name.into()),
-            action_label: "View Panel".into(),
         }
-    }
-
-    pub fn with_action_label(mut self, action_label: impl Into<SharedString>) -> Self {
-        self.action_label = action_label.into();
-        self
     }
 
     pub fn window_options(screen: Rc<dyn PlatformDisplay>, cx: &App) -> WindowOptions {
@@ -187,7 +186,7 @@ impl Render for AgentNotification {
                     .gap_1()
                     .items_center()
                     .child(
-                        Button::new("open", self.action_label.clone())
+                        Button::new("open", "View Panel")
                             .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                             .full_width()
                             .on_click({
