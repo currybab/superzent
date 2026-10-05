@@ -142,6 +142,9 @@ impl WorkspaceAttentionController {
             cx.subscribe(&thread, Self::handle_acp_thread_event),
             cx.observe(&thread, Self::handle_acp_thread_changed),
             cx.observe_release(&thread, move |controller, _, cx| {
+                controller.store.update(cx, |store, _| {
+                    store.forget_unreviewed_terminal(&AgentListTarget::AcpThread(thread_id).key());
+                });
                 if let Some(workspace_id) = controller
                     .acp_sessions
                     .remove(&thread_id)
@@ -268,6 +271,18 @@ impl WorkspaceAttentionController {
         let workspace_id = self
             .acp_thread_workspace_id(thread_id, cx)
             .or_else(|| session.workspace_id.clone());
+        // Activating the workspace clears its review unless something in it is still
+        // unseen, so an unseen conversation is registered like an unseen terminal.
+        let unseen_review_key = AgentListTarget::AcpThread(thread_id).key();
+        let needs_review = session.needs_review;
+        self.store.update(cx, |store, cx| match &workspace_id {
+            Some(workspace_id) if needs_review => {
+                store.mark_terminal_unreviewed(&unseen_review_key, workspace_id);
+            }
+            _ => {
+                store.mark_terminal_reviewed(&unseen_review_key, cx);
+            }
+        });
         let Some(session) = self.acp_sessions.get_mut(&thread_id) else {
             return;
         };
