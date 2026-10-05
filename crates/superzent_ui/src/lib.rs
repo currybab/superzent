@@ -870,14 +870,31 @@ impl WorkspaceAttentionController {
             return;
         }
 
-        let Some((terminal_id, workspace_id)) =
+        let next_terminal =
             next_attention_terminal(&self.attention_queue, self.focused_terminal_id()).and_then(
                 |terminal_id| {
                     let entry = self.attention_queue.get(terminal_id)?;
-                    Some((terminal_id.to_string(), entry.workspace_id.clone()))
+                    Some((
+                        attention_queue_priority(entry.attention),
+                        entry.sequence,
+                        terminal_id.to_string(),
+                        entry.workspace_id.clone(),
+                    ))
                 },
-            )
-        else {
+            );
+        // ACP conversations wait alongside terminals, ordered by the same rules.
+        #[cfg(feature = "acp_tabs")]
+        if let Some((priority, sequence, thread_id)) = self.next_acp_attention(cx)
+            && next_terminal
+                .as_ref()
+                .is_none_or(|(terminal_priority, terminal_sequence, ..)| {
+                    (priority, sequence) < (*terminal_priority, *terminal_sequence)
+                })
+        {
+            self.open_acp_thread(thread_id, cx);
+            return;
+        }
+        let Some((_, _, terminal_id, workspace_id)) = next_terminal else {
             return;
         };
         self.handle_native_notification_activation(&workspace_id, Some(&terminal_id), cx);

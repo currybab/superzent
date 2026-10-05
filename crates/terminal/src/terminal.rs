@@ -1299,9 +1299,9 @@ impl Terminal {
         &self.last_content
     }
 
-    /// The bottom screenful of the terminal as plain text, regardless of where the user has
-    /// scrolled. It ends at the cursor or the last non-blank row, whichever is lower, so an
-    /// agent that clears the rows below its output is still read in full.
+    /// The terminal's screen as plain text, regardless of where the user has scrolled. It
+    /// ends at the cursor or the last non-blank row, whichever is lower, and leaves out the
+    /// scrollback, where a stale prompt or status line could outlive the agent's redraw.
     pub fn bottom_screen_text(&self) -> String {
         let term = self.term.lock();
         let grid = term.grid();
@@ -1320,8 +1320,7 @@ impl Terminal {
             .find(|line| !row_text(*line).is_empty())
             .unwrap_or(0);
         let bottom = last_non_blank.max(grid.cursor.point.line.0);
-        let top = (bottom - screen_lines + 1).max(-(grid.history_size() as i32));
-        let mut text = (top..=bottom).map(row_text).collect::<Vec<_>>().join("\n");
+        let mut text = (0..=bottom).map(row_text).collect::<Vec<_>>().join("\n");
         text.truncate(text.trim_end().len());
         text
     }

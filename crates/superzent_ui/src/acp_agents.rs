@@ -8,11 +8,13 @@ use workspace::{MultiWorkspace, Workspace};
 
 use superzent_model::WorkspaceAttentionStatus;
 
+use terminal_view::TerminalTabAttention;
+
 use crate::{
     TerminalLifecycleNotification, WorkspaceAttentionController,
     agent_list::{AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget},
-    matched_workspace_id_for_candidate_locations, ordered_multi_workspace_windows,
-    workspace_location_candidates,
+    attention_queue_priority, matched_workspace_id_for_candidate_locations,
+    ordered_multi_workspace_windows, workspace_location_candidates,
 };
 
 // Matches the cap on prompts that agent CLIs report through hooks.
@@ -26,6 +28,9 @@ pub(crate) struct AcpSessionInfo {
     needs_review: bool,
     // What the conversation last gave its workspace's attention, and which workspace.
     attention: WorkspaceAttentionStatus,
+    // When it last came to need approval or review, ordering it among the agents that
+    // `go_to_agent_attention` can jump to.
+    attention_sequence: u64,
     workspace_id: Option<String>,
     _subscriptions: [Subscription; 3],
 }
@@ -176,6 +181,7 @@ impl WorkspaceAttentionController {
                 working_since: None,
                 needs_review: false,
                 attention: WorkspaceAttentionStatus::Idle,
+                attention_sequence: 0,
                 workspace_id: None,
                 _subscriptions: subscriptions,
             },
@@ -301,6 +307,15 @@ impl WorkspaceAttentionController {
         if session.attention == attention && session.workspace_id == workspace_id {
             return;
         }
+        if session.attention != attention
+            && matches!(
+                attention,
+                WorkspaceAttentionStatus::Permission | WorkspaceAttentionStatus::Review
+            )
+        {
+            session.attention_sequence = self.next_attention_sequence;
+            self.next_attention_sequence += 1;
+        }
         session.attention = attention;
         let previous_workspace_id = std::mem::replace(&mut session.workspace_id, workspace_id);
         let workspace_id = session.workspace_id.clone();
@@ -312,6 +327,29 @@ impl WorkspaceAttentionController {
         if let Some(workspace_id) = workspace_id {
             self.recompute_workspace_attention(&workspace_id, cx);
         }
+    }
+
+    /// The conversation most owed a look, other than the one in front of the user: its
+    /// queue priority, when it came to need it, and the conversation.
+    pub(crate) fn next_acp_attention(&self, cx: &App) -> Option<(u8, u64, EntityId)> {
+        self.acp_sessions
+            .iter()
+            .filter(|(thread_id, _)| !self.acp_thread_viewed(**thread_id, cx))
+            .filter_map(|(thread_id, session)| {
+                let attention = match session.attention {
+                    WorkspaceAttentionStatus::Permission => TerminalTabAttention::NeedsApproval,
+                    WorkspaceAttentionStatus::Review => TerminalTabAttention::NeedsReview,
+                    WorkspaceAttentionStatus::Working | WorkspaceAttentionStatus::Idle => {
+                        return None;
+                    }
+                };
+                Some((
+                    attention_queue_priority(attention),
+                    session.attention_sequence,
+                    *thread_id,
+                ))
+            })
+            .min()
     }
 
     /// The live attention ACP conversations give a workspace.
