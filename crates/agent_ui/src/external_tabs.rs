@@ -22,7 +22,7 @@ use workspace::item::TabContentParams;
 use workspace::{Item, Pane, Toast, Workspace, notifications::NotificationId};
 
 use crate::{
-    Agent, AgentInitialContent, ConnectionView,
+    Agent, AgentInitialContent, ConnectionView, ExternalAgentNotifications,
     agent_connection_store::AgentConnectionStore,
     thread_history::{ThreadHistory, ThreadHistoryEvent, ThreadHistoryOptions},
 };
@@ -765,7 +765,7 @@ impl ExternalAcpTabItem {
         });
 
         cx.new(|cx| {
-            ConnectionView::new(
+            let mut connection_view = ConnectionView::new(
                 server,
                 connection_store,
                 connection_key,
@@ -779,7 +779,10 @@ impl ExternalAcpTabItem {
                 None,
                 window,
                 cx,
-            )
+            );
+            connection_view
+                .set_notifies_externally(cx.has_global::<ExternalAgentNotifications>());
+            connection_view
         })
     }
 

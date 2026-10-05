@@ -1251,7 +1251,12 @@ impl WorkspaceAttentionController {
             .live_terminal_attention
             .values()
             .filter(|attention| attention.workspace_id == workspace_id)
-            .map(|attention| attention.status.clone())
+            .map(|attention| attention.status.clone());
+        #[cfg(feature = "acp_tabs")]
+        let live_attention_status =
+            live_attention_status.chain(self.acp_workspace_attention(workspace_id));
+        let live_attention_status = live_attention_status
+            .filter(|status| *status != WorkspaceAttentionStatus::Idle)
             .max_by_key(attention_priority);
         let review_pending = self
             .store

@@ -13,8 +13,11 @@ use crate::WorkspaceAttentionController;
 // for a moment rather than on every chunk.
 const SCREEN_CHECK_DELAY: Duration = Duration::from_millis(300);
 // A screen that stops showing work without showing a prompt may be mid-redraw, so the
-// turn only counts as over once it has stayed that way for a while.
+// turn only counts as over once it has stayed that way, with no output, for a while.
 const IDLE_CONFIRMATION: Duration = Duration::from_millis(600);
+// An agent that keeps redrawing an idle screen (a clock, an animation) would otherwise
+// never be seen to stop.
+const IDLE_CONFIRMATION_LIMIT: Duration = Duration::from_secs(3);
 const IDLE_RECHECK_DELAY: Duration = Duration::from_millis(250);
 
 /// An agent CLI without lifecycle hooks, whose state is read from its screen and reported
@@ -23,6 +26,7 @@ pub(crate) struct ScreenAgentTracker {
     agent: ScreenAgent,
     state: ScreenAgentState,
     idle_since: Option<Instant>,
+    last_output: Instant,
     check: Option<Task<()>>,
 }
 
@@ -36,6 +40,7 @@ pub(crate) enum ScreenStateStep {
 pub(crate) fn next_screen_state(
     current: ScreenAgentState,
     idle_since: Option<Instant>,
+    last_output: Instant,
     detection: ScreenDetection,
     now: Instant,
 ) -> ScreenStateStep {
@@ -45,12 +50,14 @@ pub(crate) fn next_screen_state(
     if detection.state != ScreenAgentState::Idle || detection.visible {
         return ScreenStateStep::Commit(detection.state);
     }
-    match idle_since {
-        Some(since) if now.duration_since(since) >= IDLE_CONFIRMATION => {
-            ScreenStateStep::Commit(ScreenAgentState::Idle)
-        }
-        Some(since) => ScreenStateStep::ConfirmIdle { since },
-        None => ScreenStateStep::ConfirmIdle { since: now },
+    let since = idle_since.unwrap_or(now);
+    let quiet_for = now.saturating_duration_since(since.max(last_output));
+    if quiet_for >= IDLE_CONFIRMATION
+        || now.saturating_duration_since(since) >= IDLE_CONFIRMATION_LIMIT
+    {
+        ScreenStateStep::Commit(ScreenAgentState::Idle)
+    } else {
+        ScreenStateStep::ConfirmIdle { since }
     }
 }
 
@@ -119,6 +126,7 @@ impl WorkspaceAttentionController {
                 agent,
                 state: ScreenAgentState::Idle,
                 idle_since: None,
+                last_output: Instant::now(),
                 check: None,
             },
         );
@@ -143,7 +151,8 @@ impl WorkspaceAttentionController {
         if terminal.read(cx).task().is_some() {
             self.refresh_screen_agent(terminal_id, terminal, cx);
         }
-        if self.screen_agents.contains_key(terminal_id) {
+        if let Some(tracker) = self.screen_agents.get_mut(terminal_id) {
+            tracker.last_output = Instant::now();
             self.schedule_screen_check(terminal_id, terminal.downgrade(), SCREEN_CHECK_DELAY, cx);
         }
     }
@@ -193,7 +202,13 @@ impl WorkspaceAttentionController {
                 &live_terminal.breadcrumb_text,
             )
         };
-        match next_screen_state(tracker.state, tracker.idle_since, detection, Instant::now()) {
+        match next_screen_state(
+            tracker.state,
+            tracker.idle_since,
+            tracker.last_output,
+            detection,
+            Instant::now(),
+        ) {
             ScreenStateStep::Keep => tracker.idle_since = None,
             ScreenStateStep::ConfirmIdle { since } => {
                 tracker.idle_since = Some(since);
@@ -243,6 +258,7 @@ mod tests {
             next_screen_state(
                 ScreenAgentState::Idle,
                 None,
+                now,
                 detection(ScreenAgentState::Working, true),
                 now
             ),
@@ -252,6 +268,7 @@ mod tests {
             next_screen_state(
                 ScreenAgentState::Working,
                 None,
+                now,
                 detection(ScreenAgentState::Blocked, true),
                 now
             ),
@@ -261,6 +278,7 @@ mod tests {
             next_screen_state(
                 ScreenAgentState::Working,
                 Some(now),
+                now,
                 detection(ScreenAgentState::Working, true),
                 now
             ),
@@ -269,17 +287,18 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_ends_once_the_screen_stays_idle() {
+    fn a_turn_ends_once_the_screen_stays_idle_and_quiet() {
         let start = Instant::now();
         let idle = detection(ScreenAgentState::Idle, false);
         assert_eq!(
-            next_screen_state(ScreenAgentState::Working, None, idle, start),
+            next_screen_state(ScreenAgentState::Working, None, start, idle, start),
             ScreenStateStep::ConfirmIdle { since: start }
         );
         assert_eq!(
             next_screen_state(
                 ScreenAgentState::Working,
                 Some(start),
+                start,
                 idle,
                 start + Duration::from_millis(250)
             ),
@@ -289,6 +308,7 @@ mod tests {
             next_screen_state(
                 ScreenAgentState::Working,
                 Some(start),
+                start,
                 idle,
                 start + IDLE_CONFIRMATION
             ),
@@ -297,13 +317,42 @@ mod tests {
     }
 
     #[test]
+    fn output_during_the_confirmation_defers_the_end_of_a_turn() {
+        let start = Instant::now();
+        let idle = detection(ScreenAgentState::Idle, false);
+        let output = start + Duration::from_millis(500);
+        assert_eq!(
+            next_screen_state(
+                ScreenAgentState::Working,
+                Some(start),
+                output,
+                idle,
+                start + IDLE_CONFIRMATION
+            ),
+            ScreenStateStep::ConfirmIdle { since: start }
+        );
+        assert_eq!(
+            next_screen_state(
+                ScreenAgentState::Working,
+                Some(start),
+                start + IDLE_CONFIRMATION_LIMIT,
+                idle,
+                start + IDLE_CONFIRMATION_LIMIT
+            ),
+            ScreenStateStep::Commit(ScreenAgentState::Idle)
+        );
+    }
+
+    #[test]
     fn a_visible_prompt_ends_the_turn_at_once() {
+        let now = Instant::now();
         assert_eq!(
             next_screen_state(
                 ScreenAgentState::Working,
                 None,
+                now,
                 detection(ScreenAgentState::Idle, true),
-                Instant::now()
+                now
             ),
             ScreenStateStep::Commit(ScreenAgentState::Idle)
         );

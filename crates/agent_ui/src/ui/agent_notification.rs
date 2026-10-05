@@ -8,8 +8,8 @@ use std::rc::Rc;
 use theme;
 use ui::{Render, prelude::*};
 
-/// Set by an embedder that shows its own notifications when an agent finishes or needs
-/// approval, so conversations don't pop up theirs as well.
+/// Set by an embedder that shows its own notifications when an agent in an external ACP
+/// tab finishes or needs approval, so those conversations don't pop up theirs as well.
 pub struct ExternalAgentNotifications;
 
 impl gpui::Global for ExternalAgentNotifications {}

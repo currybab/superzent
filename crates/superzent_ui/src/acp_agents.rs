@@ -6,6 +6,8 @@ use gpui::{AnyWindowHandle, App, Context, Entity, EntityId, Subscription, Window
 use ui::IconName;
 use workspace::{MultiWorkspace, Workspace};
 
+use superzent_model::WorkspaceAttentionStatus;
+
 use crate::{
     TerminalLifecycleNotification, WorkspaceAttentionController,
     agent_list::{AgentListEntry, AgentListGroup, AgentListIcon, AgentListTarget},
@@ -22,7 +24,19 @@ pub(crate) struct AcpSessionInfo {
     sequence: u64,
     working_since: Option<Instant>,
     needs_review: bool,
-    _subscriptions: [Subscription; 2],
+    // What the conversation last gave its workspace's attention, and which workspace.
+    attention: WorkspaceAttentionStatus,
+    workspace_id: Option<String>,
+    _subscriptions: [Subscription; 3],
+}
+
+fn workspace_attention_for_group(group: AgentListGroup) -> WorkspaceAttentionStatus {
+    match group {
+        AgentListGroup::NeedsApproval => WorkspaceAttentionStatus::Permission,
+        AgentListGroup::NeedsReview => WorkspaceAttentionStatus::Review,
+        AgentListGroup::Working => WorkspaceAttentionStatus::Working,
+        AgentListGroup::Idle => WorkspaceAttentionStatus::Idle,
+    }
 }
 
 pub(crate) struct FocusedAcpThread {
@@ -101,10 +115,16 @@ impl WorkspaceAttentionController {
                                 parent_id,
                                 cx,
                             );
+                            controller.sync_acp_attention(parent_id, cx);
                         }
                         cx.notify();
                     }
-                    AcpThreadEvent::ToolAuthorizationReceived(_) => cx.notify(),
+                    AcpThreadEvent::ToolAuthorizationReceived(_) => {
+                        if let Some(parent_id) = controller.acp_parent_thread_id(&subagent, cx) {
+                            controller.sync_acp_attention(parent_id, cx);
+                        }
+                        cx.notify();
+                    }
                     _ => {}
                 });
             let thread_id = thread.entity_id();
@@ -120,8 +140,15 @@ impl WorkspaceAttentionController {
         let thread_id = thread.entity_id();
         let subscriptions = [
             cx.subscribe(&thread, Self::handle_acp_thread_event),
+            cx.observe(&thread, Self::handle_acp_thread_changed),
             cx.observe_release(&thread, move |controller, _, cx| {
-                controller.acp_sessions.remove(&thread_id);
+                if let Some(workspace_id) = controller
+                    .acp_sessions
+                    .remove(&thread_id)
+                    .and_then(|session| session.workspace_id)
+                {
+                    controller.recompute_workspace_attention(&workspace_id, cx);
+                }
                 cx.notify();
             }),
         ];
@@ -133,6 +160,8 @@ impl WorkspaceAttentionController {
                 sequence,
                 working_since: None,
                 needs_review: false,
+                attention: WorkspaceAttentionStatus::Idle,
+                workspace_id: None,
                 _subscriptions: subscriptions,
             },
         );
@@ -145,18 +174,19 @@ impl WorkspaceAttentionController {
         cx: &mut Context<Self>,
     ) {
         let thread_id = thread.entity_id();
-        let generating = thread.read(cx).status() == ThreadStatus::Generating;
-        let viewed = self.acp_thread_viewed(thread_id, cx);
-        let Some(session) = self.acp_sessions.get_mut(&thread_id) else {
+        if !self.acp_sessions.contains_key(&thread_id) {
             return;
-        };
-
+        }
+        let viewed = self.acp_thread_viewed(thread_id, cx);
+        let mut changed = self.sync_acp_working(&thread, cx);
         match event {
             AcpThreadEvent::Stopped(_) | AcpThreadEvent::Error | AcpThreadEvent::Refusal => {
-                session.working_since = None;
-                session.needs_review = !viewed;
+                if let Some(session) = self.acp_sessions.get_mut(&thread_id) {
+                    session.working_since = None;
+                    session.needs_review = !viewed;
+                }
                 self.notify_unless_viewed(TerminalLifecycleNotification::Completed, thread_id, cx);
-                cx.notify();
+                changed = true;
             }
             AcpThreadEvent::ToolAuthorizationRequested(_) => {
                 self.notify_unless_viewed(
@@ -164,21 +194,7 @@ impl WorkspaceAttentionController {
                     thread_id,
                     cx,
                 );
-                cx.notify();
-            }
-            AcpThreadEvent::NewEntry
-            | AcpThreadEvent::EntryUpdated(_)
-            | AcpThreadEvent::EntriesRemoved(_) => {
-                // Entries stream in while the agent works, so only a change in status is
-                // worth rebuilding the list for.
-                if generating == session.working_since.is_some() {
-                    return;
-                }
-                session.working_since = generating.then(Instant::now);
-                if generating {
-                    session.needs_review = false;
-                }
-                cx.notify();
+                changed = true;
             }
             // The agent reports its commands and options once the session is set up, by
             // which time its tab shows the thread and can be listed.
@@ -188,11 +204,98 @@ impl WorkspaceAttentionController {
             | AcpThreadEvent::PromptCapabilitiesUpdated
             | AcpThreadEvent::AvailableCommandsUpdated(_)
             | AcpThreadEvent::ModeUpdated(_)
-            | AcpThreadEvent::ConfigOptionsUpdated(_) => cx.notify(),
-            AcpThreadEvent::TokenUsageUpdated
+            | AcpThreadEvent::ConfigOptionsUpdated(_) => changed = true,
+            // Entries stream in while the agent works, so only a change in status (caught
+            // above) is worth rebuilding the list for.
+            AcpThreadEvent::NewEntry
+            | AcpThreadEvent::EntryUpdated(_)
+            | AcpThreadEvent::EntriesRemoved(_)
+            | AcpThreadEvent::TokenUsageUpdated
             | AcpThreadEvent::Retry(_)
             | AcpThreadEvent::SubagentSpawned(_) => {}
         }
+        if changed {
+            self.sync_acp_attention(thread_id, cx);
+            cx.notify();
+        }
+    }
+
+    /// Catches the thread starting or stopping work. A retried turn starts without adding
+    /// an entry, so this runs on every event and every change of the thread.
+    fn sync_acp_working(&mut self, thread: &Entity<AcpThread>, cx: &App) -> bool {
+        let generating = thread.read(cx).status() == ThreadStatus::Generating;
+        let Some(session) = self.acp_sessions.get_mut(&thread.entity_id()) else {
+            return false;
+        };
+        if generating == session.working_since.is_some() {
+            return false;
+        }
+        session.working_since = generating.then(Instant::now);
+        if generating {
+            session.needs_review = false;
+        }
+        true
+    }
+
+    fn handle_acp_thread_changed(&mut self, thread: Entity<AcpThread>, cx: &mut Context<Self>) {
+        if self.sync_acp_working(&thread, cx) {
+            self.sync_acp_attention(thread.entity_id(), cx);
+            cx.notify();
+        }
+    }
+
+    /// Carries the conversation's state over to its workspace's attention, as terminal
+    /// agents' hooks do.
+    fn sync_acp_attention(&mut self, thread_id: EntityId, cx: &mut Context<Self>) {
+        let Some(thread) = self
+            .acp_threads
+            .iter()
+            .filter_map(|thread| thread.upgrade())
+            .find(|thread| thread.entity_id() == thread_id)
+        else {
+            return;
+        };
+        let Some(session) = self.acp_sessions.get(&thread_id) else {
+            return;
+        };
+        let attention = workspace_attention_for_group(acp_thread_group(
+            self.acp_thread_awaits_approval(thread.read(cx), cx),
+            session.needs_review,
+            thread.read(cx).status() == ThreadStatus::Generating,
+        ));
+        // Focus changes arrive while their window is being updated, when no tab in it can
+        // be read; the conversation hasn't moved then.
+        let workspace_id = self
+            .acp_thread_workspace_id(thread_id, cx)
+            .or_else(|| session.workspace_id.clone());
+        let Some(session) = self.acp_sessions.get_mut(&thread_id) else {
+            return;
+        };
+        if session.attention == attention && session.workspace_id == workspace_id {
+            return;
+        }
+        session.attention = attention;
+        let previous_workspace_id = std::mem::replace(&mut session.workspace_id, workspace_id);
+        let workspace_id = session.workspace_id.clone();
+        if let Some(previous_workspace_id) = previous_workspace_id
+            && Some(&previous_workspace_id) != workspace_id.as_ref()
+        {
+            self.recompute_workspace_attention(&previous_workspace_id, cx);
+        }
+        if let Some(workspace_id) = workspace_id {
+            self.recompute_workspace_attention(&workspace_id, cx);
+        }
+    }
+
+    /// The live attention ACP conversations give a workspace.
+    pub(crate) fn acp_workspace_attention<'a>(
+        &'a self,
+        workspace_id: &'a str,
+    ) -> impl Iterator<Item = WorkspaceAttentionStatus> + 'a {
+        self.acp_sessions
+            .values()
+            .filter(move |session| session.workspace_id.as_deref() == Some(workspace_id))
+            .map(|session| session.attention.clone())
     }
 
     fn notify_unless_viewed(
@@ -234,6 +337,7 @@ impl WorkspaceAttentionController {
             if let Some(session) = self.acp_sessions.get_mut(&thread_id) {
                 session.needs_review = false;
             }
+            self.sync_acp_attention(thread_id, cx);
             if self
                 .active_notification_target
                 .as_ref()
