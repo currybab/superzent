@@ -773,6 +773,15 @@ impl WorkspaceAttentionController {
             return;
         };
         let terminal_id = event.terminal_id.clone();
+        // A turn's completion can arrive after its agent exited, and the session it names
+        // has ended.
+        let agent_exited = self
+            .agent_sessions
+            .get(&terminal_id)
+            .is_some_and(|session| !session.running);
+        if agent_exited && update != AgentResumeUpdate::Clear {
+            return;
+        }
         match update {
             AgentResumeUpdate::Clear => {
                 *self
@@ -8985,13 +8994,16 @@ fn apply_agent_resume(
         terminal_view.update(cx, |terminal_view, cx| {
             // A preset's agent runs with the environment the preset gave its task, and one in
             // a restored terminal with the environment that was restored.
-            let environment = match terminal_view.terminal().read(cx).task() {
+            let mut environment = match terminal_view.terminal().read(cx).task() {
                 Some(task) => agent_launch_environment(&task.spawned_task.env),
                 None => terminal_view.launch_environment().clone(),
             };
-            let update = update.map(|agent_resume| AgentResume {
-                environment,
-                ..agent_resume
+            let update = update.map(|agent_resume| {
+                environment.extend(agent_resume.environment);
+                AgentResume {
+                    environment,
+                    ..agent_resume
+                }
             });
             terminal_view.set_agent_resume(update, cx);
         });
@@ -9023,9 +9035,22 @@ fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
                 .session_id
                 .clone()
                 .or_else(|| kind.resumed_session_id(launch_args))?;
+            // The agent's own `CODEX_HOME`, which its shell may have set by hand, is where
+            // its session has to be looked up again.
+            let environment = event
+                .codex_home
+                .iter()
+                .filter(|_| kind == AgentKind::Codex)
+                .map(|codex_home| {
+                    (
+                        "CODEX_HOME".to_string(),
+                        codex_home.to_string_lossy().into_owned(),
+                    )
+                })
+                .collect();
             let agent_resume = AgentResume {
                 command: kind.resume_command(&session_id, launch_args)?,
-                environment: BTreeMap::new(),
+                environment,
             };
             Some(match kind {
                 AgentKind::Claude => AgentResumeUpdate::Set(agent_resume),
@@ -10523,10 +10548,14 @@ mod tests {
             None,
         );
         resumed_codex.launch_args = Some(vec!["resume".to_string(), "019a".to_string()]);
+        resumed_codex.codex_home = Some(PathBuf::from("/work/.codex"));
         assert_eq!(
             agent_resume_update(&resumed_codex),
             Some(AgentResumeUpdate::SetIfCodexSaved {
-                agent_resume: agent_resume("codex resume 019a"),
+                agent_resume: AgentResume {
+                    command: "codex resume 019a".to_string(),
+                    environment: [("CODEX_HOME".to_string(), "/work/.codex".to_string())].into(),
+                },
                 session_id: "019a".to_string(),
             })
         );
