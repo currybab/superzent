@@ -164,9 +164,12 @@ pub struct TerminalView {
     // The agent session running in the terminal, saved so it can be resumed after a
     // restart.
     agent_resume: Option<AgentResume>,
+    // Whether a task terminal's row holds a session, which then has to be cleared too.
+    saved_agent_resume: bool,
     // A session from the last run, resumed once the restored shell is ready for input.
     pending_resume: Option<AgentResume>,
-    pending_resume_task: Option<Task<()>>,
+    pending_resume_settle: Option<Task<()>>,
+    pending_resume_deadline: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
 }
@@ -369,8 +372,10 @@ impl TerminalView {
             tab_agent_icon: None,
             tab_agent_title: None,
             agent_resume: None,
+            saved_agent_resume: false,
             pending_resume: None,
-            pending_resume_task: None,
+            pending_resume_settle: None,
+            pending_resume_deadline: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
         }
@@ -514,28 +519,52 @@ impl TerminalView {
 
     /// Records the agent session running in the terminal, or that none is.
     pub fn set_agent_resume(&mut self, agent_resume: Option<AgentResume>, cx: &mut Context<Self>) {
-        if self.agent_resume != agent_resume {
-            self.agent_resume = agent_resume;
-            self.needs_serialize = true;
-            cx.emit(ItemEvent::UpdateTab);
+        if self.agent_resume == agent_resume {
+            return;
+        }
+        let resumability_changed = self.agent_resume.is_some() != agent_resume.is_some();
+        self.agent_resume = agent_resume;
+        self.needs_serialize = true;
+        cx.emit(ItemEvent::UpdateTab);
+        // The terminal panel saves only the tasks that can be resumed, and saves its layout
+        // only when its panes change.
+        if resumability_changed
+            && self.terminal.read(cx).task().is_some()
+            && let Some(terminal_panel) = self
+                .workspace
+                .upgrade()
+                .and_then(|workspace| workspace.read(cx).panel::<TerminalPanel>(cx))
+        {
+            terminal_panel.update(cx, |terminal_panel, cx| terminal_panel.serialize(cx));
         }
     }
 
-    fn resume_agent_when_shell_is_ready(&mut self, delay: Duration, cx: &mut Context<Self>) {
-        if self.pending_resume.is_none() {
-            return;
+    /// Resumes the session from the last run once the shell's startup output settles, or
+    /// at the latest once the deadline passes.
+    fn schedule_pending_resume(&mut self, cx: &mut Context<Self>) {
+        self.pending_resume_deadline = Some(self.resume_pending_agent_after(SHELL_READY_LIMIT, cx));
+    }
+
+    fn resume_pending_agent_once_settled(&mut self, cx: &mut Context<Self>) {
+        if self.pending_resume.is_some() {
+            self.pending_resume_settle =
+                Some(self.resume_pending_agent_after(SHELL_SETTLE_DELAY, cx));
         }
-        self.pending_resume_task = Some(cx.spawn(async move |this, cx| {
+    }
+
+    fn resume_pending_agent_after(&self, delay: Duration, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let resumed = this.update(cx, |this, cx| this.resume_pending_agent(cx));
             if let Err(error) = resumed {
                 log::debug!("dropped an agent resume: {error}");
             }
-        }));
+        })
     }
 
     fn resume_pending_agent(&mut self, cx: &mut Context<Self>) {
-        self.pending_resume_task = None;
+        self.pending_resume_settle = None;
+        self.pending_resume_deadline = None;
         let Some(pending_resume) = self.pending_resume.take() else {
             return;
         };
@@ -1208,7 +1237,7 @@ fn subscribe_for_terminal_events(
 
             match event {
                 Event::Wakeup => {
-                    terminal_view.resume_agent_when_shell_is_ready(SHELL_SETTLE_DELAY, cx);
+                    terminal_view.resume_pending_agent_once_settled(cx);
                     cx.notify();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
@@ -1979,8 +2008,8 @@ impl SerializableItem for TerminalView {
     ) -> Option<Task<anyhow::Result<()>>> {
         let terminal = self.terminal().read(cx);
         // A task reruns rather than restores, unless it hosts an agent session that can be
-        // resumed.
-        if terminal.task().is_some() && self.agent_resume.is_none() {
+        // resumed, or its saved one needs clearing.
+        if terminal.task().is_some() && self.agent_resume.is_none() && !self.saved_agent_resume {
             return None;
         }
 
@@ -1992,6 +2021,7 @@ impl SerializableItem for TerminalView {
         let cwd = terminal.working_directory();
         let custom_title = self.custom_title.clone();
         let agent_resume = self.agent_resume.clone();
+        self.saved_agent_resume = agent_resume.is_some();
         self.needs_serialize = false;
 
         Some(cx.background_spawn(async move {
@@ -2072,7 +2102,7 @@ impl SerializableItem for TerminalView {
                     // Kept saved until it is resumed, in case Superzent quits before then.
                     view.pending_resume = agent_resume.clone();
                     view.agent_resume = agent_resume;
-                    view.resume_agent_when_shell_is_ready(SHELL_READY_LIMIT, cx);
+                    view.schedule_pending_resume(cx);
                     view
                 })
             })
@@ -3003,21 +3033,25 @@ mod tests {
             view.pending_resume = Some(claude.clone());
             view.agent_resume = Some(claude.clone());
             view.needs_serialize = false;
-            view.resume_agent_when_shell_is_ready(SHELL_READY_LIMIT, cx);
-            assert!(view.pending_resume_task.is_some());
+            view.schedule_pending_resume(cx);
         });
-        cx.executor().advance_clock(SHELL_READY_LIMIT);
-        cx.run_until_parked();
+        // Output that never settles doesn't hold the resume past its deadline.
+        for _ in 0..16 {
+            terminal_view.update(cx, |view, cx| view.resume_pending_agent_once_settled(cx));
+            cx.executor().advance_clock(SHELL_SETTLE_DELAY / 2);
+            cx.run_until_parked();
+        }
 
         terminal_view.update(cx, |view, cx| {
             assert_eq!(view.pending_resume, None);
-            assert!(view.pending_resume_task.is_none());
+            assert!(view.pending_resume_settle.is_none());
+            assert!(view.pending_resume_deadline.is_none());
             // Saved again only once the resumed agent reports its session.
             assert_eq!(view.agent_resume(), None);
             assert!(view.needs_serialize);
 
-            view.resume_agent_when_shell_is_ready(SHELL_SETTLE_DELAY, cx);
-            assert!(view.pending_resume_task.is_none());
+            view.resume_pending_agent_once_settled(cx);
+            assert!(view.pending_resume_settle.is_none());
         });
     }
 

@@ -754,22 +754,9 @@ impl WorkspaceAttentionController {
     }
 
     fn sync_terminal_agent_resume(&mut self, event: &AgentHookEvent, cx: &mut Context<Self>) {
-        let Some(update) = agent_resume_update(event) else {
+        let Some(update) = agent_resume_update(event, codex_session_is_saved) else {
             return;
         };
-        if update.is_some()
-            && event.agent == Some(AgentKind::Codex)
-            && !event
-                .session_id
-                .as_deref()
-                .is_some_and(codex_session_is_saved)
-        {
-            log::debug!(
-                "not resuming Codex thread {:?}: it isn't saved",
-                event.session_id
-            );
-            return;
-        }
         let Some(terminal_view) = self.live_terminal_view(&event.terminal_id) else {
             return;
         };
@@ -8922,7 +8909,10 @@ fn agent_display_name(
 
 /// What a hook event says about the session a restart could resume: `Some(None)` once the
 /// agent has exited on its own.
-fn agent_resume_update(event: &AgentHookEvent) -> Option<Option<AgentResume>> {
+fn agent_resume_update(
+    event: &AgentHookEvent,
+    codex_session_is_saved: impl FnOnce(&str) -> bool,
+) -> Option<Option<AgentResume>> {
     // Agents read from the screen report no sessions.
     let kind = event.agent?;
     match event.event_type {
@@ -8935,6 +8925,10 @@ fn agent_resume_update(event: &AgentHookEvent) -> Option<Option<AgentResume>> {
                 .session_id
                 .clone()
                 .or_else(|| kind.resumed_session_id(launch_args))?;
+            if kind == AgentKind::Codex && !codex_session_is_saved(&session_id) {
+                log::debug!("not resuming Codex thread {session_id}: it isn't saved");
+                return None;
+            }
             let command = kind.resume_command(&session_id, launch_args)?;
             Some(Some(AgentResume { command }))
         }
@@ -10382,11 +10376,15 @@ mod tests {
         }
     }
 
+    fn agent_resume_update_for(event: &AgentHookEvent) -> Option<Option<AgentResume>> {
+        agent_resume_update(event, |_| true)
+    }
+
     #[test]
     fn a_session_is_resumable_until_its_agent_exits() {
         let claude = Some(AgentKind::Claude);
         assert_eq!(
-            agent_resume_update(&hook_event(
+            agent_resume_update_for(&hook_event(
                 AgentHookEventType::SessionStart,
                 claude,
                 Some("1b2c")
@@ -10396,7 +10394,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            agent_resume_update(&hook_event(
+            agent_resume_update_for(&hook_event(
                 AgentHookEventType::Stop,
                 Some(AgentKind::Codex),
                 Some("019a")
@@ -10406,7 +10404,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, claude, None)),
+            agent_resume_update_for(&hook_event(AgentHookEventType::SessionEnd, claude, None)),
             Some(None)
         );
 
@@ -10418,10 +10416,22 @@ mod tests {
         );
         resumed_codex.launch_args = Some(vec!["resume".to_string(), "019a".to_string()]);
         assert_eq!(
-            agent_resume_update(&resumed_codex),
+            agent_resume_update(&resumed_codex, |session_id| session_id == "019a"),
             Some(Some(AgentResume {
                 command: "codex resume 019a".to_string(),
             }))
+        );
+        // A thread Codex never saves, like the one that titles a conversation.
+        assert_eq!(
+            agent_resume_update(
+                &hook_event(
+                    AgentHookEventType::Stop,
+                    Some(AgentKind::Codex),
+                    Some("title")
+                ),
+                |_| false
+            ),
+            None
         );
     }
 
@@ -10429,7 +10439,7 @@ mod tests {
     fn nested_and_screen_agents_do_not_change_what_resumes() {
         // Activity can come from an agent nested in the terminal's agent.
         assert_eq!(
-            agent_resume_update(&hook_event(
+            agent_resume_update_for(&hook_event(
                 AgentHookEventType::Start,
                 Some(AgentKind::Claude),
                 Some("nested")
@@ -10438,7 +10448,7 @@ mod tests {
         );
         // Codex reports its thread only once a turn completes.
         assert_eq!(
-            agent_resume_update(&hook_event(
+            agent_resume_update_for(&hook_event(
                 AgentHookEventType::SessionStart,
                 Some(AgentKind::Codex),
                 None
@@ -10447,11 +10457,11 @@ mod tests {
         );
         // Agents read from the screen have no session to resume.
         assert_eq!(
-            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, None, None)),
+            agent_resume_update_for(&hook_event(AgentHookEventType::SessionEnd, None, None)),
             None
         );
         assert_eq!(
-            agent_resume_update(&hook_event(
+            agent_resume_update_for(&hook_event(
                 AgentHookEventType::Stop,
                 Some(AgentKind::Claude),
                 Some("1; rm -rf ~")
