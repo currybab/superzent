@@ -24,6 +24,7 @@ use settings::{Settings, SettingsStore, TerminalBlink, WorkingDirectory};
 use std::{
     any::Any,
     cmp,
+    collections::BTreeMap,
     ops::{Range, RangeInclusive},
     path::{Path, PathBuf},
     rc::Rc,
@@ -166,6 +167,8 @@ pub struct TerminalView {
     agent_resume: Option<AgentResume>,
     // Whether a task terminal's row holds a session, which then has to be cleared too.
     saved_agent_resume: bool,
+    // The environment the terminal was restored with, for the agents it runs to keep.
+    launch_environment: BTreeMap<String, String>,
     // A session from the last run, resumed once the restored shell is ready for input.
     pending_resume: Option<AgentResume>,
     pending_resume_settle: Option<Task<()>>,
@@ -178,6 +181,9 @@ pub struct TerminalView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentResume {
     pub command: String,
+    /// What the terminal's environment had to carry for the agent, like a preset's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
 }
 
 // A restored shell is ready for input once its startup output settles; typing earlier can
@@ -373,6 +379,7 @@ impl TerminalView {
             tab_agent_title: None,
             agent_resume: None,
             saved_agent_resume: false,
+            launch_environment: BTreeMap::new(),
             pending_resume: None,
             pending_resume_settle: None,
             pending_resume_deadline: None,
@@ -515,6 +522,10 @@ impl TerminalView {
 
     pub fn agent_resume(&self) -> Option<&AgentResume> {
         self.agent_resume.as_ref()
+    }
+
+    pub fn launch_environment(&self) -> &BTreeMap<String, String> {
+        &self.launch_environment
     }
 
     /// Records the agent session running in the terminal, or that none is.
@@ -2083,8 +2094,18 @@ impl SerializableItem for TerminalView {
                 .ok()
                 .unwrap_or((None, None, None));
 
+            let launch_environment = agent_resume
+                .as_ref()
+                .map(|agent_resume| agent_resume.environment.clone())
+                .unwrap_or_default();
             let terminal = project
-                .update(cx, |project, cx| project.create_terminal_shell(cwd, cx))
+                .update(cx, |project, cx| {
+                    project.create_terminal_shell_with_environment(
+                        cwd,
+                        launch_environment.clone().into_iter().collect(),
+                        cx,
+                    )
+                })
                 .await?;
             cx.update(|window, cx| {
                 cx.new(|cx| {
@@ -2099,6 +2120,7 @@ impl SerializableItem for TerminalView {
                     if custom_title.is_some() {
                         view.custom_title = custom_title;
                     }
+                    view.launch_environment = launch_environment;
                     // Kept saved until it is resumed, in case Superzent quits before then.
                     view.pending_resume = agent_resume.clone();
                     view.agent_resume = agent_resume;
@@ -3027,6 +3049,7 @@ mod tests {
             .unwrap();
         let claude = AgentResume {
             command: "claude --resume 1b2c".to_string(),
+            environment: BTreeMap::new(),
         };
 
         terminal_view.update(cx, |view, cx| {

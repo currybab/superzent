@@ -375,9 +375,11 @@ impl AgentKind {
 
 /// Whether Codex saved the session, so `codex resume` can find it. Codex also reports the
 /// turns of threads it never saves, like the one that titles a conversation.
-pub fn codex_session_is_saved(session_id: &str) -> bool {
-    let codex_home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
+/// `codex_home` is the agent's own `CODEX_HOME`, which can differ from Superzent's.
+pub fn codex_session_is_saved(session_id: &str, codex_home: Option<&Path>) -> bool {
+    let codex_home = codex_home
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
         .unwrap_or_else(|| paths::home_dir().join(".codex"));
     codex_session_is_saved_in(&codex_home, session_id)
 }

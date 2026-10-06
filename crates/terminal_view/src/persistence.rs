@@ -589,6 +589,7 @@ mod tests {
         let item_id = 1;
         let agent_resume = AgentResume {
             command: "codex resume 019a".to_string(),
+            environment: [("CODEX_HOME".to_string(), "/work/.codex".to_string())].into(),
         };
 
         db.save_custom_title(item_id, workspace_id, Some("api".to_string()))

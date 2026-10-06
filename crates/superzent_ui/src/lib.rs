@@ -75,7 +75,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
-    AgentKind, ScreenAgent, codex_session_is_saved,
+    AgentKind, ScreenAgent, agent_launch_environment, codex_session_is_saved,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -764,7 +764,9 @@ impl WorkspaceAttentionController {
     }
 
     fn sync_terminal_agent_resume(&mut self, event: &AgentHookEvent, cx: &mut Context<Self>) {
-        let Some(update) = agent_resume_update(event, codex_session_is_saved) else {
+        let Some(update) = agent_resume_update(event, |session_id| {
+            codex_session_is_saved(session_id, event.codex_home.as_deref())
+        }) else {
             return;
         };
         let Some(terminal_view) = self.live_terminal_view(&event.terminal_id) else {
@@ -8924,6 +8926,16 @@ fn apply_agent_resume(
     // Hook events can arrive while the terminal view is being updated.
     cx.defer(move |cx| {
         terminal_view.update(cx, |terminal_view, cx| {
+            // A preset's agent runs with the environment the preset gave its task, and one in
+            // a restored terminal with the environment that was restored.
+            let environment = match terminal_view.terminal().read(cx).task() {
+                Some(task) => agent_launch_environment(&task.spawned_task.env),
+                None => terminal_view.launch_environment().clone(),
+            };
+            let update = update.map(|agent_resume| AgentResume {
+                environment,
+                ..agent_resume
+            });
             terminal_view.set_agent_resume(update, cx);
         });
     });
@@ -8950,7 +8962,10 @@ fn agent_resume_update(
                 return None;
             }
             let command = kind.resume_command(&session_id, launch_args)?;
-            Some(Some(AgentResume { command }))
+            Some(Some(AgentResume {
+                command,
+                environment: BTreeMap::new(),
+            }))
         }
         AgentHookEventType::Start | AgentHookEventType::PermissionRequest => None,
     }
@@ -10393,6 +10408,7 @@ mod tests {
             agent,
             prompt: None,
             launch_args: None,
+            codex_home: None,
         }
     }
 
@@ -10411,6 +10427,7 @@ mod tests {
             )),
             Some(Some(AgentResume {
                 command: "claude --resume 1b2c".to_string(),
+                environment: BTreeMap::new(),
             }))
         );
         assert_eq!(
@@ -10421,6 +10438,7 @@ mod tests {
             )),
             Some(Some(AgentResume {
                 command: "codex resume 019a".to_string(),
+                environment: BTreeMap::new(),
             }))
         );
         assert_eq!(
@@ -10439,6 +10457,7 @@ mod tests {
             agent_resume_update(&resumed_codex, |session_id| session_id == "019a"),
             Some(Some(AgentResume {
                 command: "codex resume 019a".to_string(),
+                environment: BTreeMap::new(),
             }))
         );
         // A thread Codex never saves, like the one that titles a conversation.

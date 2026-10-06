@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
-use collections::HashMap;
+use collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 use std::{
     fs,
@@ -91,6 +91,8 @@ pub struct AgentHookEvent {
     pub prompt: Option<String>,
     /// The arguments the agent was started with, when its wrapper reported them.
     pub launch_args: Option<Vec<String>>,
+    /// Where Codex keeps its sessions, when the agent's environment sets it.
+    pub codex_home: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -209,6 +211,22 @@ pub fn prepare_workspace_launch(
         args,
         environment,
     })
+}
+
+/// The part of a preset terminal's environment the preset chose, which a restored terminal
+/// needs to run its agent the same way. Superzent's own variables are set anew for every
+/// terminal, and the shell builds its own `PATH`.
+pub fn agent_launch_environment(environment: &HashMap<String, String>) -> BTreeMap<String, String> {
+    environment
+        .iter()
+        .filter(|(key, _)| {
+            let is_superzent_variable = key.starts_with("SUPERZENT_")
+                && key.as_str() != AGENT_REAL_CLAUDE_BIN_ENV_VAR
+                && key.as_str() != AGENT_REAL_CODEX_BIN_ENV_VAR;
+            !is_superzent_variable && key.as_str() != "PATH"
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn terminal_tab_labels(workspace: &WorkspaceEntry, preset: &AgentPreset) -> (String, String) {
@@ -474,6 +492,10 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
             .as_deref()
             .filter(|agent_args| !agent_args.is_empty())
             .and_then(decode_launch_args),
+        codex_home: params
+            .codex_home
+            .filter(|codex_home| !codex_home.is_empty())
+            .map(PathBuf::from),
     }))
 }
 
@@ -483,6 +505,8 @@ struct HookRequestParams {
     agent: Option<String>,
     #[serde(rename = "agent_args")]
     agent_args: Option<String>,
+    #[serde(rename = "codex_home")]
+    codex_home: Option<String>,
     #[serde(rename = "cwd")]
     cwd: Option<String>,
     #[serde(rename = "event_type")]
@@ -690,6 +714,7 @@ _superzent_status=$(printf '%s' "$_superzent_payload" | curl -sS "$SUPERZENT_AGE
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
   --data-urlencode "agent_args=${SUPERZENT_AGENT_ARGS:-}" \
+  --data-urlencode "codex_home=${CODEX_HOME:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
   --data-urlencode "payload@-" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
@@ -1486,6 +1511,7 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
                     .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
                     .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
                     .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                    .env("CODEX_HOME", "/work/.codex")
                     .output(),
             )
             .expect("run notify script");
@@ -1496,6 +1522,7 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
                 expected_session_id,
                 "{payload}"
             );
+            assert_eq!(event.codex_home, Some(PathBuf::from("/work/.codex")));
         }
     }
 
@@ -1521,6 +1548,38 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             Some(launch_args.iter().map(|arg| arg.to_string()).collect())
         );
         assert_eq!(decode_launch_args("not base64!"), None);
+    }
+
+    #[test]
+    fn restored_terminals_keep_only_the_environment_presets_chose() {
+        let environment = HashMap::from_iter([
+            ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+            ("CODEX_HOME".to_string(), "/work/.codex".to_string()),
+            (
+                AGENT_REAL_CODEX_BIN_ENV_VAR.to_string(),
+                "/opt/codex".to_string(),
+            ),
+            (
+                AGENT_TERMINAL_ID_ENV_VAR.to_string(),
+                "terminal-1".to_string(),
+            ),
+            (
+                AGENT_HOOK_URL_ENV_VAR.to_string(),
+                "http://hook".to_string(),
+            ),
+            ("PATH".to_string(), "/hooks:/usr/bin".to_string()),
+        ]);
+        assert_eq!(
+            agent_launch_environment(&environment),
+            BTreeMap::from_iter([
+                ("CODEX_HOME".to_string(), "/work/.codex".to_string()),
+                ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+                (
+                    AGENT_REAL_CODEX_BIN_ENV_VAR.to_string(),
+                    "/opt/codex".to_string(),
+                ),
+            ])
+        );
     }
 
     #[test]
