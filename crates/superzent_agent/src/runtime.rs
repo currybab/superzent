@@ -188,22 +188,18 @@ pub fn prepare_workspace_launch(
         bail!("ACP presets cannot be launched in a terminal");
     }
 
-    let mut environment = preset.env.clone().into_iter().collect::<HashMap<_, _>>();
+    let mut environment = preset_launch_environment(preset)
+        .into_iter()
+        .collect::<HashMap<_, _>>();
     inject_terminal_environment(&mut environment)?;
     environment.insert(AGENT_WORKSPACE_ID_ENV_VAR.to_string(), workspace.id.clone());
 
-    let managed_command = AgentKind::for_command(&preset.command);
-    let (command, args) = if let Some(managed_command) = managed_command {
-        environment.insert(
-            managed_command.real_binary_env_var().to_string(),
-            preset.command.clone(),
-        );
-        (
+    let (command, args) = match AgentKind::for_command(&preset.command) {
+        Some(managed_command) => (
             managed_command.binary_name().to_string(),
             preset.args.clone(),
-        )
-    } else {
-        (preset.command.clone(), preset.args.clone())
+        ),
+        None => (preset.command.clone(), preset.args.clone()),
     };
 
     Ok(PreparedWorkspaceLaunch {
@@ -213,20 +209,17 @@ pub fn prepare_workspace_launch(
     })
 }
 
-/// The part of a preset terminal's environment the preset chose, which a restored terminal
-/// needs to run its agent the same way. Superzent's own variables are set anew for every
-/// terminal, and the shell builds its own `PATH`.
-pub fn agent_launch_environment(environment: &HashMap<String, String>) -> BTreeMap<String, String> {
+/// The environment a preset gives its agent, beyond what Superzent sets for every
+/// terminal. A restored terminal needs it to run the agent the same way.
+pub fn preset_launch_environment(preset: &AgentPreset) -> BTreeMap<String, String> {
+    let mut environment = preset.env.clone().into_iter().collect::<BTreeMap<_, _>>();
+    if let Some(managed_command) = AgentKind::for_command(&preset.command) {
+        environment.insert(
+            managed_command.real_binary_env_var().to_string(),
+            preset.command.clone(),
+        );
+    }
     environment
-        .iter()
-        .filter(|(key, _)| {
-            let is_superzent_variable = key.starts_with("SUPERZENT_")
-                && key.as_str() != AGENT_REAL_CLAUDE_BIN_ENV_VAR
-                && key.as_str() != AGENT_REAL_CODEX_BIN_ENV_VAR;
-            !is_superzent_variable && key.as_str() != "PATH"
-        })
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect()
 }
 
 fn terminal_tab_labels(workspace: &WorkspaceEntry, preset: &AgentPreset) -> (String, String) {
@@ -1298,6 +1291,35 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
         );
     }
 
+    #[test]
+    fn presets_give_their_agents_their_own_environment() {
+        let preset = AgentPreset {
+            id: "codex".to_string(),
+            label: "Codex".to_string(),
+            launch_mode: PresetLaunchMode::Terminal,
+            command: "/opt/codex/bin/codex".to_string(),
+            args: Vec::new(),
+            env: [
+                ("PATH".to_string(), "/opt/tools/bin:/usr/bin".to_string()),
+                ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+            ]
+            .into(),
+            acp_agent_name: None,
+            attention_patterns: Vec::new(),
+        };
+        assert_eq!(
+            preset_launch_environment(&preset),
+            BTreeMap::from_iter([
+                ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+                ("PATH".to_string(), "/opt/tools/bin:/usr/bin".to_string()),
+                (
+                    AGENT_REAL_CODEX_BIN_ENV_VAR.to_string(),
+                    "/opt/codex/bin/codex".to_string(),
+                ),
+            ])
+        );
+    }
+
     fn spawn_test_hook_server() -> (
         std::net::SocketAddr,
         smol::channel::Receiver<AgentHookEvent>,
@@ -1548,38 +1570,6 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             Some(launch_args.iter().map(|arg| arg.to_string()).collect())
         );
         assert_eq!(decode_launch_args("not base64!"), None);
-    }
-
-    #[test]
-    fn restored_terminals_keep_only_the_environment_presets_chose() {
-        let environment = HashMap::from_iter([
-            ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
-            ("CODEX_HOME".to_string(), "/work/.codex".to_string()),
-            (
-                AGENT_REAL_CODEX_BIN_ENV_VAR.to_string(),
-                "/opt/codex".to_string(),
-            ),
-            (
-                AGENT_TERMINAL_ID_ENV_VAR.to_string(),
-                "terminal-1".to_string(),
-            ),
-            (
-                AGENT_HOOK_URL_ENV_VAR.to_string(),
-                "http://hook".to_string(),
-            ),
-            ("PATH".to_string(), "/hooks:/usr/bin".to_string()),
-        ]);
-        assert_eq!(
-            agent_launch_environment(&environment),
-            BTreeMap::from_iter([
-                ("CODEX_HOME".to_string(), "/work/.codex".to_string()),
-                ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
-                (
-                    AGENT_REAL_CODEX_BIN_ENV_VAR.to_string(),
-                    "/opt/codex".to_string(),
-                ),
-            ])
-        );
     }
 
     #[test]

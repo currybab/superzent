@@ -75,7 +75,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
-    AgentKind, ScreenAgent, agent_launch_environment, codex_session_is_saved,
+    AgentKind, ScreenAgent, codex_session_is_saved, preset_launch_environment,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -348,6 +348,23 @@ struct TrackedPresetTerminal {
     launch: PresetLaunch,
 }
 
+fn remember_preset_environment(terminal_id: Option<&String>, preset: &AgentPreset, cx: &mut App) {
+    let Some(terminal_id) = terminal_id else {
+        return;
+    };
+    let Some(controller) = cx
+        .try_global::<GlobalAttentionController>()
+        .map(|controller| controller.0.clone())
+    else {
+        return;
+    };
+    controller.update(cx, |controller, _| {
+        controller
+            .preset_environments
+            .insert(terminal_id.clone(), preset_launch_environment(preset));
+    });
+}
+
 fn track_preset_terminal(terminal: WeakEntity<Terminal>, launch: PresetLaunch, cx: &mut App) {
     let Some(controller) = cx
         .try_global::<GlobalAttentionController>()
@@ -411,6 +428,9 @@ struct WorkspaceAttentionController {
     // Sessions an agent reported before its terminal's view was registered, which happens
     // when a preset's agent starts while its terminal is still being set up.
     pending_agent_resumes: BTreeMap<String, Option<AgentResume>>,
+    // The environment each preset gave the terminal it launched in, which its agents are
+    // resumed with after a restart.
+    preset_environments: BTreeMap<String, BTreeMap<String, String>>,
     // How often each terminal's agent has exited, so a session looked up in the background
     // isn't recorded after its agent is gone.
     agent_resume_clears: BTreeMap<String, u64>,
@@ -521,6 +541,7 @@ impl WorkspaceAttentionController {
             terminal_views_by_terminal: BTreeMap::new(),
             pending_agent_resumes: BTreeMap::new(),
             agent_resume_clears: BTreeMap::new(),
+            preset_environments: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
             next_attention_sequence: 0,
@@ -572,7 +593,8 @@ impl WorkspaceAttentionController {
         if let Some(update) = self.pending_agent_resumes.remove(&terminal_id)
             && let Some(terminal_view) = terminal_view.upgrade()
         {
-            apply_agent_resume(terminal_view, update, cx);
+            let preset_environment = self.preset_environments.get(&terminal_id).cloned();
+            apply_agent_resume(terminal_view, preset_environment, update, cx);
         }
         self.terminal_views_by_terminal
             .insert(terminal_id.clone(), terminal_view);
@@ -598,6 +620,7 @@ impl WorkspaceAttentionController {
         self.terminal_views_by_terminal.remove(terminal_id);
         self.pending_agent_resumes.remove(terminal_id);
         self.agent_resume_clears.remove(terminal_id);
+        self.preset_environments.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
         self.agent_sessions.remove(terminal_id);
@@ -842,7 +865,8 @@ impl WorkspaceAttentionController {
                 .insert(terminal_id.to_string(), update);
             return;
         };
-        apply_agent_resume(terminal_view, update, cx);
+        let preset_environment = self.preset_environments.get(terminal_id).cloned();
+        apply_agent_resume(terminal_view, preset_environment, update, cx);
     }
 
     /// The icon and title a terminal's tab shows while an agent runs in it: the same task
@@ -2629,6 +2653,11 @@ fn launch_workspace_preset_in_terminal(
         }
     };
 
+    remember_preset_environment(
+        launch.environment.get(AGENT_TERMINAL_ID_ENV_VAR),
+        &preset,
+        cx,
+    );
     let workspace_path = workspace_entry.cwd_path();
     let (command_line, open_terminal_task) = workspace_handle.update(cx, |workspace, cx| {
         let shell_kind = preset_shell_kind(workspace, &workspace_path, cx);
@@ -2800,6 +2829,11 @@ fn launch_workspace_preset_task(
                 return;
             }
         };
+    remember_preset_environment(
+        spawn_in_terminal.env.get(AGENT_TERMINAL_ID_ENV_VAR),
+        &preset,
+        cx,
+    );
     let spawn_task = terminal_panel.update(cx, |terminal_panel, cx| {
         terminal_panel.spawn_task(&spawn_in_terminal, window, cx)
     });
@@ -8986,18 +9020,17 @@ fn agent_display_name(
 
 fn apply_agent_resume(
     terminal_view: Entity<TerminalView>,
+    preset_environment: Option<BTreeMap<String, String>>,
     update: Option<AgentResume>,
     cx: &mut Context<WorkspaceAttentionController>,
 ) {
     // Hook events can arrive while the terminal view is being updated.
     cx.defer(move |cx| {
         terminal_view.update(cx, |terminal_view, cx| {
-            // A preset's agent runs with the environment the preset gave its task, and one in
-            // a restored terminal with the environment that was restored.
-            let mut environment = match terminal_view.terminal().read(cx).task() {
-                Some(task) => agent_launch_environment(&task.spawned_task.env),
-                None => terminal_view.launch_environment().clone(),
-            };
+            // An agent runs with the environment its preset gave the terminal, or the one a
+            // restored terminal was restored with.
+            let mut environment =
+                preset_environment.unwrap_or_else(|| terminal_view.launch_environment().clone());
             let update = update.map(|agent_resume| {
                 environment.extend(agent_resume.environment);
                 AgentResume {
