@@ -38,9 +38,34 @@ const fn option(
     }
 }
 
-// Only options that take values or must not carry over are listed; anything else is kept
-// as a flag.
+// Only options that take values or must not carry over are listed. Anything else is kept
+// as a flag, unless an argument follows it that could be its value.
 const CLAUDE_OPTIONS: &[CliOption] = &[
+    option(
+        &[
+            "--allow-dangerously-skip-permissions",
+            "--ax-screen-reader",
+            "--bare",
+            "--brief",
+            "--chrome",
+            "--dangerously-skip-permissions",
+            "--disable-slash-commands",
+            "--exclude-dynamic-system-prompt-sections",
+            "--forward-subagent-text",
+            "--ide",
+            "--include-hook-events",
+            "--include-partial-messages",
+            "--no-chrome",
+            "--no-session-persistence",
+            "--replay-user-messages",
+            "--restricted",
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--verbose",
+        ],
+        OptionValue::None,
+        OnResume::Keep,
+    ),
     option(&["--add-dir"], OptionValue::Variadic, OnResume::Keep),
     option(&["--agent"], OptionValue::Required, OnResume::Keep),
     option(&["--agents"], OptionValue::Required, OnResume::Keep),
@@ -51,6 +76,11 @@ const CLAUDE_OPTIONS: &[CliOption] = &[
     ),
     option(
         &["--append-system-prompt"],
+        OptionValue::Required,
+        OnResume::Keep,
+    ),
+    option(
+        &["--append-system-prompt-file"],
         OptionValue::Required,
         OnResume::Keep,
     ),
@@ -126,6 +156,11 @@ const CLAUDE_OPTIONS: &[CliOption] = &[
     option(&["--settings"], OptionValue::Required, OnResume::Keep),
     option(&["--system-prompt"], OptionValue::Required, OnResume::Keep),
     option(
+        &["--system-prompt-file"],
+        OptionValue::Required,
+        OnResume::Keep,
+    ),
+    option(
         &["--system-prompt-snapshot"],
         OptionValue::Required,
         OnResume::Keep,
@@ -137,6 +172,20 @@ const CLAUDE_OPTIONS: &[CliOption] = &[
 ];
 
 const CODEX_OPTIONS: &[CliOption] = &[
+    option(
+        &[
+            "--approve-for-me",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--no-alt-screen",
+            "--no-daemon",
+            "--oss",
+            "--search",
+            "--strict-config",
+        ],
+        OptionValue::None,
+        OnResume::Keep,
+    ),
     option(
         &["-a", "--ask-for-approval"],
         OptionValue::Required,
@@ -245,7 +294,17 @@ fn split_launch_args(args: &[String], known_options: &[CliOption]) -> Option<Lau
                 }
             }
         }
-        match known_option.map_or(OnResume::Keep, |option| option.on_resume) {
+        let on_resume = match known_option {
+            Some(option) => option.on_resume,
+            // Without the value it may take, the option would take the resume arguments
+            // instead.
+            None if !has_inline_value && takes_next(index) => {
+                log::debug!("not resuming with {name}, which may take a value");
+                OnResume::Drop
+            }
+            None => OnResume::Keep,
+        };
+        match on_resume {
             OnResume::Keep => options.extend(args[start..index].iter().cloned()),
             OnResume::Drop => {}
             OnResume::NotResumable => return None,
@@ -453,6 +512,42 @@ mod tests {
                 )
                 .as_deref(),
             Some("claude --permission-mode=plan --resume 1b2c")
+        );
+    }
+
+    #[test]
+    fn options_that_may_take_a_value_never_take_the_resume_arguments() {
+        assert_eq!(
+            AgentKind::Claude
+                .resume_command(
+                    "1b2c",
+                    &args(&[
+                        "--system-prompt-file",
+                        "./prompt.md",
+                        "--unknown-value",
+                        "x",
+                        "--unknown-flag",
+                        "--verbose",
+                        "--unknown-inline=y",
+                    ])
+                )
+                .as_deref(),
+            Some(
+                "claude --system-prompt-file ./prompt.md --unknown-flag --verbose --unknown-inline=y --resume 1b2c"
+            )
+        );
+        // Known flags keep their place ahead of a prompt.
+        assert_eq!(
+            AgentKind::Claude
+                .resume_command("1b2c", &args(&["--dangerously-skip-permissions", "Fix it"]))
+                .as_deref(),
+            Some("claude --dangerously-skip-permissions --resume 1b2c")
+        );
+        assert_eq!(
+            AgentKind::Codex
+                .resume_command("019a", &args(&["--search", "Fix it"]))
+                .as_deref(),
+            Some("codex --search resume 019a")
         );
     }
 

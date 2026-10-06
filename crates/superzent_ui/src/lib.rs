@@ -408,6 +408,9 @@ struct WorkspaceAttentionController {
     terminal_ids_by_entity: BTreeMap<EntityId, String>,
     workspace_ids_by_terminal: BTreeMap<String, String>,
     terminal_views_by_terminal: BTreeMap<String, WeakEntity<TerminalView>>,
+    // Sessions an agent reported before its terminal's view was registered, which happens
+    // when a preset's agent starts while its terminal is still being set up.
+    pending_agent_resumes: BTreeMap<String, Option<AgentResume>>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
@@ -513,6 +516,7 @@ impl WorkspaceAttentionController {
             terminal_ids_by_entity: BTreeMap::new(),
             workspace_ids_by_terminal: BTreeMap::new(),
             terminal_views_by_terminal: BTreeMap::new(),
+            pending_agent_resumes: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
             next_attention_sequence: 0,
@@ -561,6 +565,11 @@ impl WorkspaceAttentionController {
         let entity_id = terminal.entity_id();
         self.terminal_ids_by_entity
             .insert(entity_id, terminal_id.clone());
+        if let Some(update) = self.pending_agent_resumes.remove(&terminal_id)
+            && let Some(terminal_view) = terminal_view.upgrade()
+        {
+            apply_agent_resume(terminal_view, update, cx);
+        }
         self.terminal_views_by_terminal
             .insert(terminal_id.clone(), terminal_view);
         self.sync_terminal_tab_attention(&terminal_id, cx);
@@ -583,6 +592,7 @@ impl WorkspaceAttentionController {
     ) {
         self.terminal_ids_by_entity.remove(&entity_id);
         self.terminal_views_by_terminal.remove(terminal_id);
+        self.pending_agent_resumes.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
         self.agent_sessions.remove(terminal_id);
@@ -758,14 +768,11 @@ impl WorkspaceAttentionController {
             return;
         };
         let Some(terminal_view) = self.live_terminal_view(&event.terminal_id) else {
+            self.pending_agent_resumes
+                .insert(event.terminal_id.clone(), update);
             return;
         };
-        // Hook events can arrive while the terminal view is being updated.
-        cx.defer(move |cx| {
-            terminal_view.update(cx, |terminal_view, cx| {
-                terminal_view.set_agent_resume(update, cx);
-            });
-        });
+        apply_agent_resume(terminal_view, update, cx);
     }
 
     /// The icon and title a terminal's tab shows while an agent runs in it: the same task
@@ -8909,6 +8916,19 @@ fn agent_display_name(
 
 /// What a hook event says about the session a restart could resume: `Some(None)` once the
 /// agent has exited on its own.
+fn apply_agent_resume(
+    terminal_view: Entity<TerminalView>,
+    update: Option<AgentResume>,
+    cx: &mut Context<WorkspaceAttentionController>,
+) {
+    // Hook events can arrive while the terminal view is being updated.
+    cx.defer(move |cx| {
+        terminal_view.update(cx, |terminal_view, cx| {
+            terminal_view.set_agent_resume(update, cx);
+        });
+    });
+}
+
 fn agent_resume_update(
     event: &AgentHookEvent,
     codex_session_is_saved: impl FnOnce(&str) -> bool,
