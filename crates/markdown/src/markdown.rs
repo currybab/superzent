@@ -2177,6 +2177,7 @@ impl Element for MarkdownElement {
             0
         };
         let mut code_block_ids = HashSet::default();
+        let mut current_code_block_text = None;
 
         let mut current_img_block_range: Option<Range<usize>> = None;
         let mut handled_html_block = false;
@@ -2311,6 +2312,16 @@ impl Element for MarkdownElement {
                                 rendered_mermaid_block = true;
                                 continue;
                             }
+
+                            current_code_block_text = match &self.code_block_renderer {
+                                CodeBlockRenderer::Default {
+                                    copy_button_visibility,
+                                    ..
+                                } if *copy_button_visibility != CopyButtonVisibility::Hidden => {
+                                    Some(String::new())
+                                }
+                                _ => None,
+                            };
 
                             let language = match kind {
                                 CodeBlockKind::Fenced => {
@@ -2655,6 +2666,8 @@ impl Element for MarkdownElement {
                         builder.pop_code_block();
                         builder.pop_text_style();
 
+                        let code = current_code_block_text.take().unwrap_or_default();
+
                         if let CodeBlockRenderer::Default {
                             copy_button_visibility,
                             wrap_button_visibility,
@@ -2666,14 +2679,6 @@ impl Element for MarkdownElement {
                             let copy_button_visibility = *copy_button_visibility;
                             let wrap_button_visibility = *wrap_button_visibility;
                             builder.modify_current_div(|el| {
-                                let content_range = parser::extract_code_block_content_range(
-                                    &parsed_markdown.source()[range.clone()],
-                                );
-                                let content_range = content_range.start + range.start
-                                    ..content_range.end + range.start;
-
-                                let code = parsed_markdown.source()[content_range].to_string();
-
                                 let any_hover = copy_button_visibility
                                     == CopyButtonVisibility::VisibleOnHover
                                     || wrap_button_visibility
@@ -2685,6 +2690,9 @@ impl Element for MarkdownElement {
                                 let use_hover = any_hover && !any_always;
 
                                 let button_row = h_flex()
+                                    .debug_selector(|| {
+                                        format!("markdown_code_block_buttons_{}", range.end)
+                                    })
                                     .gap_0p5()
                                     .absolute()
                                     .bg(cx.theme().colors().editor_background)
@@ -2771,9 +2779,16 @@ impl Element for MarkdownElement {
                     _ => log::debug!("unsupported markdown tag end: {:?}", tag),
                 },
                 MarkdownEvent::Text => {
-                    builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
+                    let text = &parsed_markdown.source[range.clone()];
+                    if let Some(current_code_block_text) = &mut current_code_block_text {
+                        current_code_block_text.push_str(text);
+                    }
+                    builder.push_text(text, range.clone());
                 }
                 MarkdownEvent::SubstitutedText(text) => {
+                    if let Some(current_code_block_text) = &mut current_code_block_text {
+                        current_code_block_text.push_str(text);
+                    }
                     builder.push_text(text, range.clone());
                 }
                 MarkdownEvent::Code => {
@@ -4989,10 +5004,6 @@ mod tests {
         assert_eq!(adjusted_range, Some(3..5));
     }
 
-    fn render_markdown(markdown: &str, cx: &mut TestAppContext) -> RenderedText {
-        render_markdown_with_language_registry(markdown, None, cx)
-    }
-
     #[gpui::test]
     fn test_active_search_highlight_uses_match_index(cx: &mut TestAppContext) {
         let markdown = cx.new(|cx| Markdown::new("zero one two".into(), None, None, cx));
@@ -6160,10 +6171,6 @@ mod tests {
         );
     }
 
-    fn nbsp(n: usize) -> String {
-        "\u{00A0}".repeat(n)
-    }
-
     #[test]
     fn test_escape_plain_text() {
         assert_eq!(Markdown::escape("hello world"), "hello world");
@@ -6249,14 +6256,6 @@ mod tests {
         assert_eq!(Markdown::escape("עברית `code`"), r"עברית \`code\`");
         // Non-ASCII followed by ASCII punctuation
         assert_eq!(Markdown::escape("Test: тест"), r"Test\: тест");
-    }
-
-    fn has_code_block(markdown: &str) -> bool {
-        let parsed_data = parse_markdown_with_options(markdown, false, false, false);
-        parsed_data
-            .events
-            .iter()
-            .any(|(_, event)| matches!(event, MarkdownEvent::Start(MarkdownTag::CodeBlock { .. })))
     }
 
     #[test]
@@ -6731,42 +6730,6 @@ mod tests {
         );
     }
 
-    #[track_caller]
-    fn assert_mappings(rendered: &RenderedText, expected: Vec<Vec<(usize, usize)>>) {
-        assert_eq!(rendered.lines.len(), expected.len(), "line count mismatch");
-        for (line_ix, line_mappings) in expected.into_iter().enumerate() {
-            let line = &rendered.lines[line_ix];
-
-            assert!(
-                line.source_mappings.windows(2).all(|mappings| {
-                    mappings[0].source_index < mappings[1].source_index
-                        && mappings[0].rendered_index < mappings[1].rendered_index
-                }),
-                "line {} has duplicate mappings: {:?}",
-                line_ix,
-                line.source_mappings
-            );
-
-            for (rendered_ix, source_ix) in line_mappings {
-                assert_eq!(
-                    line.source_index_for_rendered_index(rendered_ix),
-                    source_ix,
-                    "line {}, rendered_ix {}",
-                    line_ix,
-                    rendered_ix
-                );
-
-                assert_eq!(
-                    line.rendered_index_for_source_index(source_ix),
-                    rendered_ix,
-                    "line {}, source_ix {}",
-                    line_ix,
-                    source_ix
-                );
-            }
-        }
-    }
-
     #[gpui::test]
     fn test_bounds_for_source_range_skips_gaps_between_rendered_lines(cx: &mut TestAppContext) {
         let source = "First\n\nSecond";
@@ -6838,24 +6801,6 @@ mod tests {
             h3_line_height > body_line_height,
             "H3 line height ({h3_line_height:?}) should be greater than body text ({body_line_height:?})"
         );
-    }
-
-    fn preview_heading_weights(cx: &mut TestAppContext, font: MarkdownFont) -> [FontWeight; 6] {
-        let (_, cx) = cx.add_window_view(|_, _| TestWindow);
-        cx.update(|window, cx| {
-            let style = MarkdownStyle::themed(font, window, cx);
-            let levels = style
-                .heading_level_styles
-                .expect("preview markdown should define per-level heading styles");
-            [
-                levels.h1, levels.h2, levels.h3, levels.h4, levels.h5, levels.h6,
-            ]
-            .map(|level| {
-                level
-                    .and_then(|level| level.font_weight)
-                    .expect("every preview heading level should set a font weight")
-            })
-        })
     }
 
     #[gpui::test]
@@ -7242,5 +7187,152 @@ mod tests {
             )
         };
         (prose.layout.line_height(), code.layout.line_height())
+    }
+
+    #[gpui::test]
+    fn test_copy_code_block_uses_parsed_text(cx: &mut TestAppContext) {
+        for (source, expected) in [
+            (
+                "> ```bash\n> echo \"Zed is awesome!\"\n> ```",
+                "echo \"Zed is awesome!\"\n",
+            ),
+            (
+                "> Level 1\n> > Level 2\n> > ```bash\n> > echo \"Zed is awesome!\"\n> > ```",
+                "echo \"Zed is awesome!\"\n",
+            ),
+            (
+                "> [!NOTE]\n> This is a note containing code:\n> ```bash\n> echo \"Zed is awesome!\"\n> ```",
+                "echo \"Zed is awesome!\"\n",
+            ),
+            (
+                "> * Indentation plus quote:\n>   ```bash\n>   echo \"Zed is awesome!\"\n>   ```",
+                "echo \"Zed is awesome!\"\n",
+            ),
+            (
+                "* Here is a list item:\n  ```bash\n  echo \"Zed is awesome!\"\n  ```",
+                "echo \"Zed is awesome!\"\n",
+            ),
+            ("> ~~~text\n> > comparison\n> ~~~", "> comparison\n"),
+            (
+                "> ```bash\n> echo \"Zed is awesome!\"\n",
+                "echo \"Zed is awesome!\"\n",
+            ),
+            ("> ```text\n>\n> value\n>\n> ```", "\nvalue\n\n"),
+        ] {
+            assert_code_block_copy(source, expected, cx);
+        }
+    }
+
+    fn assert_code_block_copy(source: &str, expected: &str, cx: &mut TestAppContext) {
+        struct CodeBlockCopyTestView {
+            markdown: Entity<Markdown>,
+        }
+
+        impl Render for CodeBlockCopyTestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    MarkdownElement::new(self.markdown.clone(), MarkdownStyle::default())
+                        .code_block_renderer(CodeBlockRenderer::Default {
+                            copy_button_visibility: CopyButtonVisibility::AlwaysVisible,
+                            wrap_button_visibility: WrapButtonVisibility::Hidden,
+                            border: false,
+                        }),
+                )
+            }
+        }
+
+        ensure_theme_initialized(cx);
+
+        let source = source.to_string();
+        let (_, cx) = cx.add_window_view(|_, cx| CodeBlockCopyTestView {
+            markdown: cx.new(|cx| Markdown::new(source.into(), None, None, cx)),
+        });
+        cx.run_until_parked();
+
+        let copy_button_bounds = cx
+            .debug_bounds("ICON-Copy")
+            .expect("copy code button should be rendered");
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "<copy button did not write to the clipboard>".to_string(),
+        ));
+        cx.simulate_click(copy_button_bounds.center(), Modifiers::default());
+
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(expected.to_string())
+        );
+
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+    }
+
+    fn render_markdown(markdown: &str, cx: &mut TestAppContext) -> RenderedText {
+        render_markdown_with_language_registry(markdown, None, cx)
+    }
+
+    #[track_caller]
+    fn assert_mappings(rendered: &RenderedText, expected: Vec<Vec<(usize, usize)>>) {
+        assert_eq!(rendered.lines.len(), expected.len(), "line count mismatch");
+        for (line_ix, line_mappings) in expected.into_iter().enumerate() {
+            let line = &rendered.lines[line_ix];
+
+            assert!(
+                line.source_mappings.windows(2).all(|mappings| {
+                    mappings[0].source_index < mappings[1].source_index
+                        && mappings[0].rendered_index < mappings[1].rendered_index
+                }),
+                "line {} has duplicate mappings: {:?}",
+                line_ix,
+                line.source_mappings
+            );
+
+            for (rendered_ix, source_ix) in line_mappings {
+                assert_eq!(
+                    line.source_index_for_rendered_index(rendered_ix),
+                    source_ix,
+                    "line {}, rendered_ix {}",
+                    line_ix,
+                    rendered_ix
+                );
+
+                assert_eq!(
+                    line.rendered_index_for_source_index(source_ix),
+                    rendered_ix,
+                    "line {}, source_ix {}",
+                    line_ix,
+                    source_ix
+                );
+            }
+        }
+    }
+
+    fn has_code_block(markdown: &str) -> bool {
+        let parsed_data = parse_markdown_with_options(markdown, false, false, false);
+        parsed_data
+            .events
+            .iter()
+            .any(|(_, event)| matches!(event, MarkdownEvent::Start(MarkdownTag::CodeBlock { .. })))
+    }
+
+    fn nbsp(n: usize) -> String {
+        "\u{00A0}".repeat(n)
+    }
+
+    fn preview_heading_weights(cx: &mut TestAppContext, font: MarkdownFont) -> [FontWeight; 6] {
+        let (_, cx) = cx.add_window_view(|_, _| TestWindow);
+        cx.update(|window, cx| {
+            let style = MarkdownStyle::themed(font, window, cx);
+            let levels = style
+                .heading_level_styles
+                .expect("preview markdown should define per-level heading styles");
+            [
+                levels.h1, levels.h2, levels.h3, levels.h4, levels.h5, levels.h6,
+            ]
+            .map(|level| {
+                level
+                    .and_then(|level| level.font_weight)
+                    .expect("every preview heading level should set a font weight")
+            })
+        })
     }
 }
