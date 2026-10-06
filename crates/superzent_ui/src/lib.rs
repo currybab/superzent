@@ -411,6 +411,9 @@ struct WorkspaceAttentionController {
     // Sessions an agent reported before its terminal's view was registered, which happens
     // when a preset's agent starts while its terminal is still being set up.
     pending_agent_resumes: BTreeMap<String, Option<AgentResume>>,
+    // How often each terminal's agent has exited, so a session looked up in the background
+    // isn't recorded after its agent is gone.
+    agent_resume_clears: BTreeMap<String, u64>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
@@ -517,6 +520,7 @@ impl WorkspaceAttentionController {
             workspace_ids_by_terminal: BTreeMap::new(),
             terminal_views_by_terminal: BTreeMap::new(),
             pending_agent_resumes: BTreeMap::new(),
+            agent_resume_clears: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
             next_attention_sequence: 0,
@@ -593,6 +597,7 @@ impl WorkspaceAttentionController {
         self.terminal_ids_by_entity.remove(&entity_id);
         self.terminal_views_by_terminal.remove(terminal_id);
         self.pending_agent_resumes.remove(terminal_id);
+        self.agent_resume_clears.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
         self.agent_sessions.remove(terminal_id);
@@ -764,14 +769,68 @@ impl WorkspaceAttentionController {
     }
 
     fn sync_terminal_agent_resume(&mut self, event: &AgentHookEvent, cx: &mut Context<Self>) {
-        let Some(update) = agent_resume_update(event, |session_id| {
-            codex_session_is_saved(session_id, event.codex_home.as_deref())
-        }) else {
+        let Some(update) = agent_resume_update(event) else {
             return;
         };
-        let Some(terminal_view) = self.live_terminal_view(&event.terminal_id) else {
+        let terminal_id = event.terminal_id.clone();
+        match update {
+            AgentResumeUpdate::Clear => {
+                *self
+                    .agent_resume_clears
+                    .entry(terminal_id.clone())
+                    .or_default() += 1;
+                self.store_agent_resume(&terminal_id, None, cx);
+            }
+            AgentResumeUpdate::Set(agent_resume) => {
+                self.store_agent_resume(&terminal_id, Some(agent_resume), cx);
+            }
+            AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume,
+                session_id,
+            } => {
+                let clears = self.agent_resume_clears(&terminal_id);
+                let codex_home = event.codex_home.clone();
+                // Finding an old thread's rollout can take a while.
+                let is_saved = cx.background_spawn({
+                    let session_id = session_id.clone();
+                    async move { codex_session_is_saved(&session_id, codex_home.as_deref()) }
+                });
+                cx.spawn(async move |this, cx| {
+                    if !is_saved.await {
+                        log::debug!("not resuming Codex thread {session_id}: it isn't saved");
+                        return;
+                    }
+                    let stored = this.update(cx, |this, cx| {
+                        // The agent may have exited while its thread was being looked up.
+                        if this.agent_resume_clears(&terminal_id) == clears {
+                            this.store_agent_resume(&terminal_id, Some(agent_resume), cx);
+                        }
+                    });
+                    if stored.is_err() {
+                        log::debug!("dropped the resume of Codex thread {session_id}");
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
+    fn agent_resume_clears(&self, terminal_id: &str) -> u64 {
+        self.agent_resume_clears
+            .get(terminal_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn store_agent_resume(
+        &mut self,
+        terminal_id: &str,
+        update: Option<AgentResume>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
             self.pending_agent_resumes
-                .insert(event.terminal_id.clone(), update);
+                .insert(terminal_id.to_string(), update);
             return;
         };
         apply_agent_resume(terminal_view, update, cx);
@@ -8916,8 +8975,6 @@ fn agent_display_name(
     }
 }
 
-/// What a hook event says about the session a restart could resume: `Some(None)` once the
-/// agent has exited on its own.
 fn apply_agent_resume(
     terminal_view: Entity<TerminalView>,
     update: Option<AgentResume>,
@@ -8941,14 +8998,23 @@ fn apply_agent_resume(
     });
 }
 
-fn agent_resume_update(
-    event: &AgentHookEvent,
-    codex_session_is_saved: impl FnOnce(&str) -> bool,
-) -> Option<Option<AgentResume>> {
+#[derive(Debug, PartialEq)]
+enum AgentResumeUpdate {
+    Clear,
+    Set(AgentResume),
+    // Codex also reports threads it never saves, so one only counts once it is found saved.
+    SetIfCodexSaved {
+        agent_resume: AgentResume,
+        session_id: String,
+    },
+}
+
+/// What a hook event says about the session a restart could resume.
+fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
     // Agents read from the screen report no sessions.
     let kind = event.agent?;
     match event.event_type {
-        AgentHookEventType::SessionEnd => Some(None),
+        AgentHookEventType::SessionEnd => Some(AgentResumeUpdate::Clear),
         // Agents nested in another agent's terminal never report these, so they can't
         // replace the outer agent's session.
         AgentHookEventType::SessionStart | AgentHookEventType::Stop => {
@@ -8957,15 +9023,17 @@ fn agent_resume_update(
                 .session_id
                 .clone()
                 .or_else(|| kind.resumed_session_id(launch_args))?;
-            if kind == AgentKind::Codex && !codex_session_is_saved(&session_id) {
-                log::debug!("not resuming Codex thread {session_id}: it isn't saved");
-                return None;
-            }
-            let command = kind.resume_command(&session_id, launch_args)?;
-            Some(Some(AgentResume {
-                command,
+            let agent_resume = AgentResume {
+                command: kind.resume_command(&session_id, launch_args)?,
                 environment: BTreeMap::new(),
-            }))
+            };
+            Some(match kind {
+                AgentKind::Claude => AgentResumeUpdate::Set(agent_resume),
+                AgentKind::Codex => AgentResumeUpdate::SetIfCodexSaved {
+                    agent_resume,
+                    session_id,
+                },
+            })
         }
         AgentHookEventType::Start | AgentHookEventType::PermissionRequest => None,
     }
@@ -10412,38 +10480,40 @@ mod tests {
         }
     }
 
-    fn agent_resume_update_for(event: &AgentHookEvent) -> Option<Option<AgentResume>> {
-        agent_resume_update(event, |_| true)
+    fn agent_resume(command: &str) -> AgentResume {
+        AgentResume {
+            command: command.to_string(),
+            environment: BTreeMap::new(),
+        }
     }
 
     #[test]
     fn a_session_is_resumable_until_its_agent_exits() {
         let claude = Some(AgentKind::Claude);
         assert_eq!(
-            agent_resume_update_for(&hook_event(
+            agent_resume_update(&hook_event(
                 AgentHookEventType::SessionStart,
                 claude,
                 Some("1b2c")
             )),
-            Some(Some(AgentResume {
-                command: "claude --resume 1b2c".to_string(),
-                environment: BTreeMap::new(),
-            }))
+            Some(AgentResumeUpdate::Set(agent_resume("claude --resume 1b2c")))
         );
+        // Codex also reports threads it never saves, like the one that titles a
+        // conversation, so its threads are looked up first.
         assert_eq!(
-            agent_resume_update_for(&hook_event(
+            agent_resume_update(&hook_event(
                 AgentHookEventType::Stop,
                 Some(AgentKind::Codex),
                 Some("019a")
             )),
-            Some(Some(AgentResume {
-                command: "codex resume 019a".to_string(),
-                environment: BTreeMap::new(),
-            }))
+            Some(AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume: agent_resume("codex resume 019a"),
+                session_id: "019a".to_string(),
+            })
         );
         assert_eq!(
-            agent_resume_update_for(&hook_event(AgentHookEventType::SessionEnd, claude, None)),
-            Some(None)
+            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, claude, None)),
+            Some(AgentResumeUpdate::Clear)
         );
 
         // A resumed Codex session is known from its launch before any turn completes.
@@ -10454,23 +10524,11 @@ mod tests {
         );
         resumed_codex.launch_args = Some(vec!["resume".to_string(), "019a".to_string()]);
         assert_eq!(
-            agent_resume_update(&resumed_codex, |session_id| session_id == "019a"),
-            Some(Some(AgentResume {
-                command: "codex resume 019a".to_string(),
-                environment: BTreeMap::new(),
-            }))
-        );
-        // A thread Codex never saves, like the one that titles a conversation.
-        assert_eq!(
-            agent_resume_update(
-                &hook_event(
-                    AgentHookEventType::Stop,
-                    Some(AgentKind::Codex),
-                    Some("title")
-                ),
-                |_| false
-            ),
-            None
+            agent_resume_update(&resumed_codex),
+            Some(AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume: agent_resume("codex resume 019a"),
+                session_id: "019a".to_string(),
+            })
         );
     }
 
@@ -10478,7 +10536,7 @@ mod tests {
     fn nested_and_screen_agents_do_not_change_what_resumes() {
         // Activity can come from an agent nested in the terminal's agent.
         assert_eq!(
-            agent_resume_update_for(&hook_event(
+            agent_resume_update(&hook_event(
                 AgentHookEventType::Start,
                 Some(AgentKind::Claude),
                 Some("nested")
@@ -10487,7 +10545,7 @@ mod tests {
         );
         // Codex reports its thread only once a turn completes.
         assert_eq!(
-            agent_resume_update_for(&hook_event(
+            agent_resume_update(&hook_event(
                 AgentHookEventType::SessionStart,
                 Some(AgentKind::Codex),
                 None
@@ -10496,11 +10554,11 @@ mod tests {
         );
         // Agents read from the screen have no session to resume.
         assert_eq!(
-            agent_resume_update_for(&hook_event(AgentHookEventType::SessionEnd, None, None)),
+            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, None, None)),
             None
         );
         assert_eq!(
-            agent_resume_update_for(&hook_event(
+            agent_resume_update(&hook_event(
                 AgentHookEventType::Stop,
                 Some(AgentKind::Claude),
                 Some("1; rm -rf ~")
