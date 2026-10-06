@@ -75,7 +75,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
-    AgentKind, ScreenAgent,
+    AgentKind, ScreenAgent, codex_session_is_saved,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -88,7 +88,9 @@ use terminal::{
     Event as TerminalEvent, Terminal,
     terminal_settings::{TerminalAgentNotificationMode, TerminalSettings},
 };
-use terminal_view::{TerminalTabAttention, TerminalView, terminal_panel::TerminalPanel};
+use terminal_view::{
+    AgentResume, TerminalTabAttention, TerminalView, terminal_panel::TerminalPanel,
+};
 #[cfg(feature = "acp_tabs")]
 use ui::ContextMenuEntry;
 use ui::{
@@ -751,6 +753,34 @@ impl WorkspaceAttentionController {
         });
     }
 
+    fn sync_terminal_agent_resume(&mut self, event: &AgentHookEvent, cx: &mut Context<Self>) {
+        let Some(update) = agent_resume_update(event) else {
+            return;
+        };
+        if update.is_some()
+            && event.agent == Some(AgentKind::Codex)
+            && !event
+                .session_id
+                .as_deref()
+                .is_some_and(codex_session_is_saved)
+        {
+            log::debug!(
+                "not resuming Codex thread {:?}: it isn't saved",
+                event.session_id
+            );
+            return;
+        }
+        let Some(terminal_view) = self.live_terminal_view(&event.terminal_id) else {
+            return;
+        };
+        // Hook events can arrive while the terminal view is being updated.
+        cx.defer(move |cx| {
+            terminal_view.update(cx, |terminal_view, cx| {
+                terminal_view.set_agent_resume(update, cx);
+            });
+        });
+    }
+
     /// The icon and title a terminal's tab shows while an agent runs in it: the same task
     /// title as its agent list row, or else the agent's name.
     fn terminal_tab_agent(
@@ -963,6 +993,7 @@ impl WorkspaceAttentionController {
         }
         self.track_agent_session(&event);
         self.sync_terminal_tab_agent(&event.terminal_id, cx);
+        self.sync_terminal_agent_resume(&event, cx);
         match event.event_type {
             AgentHookEventType::SessionStart => {
                 cx.notify();
@@ -8889,6 +8920,28 @@ fn agent_display_name(
     }
 }
 
+/// What a hook event says about the session a restart could resume: `Some(None)` once the
+/// agent has exited on its own.
+fn agent_resume_update(event: &AgentHookEvent) -> Option<Option<AgentResume>> {
+    // Agents read from the screen report no sessions.
+    let kind = event.agent?;
+    match event.event_type {
+        AgentHookEventType::SessionEnd => Some(None),
+        // Agents nested in another agent's terminal never report these, so they can't
+        // replace the outer agent's session.
+        AgentHookEventType::SessionStart | AgentHookEventType::Stop => {
+            let launch_args = event.launch_args.as_deref().unwrap_or_default();
+            let session_id = event
+                .session_id
+                .clone()
+                .or_else(|| kind.resumed_session_id(launch_args))?;
+            let command = kind.resume_command(&session_id, launch_args)?;
+            Some(Some(AgentResume { command }))
+        }
+        AgentHookEventType::Start | AgentHookEventType::PermissionRequest => None,
+    }
+}
+
 fn terminal_runs_agent(terminal: &Terminal) -> bool {
     agent_process_alive(
         terminal
@@ -10310,6 +10363,101 @@ mod tests {
             acp_agent_name: None,
             attention_patterns: Vec::new(),
         }
+    }
+
+    fn hook_event(
+        event_type: AgentHookEventType,
+        agent: Option<AgentKind>,
+        session_id: Option<&str>,
+    ) -> AgentHookEvent {
+        AgentHookEvent {
+            event_type,
+            terminal_id: "terminal".to_string(),
+            workspace_id: None,
+            session_id: session_id.map(str::to_string),
+            cwd: None,
+            agent,
+            prompt: None,
+            launch_args: None,
+        }
+    }
+
+    #[test]
+    fn a_session_is_resumable_until_its_agent_exits() {
+        let claude = Some(AgentKind::Claude);
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::SessionStart,
+                claude,
+                Some("1b2c")
+            )),
+            Some(Some(AgentResume {
+                command: "claude --resume 1b2c".to_string(),
+            }))
+        );
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::Stop,
+                Some(AgentKind::Codex),
+                Some("019a")
+            )),
+            Some(Some(AgentResume {
+                command: "codex resume 019a".to_string(),
+            }))
+        );
+        assert_eq!(
+            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, claude, None)),
+            Some(None)
+        );
+
+        // A resumed Codex session is known from its launch before any turn completes.
+        let mut resumed_codex = hook_event(
+            AgentHookEventType::SessionStart,
+            Some(AgentKind::Codex),
+            None,
+        );
+        resumed_codex.launch_args = Some(vec!["resume".to_string(), "019a".to_string()]);
+        assert_eq!(
+            agent_resume_update(&resumed_codex),
+            Some(Some(AgentResume {
+                command: "codex resume 019a".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn nested_and_screen_agents_do_not_change_what_resumes() {
+        // Activity can come from an agent nested in the terminal's agent.
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::Start,
+                Some(AgentKind::Claude),
+                Some("nested")
+            )),
+            None
+        );
+        // Codex reports its thread only once a turn completes.
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::SessionStart,
+                Some(AgentKind::Codex),
+                None
+            )),
+            None
+        );
+        // Agents read from the screen have no session to resume.
+        assert_eq!(
+            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, None, None)),
+            None
+        );
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::Stop,
+                Some(AgentKind::Claude),
+                Some("1; rm -rf ~")
+            )),
+            None
+        );
     }
 
     fn workspace_entry(kind: WorkspaceKind) -> WorkspaceEntry {

@@ -254,6 +254,7 @@ impl WorkspaceAttentionController {
                 cwd: None,
                 agent: None,
                 prompt: None,
+                launch_args: None,
             },
             cx,
         );

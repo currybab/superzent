@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine as _;
 use collections::HashMap;
 use serde::Deserialize;
 use std::{
@@ -43,6 +44,16 @@ if [ -n "$SUPERZENT_TERMINAL_ID" ]; then
 fi
 "#;
 
+// The arguments the agent was started with, so a restart can resume it the same way. They
+// are NUL-separated, which no argument can contain, and encoded to fit in a variable.
+const WRAPPER_LAUNCH_ARGS: &str = r#"
+if [ "$#" -gt 0 ]; then
+  export SUPERZENT_AGENT_ARGS="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
+else
+  unset SUPERZENT_AGENT_ARGS
+fi
+"#;
+
 static HOOK_RUNTIME: OnceLock<AgentHookRuntime> = OnceLock::new();
 
 fn debug_hooks_enabled() -> bool {
@@ -78,6 +89,8 @@ pub struct AgentHookEvent {
     pub agent: Option<AgentKind>,
     /// The first line of the user's prompt, when the hook payload carries one.
     pub prompt: Option<String>,
+    /// The arguments the agent was started with, when its wrapper reported them.
+    pub launch_args: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -456,6 +469,11 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
         cwd: params.cwd.map(PathBuf::from),
         agent: params.agent.as_deref().and_then(AgentKind::from_hook_value),
         prompt: params.payload.as_deref().and_then(prompt_from_hook_payload),
+        launch_args: params
+            .agent_args
+            .as_deref()
+            .filter(|agent_args| !agent_args.is_empty())
+            .and_then(decode_launch_args),
     }))
 }
 
@@ -463,6 +481,8 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
 struct HookRequestParams {
     #[serde(rename = "agent")]
     agent: Option<String>,
+    #[serde(rename = "agent_args")]
+    agent_args: Option<String>,
     #[serde(rename = "cwd")]
     cwd: Option<String>,
     #[serde(rename = "event_type")]
@@ -477,6 +497,24 @@ struct HookRequestParams {
     version: Option<String>,
     #[serde(rename = "workspace_id")]
     workspace_id: Option<String>,
+}
+
+fn decode_launch_args(encoded: &str) -> Option<Vec<String>> {
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(encoded) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            log::warn!("ignoring undecodable agent launch arguments: {error}");
+            return None;
+        }
+    };
+    let Some(arguments) = decoded.strip_suffix(&[0]) else {
+        log::warn!("ignoring agent launch arguments without a terminator");
+        return None;
+    };
+    arguments
+        .split(|byte| *byte == 0)
+        .map(|argument| String::from_utf8(argument.to_vec()).ok())
+        .collect()
 }
 
 /// Claude sends the prompt as `prompt` when it is submitted; Codex sends the turn's
@@ -629,6 +667,9 @@ if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
   esac
 fi
 
+# Claude names its session in every payload; Codex names its thread when a turn completes.
+_superzent_session_id=$(printf '%s\n' "$INPUT" | grep -oE '"(session_id|thread-id)"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | grep -oE '"[^"]*"$' | tr -d '"')
+
 # Only these payloads carry the prompt; tool events carry tool output, which can be
 # large, and Claude waits for every hook to finish.
 _superzent_payload=""
@@ -645,9 +686,10 @@ _superzent_status=$(printf '%s' "$_superzent_payload" | curl -sS "$SUPERZENT_AGE
   --data-urlencode "event_type=$EVENT_TYPE" \
   --data-urlencode "terminal_id=$SUPERZENT_TERMINAL_ID" \
   --data-urlencode "workspace_id=$SUPERZENT_WORKSPACE_ID" \
-  --data-urlencode "session_id=$SUPERZENT_SESSION_ID" \
+  --data-urlencode "session_id=$_superzent_session_id" \
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
+  --data-urlencode "agent_args=${SUPERZENT_AGENT_ARGS:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
   --data-urlencode "payload@-" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
@@ -740,7 +782,7 @@ fi
 
 {WRAPPER_NOTIFICATION_SCOPE}
 export {AGENT_KIND_ENV_VAR}=claude
-
+{WRAPPER_LAUNCH_ARGS}
 if [ "$_superzent_debug_enabled" = "1" ]; then
   echo "$(date '+%H:%M:%S') claude wrapper exec REAL_BIN=$REAL_BIN" >> "$_superzent_debug_log"
 fi
@@ -764,7 +806,7 @@ fi
 
 {WRAPPER_NOTIFICATION_SCOPE}
 export {AGENT_KIND_ENV_VAR}=codex
-
+{WRAPPER_LAUNCH_ARGS}
 _superzent_report_session() {{
   if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
     bash "{notify_script_path}" "$(printf '{{"hook_event_name":"%s"}}' "$1")" >/dev/null 2>&1 || true
@@ -1411,6 +1453,74 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             let event = receiver.recv_blocking().expect("receive hook event");
             assert_eq!(event.prompt.as_deref(), expected_prompt, "{payload}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notify_script_reports_the_agent_session() {
+        let (addr, receiver) = spawn_test_hook_server();
+        let directory = tempfile::tempdir().expect("create notify test directory");
+        let notify_script = directory.path().join("notify.sh");
+        write_executable_file(&notify_script, notify_script_content())
+            .expect("write notification hook");
+
+        for (payload, expected_session_id) in [
+            (
+                r#"{"hook_event_name":"Stop","session_id":"1b2c-claude","last_assistant_message":"see \"session_id\": \"other\""}"#,
+                Some("1b2c-claude"),
+            ),
+            (
+                r#"{"type":"agent-turn-complete","thread-id":"019a-codex","input-messages":["Rename"]}"#,
+                Some("019a-codex"),
+            ),
+            (r#"{"hook_event_name":"SessionStart"}"#, None),
+        ] {
+            let output = smol::block_on(
+                smol::process::Command::new("bash")
+                    .arg(&notify_script)
+                    .arg(payload)
+                    .env(
+                        AGENT_HOOK_URL_ENV_VAR,
+                        format!("http://{addr}{HOOK_ENDPOINT_PATH}"),
+                    )
+                    .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+                    .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
+                    .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                    .output(),
+            )
+            .expect("run notify script");
+            assert!(output.status.success(), "{output:?}");
+            let event = receiver.recv_blocking().expect("receive hook event");
+            assert_eq!(
+                event.session_id.as_deref(),
+                expected_session_id,
+                "{payload}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrappers_report_the_arguments_the_agent_started_with() {
+        let launch_args = ["--model", "opus", "Don't \"push\"\nyet", "", "--verbose"];
+        let output = smol::block_on(
+            smol::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "{WRAPPER_LAUNCH_ARGS}\nprintf '%s' \"$SUPERZENT_AGENT_ARGS\""
+                ))
+                .arg("wrapper")
+                .args(launch_args)
+                .output(),
+        )
+        .expect("run wrapper snippet");
+        assert!(output.status.success(), "{output:?}");
+        let encoded = String::from_utf8(output.stdout).expect("encoded arguments");
+        assert_eq!(
+            decode_launch_args(&encoded),
+            Some(launch_args.iter().map(|arg| arg.to_string()).collect())
+        );
+        assert_eq!(decode_launch_args("not base64!"), None);
     }
 
     #[test]

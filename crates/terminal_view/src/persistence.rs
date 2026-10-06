@@ -20,7 +20,7 @@ use workspace::{
 };
 
 use crate::{
-    TerminalView, default_working_directory,
+    AgentResume, TerminalView, default_working_directory,
     terminal_panel::{TerminalPanel, new_terminal_pane},
 };
 
@@ -64,7 +64,10 @@ fn serialize_pane(pane: &Entity<Pane>, active: bool, cx: &mut App) -> Serialized
         .items()
         .filter_map(|item| {
             let terminal_view = item.act_as::<TerminalView>(cx)?;
-            if terminal_view.read(cx).terminal().read(cx).task().is_some() {
+            let terminal_view = terminal_view.read(cx);
+            if terminal_view.terminal().read(cx).task().is_some()
+                && terminal_view.agent_resume().is_none()
+            {
                 None
             } else {
                 let id = item.item_id().as_u64();
@@ -422,6 +425,9 @@ impl Domain for TerminalDb {
         sql! (
             ALTER TABLE terminals ADD COLUMN custom_title TEXT;
         ),
+        sql! (
+            ALTER TABLE terminals ADD COLUMN agent_resume TEXT;
+        ),
     ];
 }
 
@@ -512,5 +518,97 @@ impl TerminalDb {
             FROM terminals
             WHERE item_id = ? AND workspace_id = ?
         }
+    }
+
+    pub async fn save_agent_resume(
+        &self,
+        item_id: ItemId,
+        workspace_id: WorkspaceId,
+        agent_resume: Option<AgentResume>,
+    ) -> Result<()> {
+        let agent_resume = agent_resume
+            .map(|agent_resume| serde_json::to_string(&agent_resume))
+            .transpose()?;
+        self.write(move |conn| {
+            let query = "INSERT INTO terminals (item_id, workspace_id, agent_resume)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT (workspace_id, item_id) DO UPDATE SET
+                    agent_resume = excluded.agent_resume";
+            let mut statement = Statement::prepare(conn, query)?;
+            let mut next_index = statement.bind(&item_id, 1)?;
+            next_index = statement.bind(&workspace_id, next_index)?;
+            statement.bind(&agent_resume, next_index)?;
+            statement.exec()
+        })
+        .await
+    }
+
+    pub fn get_agent_resume(
+        &self,
+        item_id: ItemId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<AgentResume>> {
+        // A terminal row without a session reads back as an empty string.
+        let Some(agent_resume) = self
+            .get_agent_resume_json(item_id, workspace_id)?
+            .filter(|agent_resume| !agent_resume.is_empty())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::from_str(&agent_resume)?))
+    }
+
+    query! {
+        fn get_agent_resume_json(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<String>> {
+            SELECT agent_resume
+            FROM terminals
+            WHERE item_id = ? AND workspace_id = ?
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl TerminalDb {
+        query! {
+            async fn next_workspace_id() -> Result<WorkspaceId> {
+                INSERT INTO workspaces DEFAULT VALUES RETURNING workspace_id
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn test_saves_and_restores_agent_resume() {
+        let db = TerminalDb(
+            db::open_test_db::<(WorkspaceDb, TerminalDb)>("test_saves_and_restores_agent_resume")
+                .await,
+        );
+        let workspace_id = db.next_workspace_id().await.unwrap();
+        let item_id = 1;
+        let agent_resume = AgentResume {
+            command: "codex resume 019a".to_string(),
+        };
+
+        db.save_custom_title(item_id, workspace_id, Some("api".to_string()))
+            .await
+            .unwrap();
+        db.save_agent_resume(item_id, workspace_id, Some(agent_resume.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_agent_resume(item_id, workspace_id).unwrap(),
+            Some(agent_resume)
+        );
+        assert_eq!(
+            db.get_custom_title(item_id, workspace_id).unwrap(),
+            Some("api".to_string())
+        );
+
+        db.save_agent_resume(item_id, workspace_id, None)
+            .await
+            .unwrap();
+        assert_eq!(db.get_agent_resume(item_id, workspace_id).unwrap(), None);
     }
 }
