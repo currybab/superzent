@@ -431,9 +431,7 @@ struct WorkspaceAttentionController {
     // The environment each preset gave the terminal it launched in, which its agents are
     // resumed with after a restart.
     preset_environments: BTreeMap<String, BTreeMap<String, String>>,
-    // How often each terminal's agent has exited, so a session looked up in the background
-    // isn't recorded after its agent is gone.
-    agent_resume_clears: BTreeMap<String, u64>,
+    agent_resume_sequences: BTreeMap<String, AgentResumeSequence>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
@@ -540,7 +538,7 @@ impl WorkspaceAttentionController {
             workspace_ids_by_terminal: BTreeMap::new(),
             terminal_views_by_terminal: BTreeMap::new(),
             pending_agent_resumes: BTreeMap::new(),
-            agent_resume_clears: BTreeMap::new(),
+            agent_resume_sequences: BTreeMap::new(),
             preset_environments: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
@@ -619,7 +617,7 @@ impl WorkspaceAttentionController {
         self.terminal_ids_by_entity.remove(&entity_id);
         self.terminal_views_by_terminal.remove(terminal_id);
         self.pending_agent_resumes.remove(terminal_id);
-        self.agent_resume_clears.remove(terminal_id);
+        self.agent_resume_sequences.remove(terminal_id);
         self.preset_environments.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
@@ -805,22 +803,22 @@ impl WorkspaceAttentionController {
         if agent_exited && update != AgentResumeUpdate::Clear {
             return;
         }
+        let sequence = self
+            .agent_resume_sequences
+            .entry(terminal_id.clone())
+            .or_default()
+            .issue();
         match update {
             AgentResumeUpdate::Clear => {
-                *self
-                    .agent_resume_clears
-                    .entry(terminal_id.clone())
-                    .or_default() += 1;
-                self.store_agent_resume(&terminal_id, None, cx);
+                self.store_agent_resume(&terminal_id, sequence, None, cx);
             }
             AgentResumeUpdate::Set(agent_resume) => {
-                self.store_agent_resume(&terminal_id, Some(agent_resume), cx);
+                self.store_agent_resume(&terminal_id, sequence, Some(agent_resume), cx);
             }
             AgentResumeUpdate::SetIfCodexSaved {
                 agent_resume,
                 session_id,
             } => {
-                let clears = self.agent_resume_clears(&terminal_id);
                 let codex_home = event.codex_home.clone();
                 // Finding an old thread's rollout can take a while.
                 let is_saved = cx.background_spawn({
@@ -833,10 +831,7 @@ impl WorkspaceAttentionController {
                         return;
                     }
                     let stored = this.update(cx, |this, cx| {
-                        // The agent may have exited while its thread was being looked up.
-                        if this.agent_resume_clears(&terminal_id) == clears {
-                            this.store_agent_resume(&terminal_id, Some(agent_resume), cx);
-                        }
+                        this.store_agent_resume(&terminal_id, sequence, Some(agent_resume), cx);
                     });
                     if stored.is_err() {
                         log::debug!("dropped the resume of Codex thread {session_id}");
@@ -847,19 +842,22 @@ impl WorkspaceAttentionController {
         }
     }
 
-    fn agent_resume_clears(&self, terminal_id: &str) -> u64 {
-        self.agent_resume_clears
-            .get(terminal_id)
-            .copied()
-            .unwrap_or_default()
-    }
-
     fn store_agent_resume(
         &mut self,
         terminal_id: &str,
+        sequence: u64,
         update: Option<AgentResume>,
         cx: &mut Context<Self>,
     ) {
+        let is_latest = self
+            .agent_resume_sequences
+            .entry(terminal_id.to_string())
+            .or_default()
+            .apply(sequence);
+        if !is_latest {
+            log::debug!("dropped a superseded agent resume for terminal {terminal_id}");
+            return;
+        }
         let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
             self.pending_agent_resumes
                 .insert(terminal_id.to_string(), update);
@@ -9043,6 +9041,32 @@ fn apply_agent_resume(
     });
 }
 
+/// Orders a terminal's resume updates by when they were reported, since a Codex thread is
+/// only recorded once a background lookup finds it saved: a lookup that finishes after a
+/// later update landed (another thread, or the agent's exit) is stale. A lookup that finds
+/// nothing doesn't hold back the ones before it, like the main thread's while the thread
+/// that titles it is looked up.
+#[derive(Debug, Default)]
+struct AgentResumeSequence {
+    issued: u64,
+    applied: u64,
+}
+
+impl AgentResumeSequence {
+    fn issue(&mut self) -> u64 {
+        self.issued += 1;
+        self.issued
+    }
+
+    fn apply(&mut self, sequence: u64) -> bool {
+        if sequence <= self.applied {
+            return false;
+        }
+        self.applied = sequence;
+        true
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum AgentResumeUpdate {
     Clear,
@@ -10592,6 +10616,26 @@ mod tests {
                 session_id: "019a".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn a_resume_update_reported_later_wins() {
+        let mut sequence = AgentResumeSequence::default();
+        let main_thread = sequence.issue();
+        let title_thread = sequence.issue();
+        let exit = sequence.issue();
+        // The thread that titles the conversation is never found saved, so it never
+        // applies, and the main thread's lookup still can.
+        assert!(sequence.apply(main_thread));
+        assert!(sequence.apply(exit));
+        // A lookup finishing after the agent exited.
+        assert!(!sequence.apply(title_thread));
+
+        let mut sequence = AgentResumeSequence::default();
+        let older_thread = sequence.issue();
+        let newer_thread = sequence.issue();
+        assert!(sequence.apply(newer_thread));
+        assert!(!sequence.apply(older_thread));
     }
 
     #[test]
