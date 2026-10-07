@@ -386,6 +386,8 @@ pub fn codex_session_is_saved(session_id: &str, codex_home: Option<&Path>) -> bo
 
 fn codex_session_is_saved_in(codex_home: &Path, session_id: &str) -> bool {
     let file_suffix = format!("-{session_id}.jsonl");
+    // Codex compresses older rollouts in place.
+    let compressed_file_suffix = format!("{file_suffix}.zst");
     // Sessions are filed by the local date they started on, which their time-ordered id
     // gives to within a day.
     let earliest_day = session_id_start_day(session_id);
@@ -416,10 +418,10 @@ fn codex_session_is_saved_in(codex_home: &Path, session_id: &str) -> bool {
                 {
                     return false;
                 }
-                if newest_first(&day_path)
-                    .iter()
-                    .any(|(file_name, _)| file_name.ends_with(&file_suffix))
-                {
+                if newest_first(&day_path).iter().any(|(file_name, _)| {
+                    file_name.ends_with(&file_suffix)
+                        || file_name.ends_with(&compressed_file_suffix)
+                }) {
                     return true;
                 }
             }
@@ -606,6 +608,15 @@ mod tests {
         assert!(codex_session_is_saved_in(
             codex_home.path(),
             "01a10c7d-1bb3-7341-9c38-8b490c4dcd6d"
+        ));
+        std::fs::write(
+            day.join("rollout-2026-10-05T09-00-00-01a10a00-0000-7000-8000-000000000000.jsonl.zst"),
+            "",
+        )
+        .expect("write compressed session");
+        assert!(codex_session_is_saved_in(
+            codex_home.path(),
+            "01a10a00-0000-7000-8000-000000000000"
         ));
         // The thread that titled the conversation.
         assert!(!codex_session_is_saved_in(
