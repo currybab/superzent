@@ -6,6 +6,7 @@ use crate::AgentKind;
 enum OptionValue {
     None,
     Required,
+    // Taken only when written inline (`--debug=api`); a separate argument is the prompt.
     Optional,
     // Takes every following argument up to the next option, as the agent's CLI does.
     Variadic,
@@ -282,13 +283,8 @@ fn split_launch_args(args: &[String], known_options: &[CliOption]) -> Option<Lau
         let takes_next = |index: usize| args.get(index).is_some_and(|next| !next.starts_with('-'));
         if !has_inline_value {
             match known_option.map_or(OptionValue::None, |option| option.value) {
-                OptionValue::None => {}
+                OptionValue::None | OptionValue::Optional => {}
                 OptionValue::Required => index = (index + 1).min(args.len()),
-                OptionValue::Optional => {
-                    if takes_next(index) {
-                        index += 1;
-                    }
-                }
                 OptionValue::Variadic => {
                     while takes_next(index) {
                         index += 1;
@@ -541,6 +537,16 @@ mod tests {
             Some(
                 "claude --system-prompt-file ./prompt.md --unknown-flag --verbose --unknown-inline=y --resume 1b2c"
             )
+        );
+        // An optional value is only ever written inline.
+        assert_eq!(
+            AgentKind::Claude
+                .resume_command(
+                    "1b2c",
+                    &args(&["--debug", "Fix the bug", "--remote-control=desk"])
+                )
+                .as_deref(),
+            Some("claude --debug --remote-control=desk --resume 1b2c")
         );
         // Known flags keep their place ahead of a prompt.
         assert_eq!(
