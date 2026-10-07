@@ -819,7 +819,7 @@ impl WorkspaceAttentionController {
                 agent_resume,
                 session_id,
             } => {
-                let codex_home = event.codex_home.clone();
+                let codex_home = agent_codex_home(event);
                 // Finding an old thread's rollout can take a while.
                 let is_saved = cx.background_spawn({
                     let session_id = session_id.clone();
@@ -9081,6 +9081,15 @@ enum AgentResumeUpdate {
     },
 }
 
+/// The `CODEX_HOME` the agent reported, which Codex reads relative to its own directory.
+fn agent_codex_home(event: &AgentHookEvent) -> Option<PathBuf> {
+    let codex_home = event.codex_home.clone()?;
+    if codex_home.is_absolute() {
+        return Some(codex_home);
+    }
+    Some(event.cwd.as_ref()?.join(codex_home))
+}
+
 /// What a hook event says about the session a restart could resume.
 fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
     // Agents read from the screen report no sessions.
@@ -9097,8 +9106,7 @@ fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
                 .or_else(|| kind.resumed_session_id(launch_args))?;
             // The agent's own `CODEX_HOME`, which its shell may have set by hand, is where
             // its session has to be looked up again.
-            let environment = event
-                .codex_home
+            let environment = agent_codex_home(event)
                 .iter()
                 .filter(|_| kind == AgentKind::Codex)
                 .map(|codex_home| {
@@ -10608,7 +10616,8 @@ mod tests {
             None,
         );
         resumed_codex.launch_args = Some(vec!["resume".to_string(), "019a".to_string()]);
-        resumed_codex.codex_home = Some(PathBuf::from("/work/.codex"));
+        resumed_codex.codex_home = Some(PathBuf::from(".codex"));
+        resumed_codex.cwd = Some(PathBuf::from("/work"));
         assert_eq!(
             agent_resume_update(&resumed_codex),
             Some(AgentResumeUpdate::SetIfCodexSaved {
