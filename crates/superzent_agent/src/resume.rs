@@ -252,6 +252,7 @@ const CODEX_SUBCOMMANDS: &[&str] = &[
 
 struct LaunchArgs {
     options: Vec<String>,
+    // Only those before a `--`; anything after it is a prompt, never a subcommand.
     positionals: Vec<String>,
 }
 
@@ -262,7 +263,6 @@ fn split_launch_args(args: &[String], known_options: &[CliOption]) -> Option<Lau
     while let Some(arg) = args.get(index) {
         index += 1;
         if arg == "--" {
-            positionals.extend(args[index..].iter().cloned());
             break;
         }
         if !arg.starts_with('-') || arg == "-" {
@@ -578,6 +578,13 @@ mod tests {
         assert_eq!(
             AgentKind::Codex
                 .resume_command("019a", &args(&["resume", "--last", "--search"]))
+                .as_deref(),
+            Some("codex --search resume 019a")
+        );
+        // A prompt that reads like a subcommand.
+        assert_eq!(
+            AgentKind::Codex
+                .resume_command("019a", &args(&["--search", "--", "review"]))
                 .as_deref(),
             Some("codex --search resume 019a")
         );
