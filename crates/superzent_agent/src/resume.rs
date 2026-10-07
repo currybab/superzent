@@ -179,9 +179,11 @@ const CODEX_OPTIONS: &[CliOption] = &[
             "--dangerously-bypass-hook-trust",
             "--no-alt-screen",
             "--no-daemon",
+            "--not-so-yolo",
             "--oss",
             "--search",
             "--strict-config",
+            "--yolo",
         ],
         OptionValue::None,
         OnResume::Keep,
@@ -582,6 +584,12 @@ mod tests {
                 .resume_command("019a", &args(&["resume", "--last", "--search"]))
                 .as_deref(),
             Some("codex --search resume 019a")
+        );
+        assert_eq!(
+            AgentKind::Codex
+                .resume_command("019a", &args(&["--yolo", "Fix it"]))
+                .as_deref(),
+            Some("codex --yolo resume 019a")
         );
         // A prompt that reads like a subcommand.
         assert_eq!(
