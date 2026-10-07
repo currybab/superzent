@@ -407,12 +407,13 @@ impl Project {
             let shell_kind = ShellKind::new(&shell, path_style.is_windows());
             let mut env = env_task.await.unwrap_or_default();
             env.extend(settings.env);
-            if remote_client.is_none()
-                && !environment_overrides.contains_key(superzent_agent::AGENT_TERMINAL_ID_ENV_VAR)
-            {
+            let injects_agent_environment = remote_client.is_none()
+                && !environment_overrides.contains_key(superzent_agent::AGENT_TERMINAL_ID_ENV_VAR);
+            env.extend(environment_overrides);
+            // After the overrides, so the agent wrappers stay first on a `PATH` they set.
+            if injects_agent_environment {
                 maybe_inject_superzent_agent_environment(&mut env);
             }
-            env.extend(environment_overrides);
 
             let activation_script = maybe!(async {
                 for toolchain in toolchains {
