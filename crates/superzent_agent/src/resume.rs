@@ -429,7 +429,12 @@ fn codex_session_is_saved_in(codex_home: &Path, session_id: &str) -> bool {
 }
 
 /// The day before a UUIDv7 session id was made, as Codex names its session directories.
+/// Older sessions have random (v4) ids, which say nothing about when they were made.
 fn session_id_start_day(session_id: &str) -> Option<String> {
+    let is_time_ordered = session_id.len() == 36 && session_id.chars().nth(14) == Some('7');
+    if !is_time_ordered {
+        return None;
+    }
     let timestamp_hex = session_id.replace('-', "");
     let milliseconds = i64::from_str_radix(timestamp_hex.get(..12)?, 16).ok()?;
     let started = chrono::DateTime::from_timestamp_millis(milliseconds)?;
@@ -641,6 +646,24 @@ mod tests {
             session_id_start_day("01a10c7d-1bb3-7341-9c38-8b490c4dcd6d").as_deref(),
             Some("2026/10/04")
         );
+
+        // An older session's random id, whose leading bits read as a date years from now.
+        let older_day = codex_home.path().join("sessions/2025/09/17");
+        std::fs::create_dir_all(&older_day).expect("create older session directory");
+        std::fs::write(
+            older_day
+                .join("rollout-2025-09-17T11-00-39-ff9bb664-d826-4ac0-b15c-a77f8eaccc28.jsonl"),
+            "",
+        )
+        .expect("write older session");
+        assert_eq!(
+            session_id_start_day("ff9bb664-d826-4ac0-b15c-a77f8eaccc28"),
+            None
+        );
+        assert!(codex_session_is_saved_in(
+            codex_home.path(),
+            "ff9bb664-d826-4ac0-b15c-a77f8eaccc28"
+        ));
     }
 
     #[test]

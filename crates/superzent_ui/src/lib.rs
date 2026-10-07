@@ -831,7 +831,10 @@ impl WorkspaceAttentionController {
                         return;
                     }
                     let stored = this.update(cx, |this, cx| {
-                        this.store_agent_resume(&terminal_id, sequence, Some(agent_resume), cx);
+                        // The terminal may have closed while its thread was being looked up.
+                        if this.agent_sessions.contains_key(&terminal_id) {
+                            this.store_agent_resume(&terminal_id, sequence, Some(agent_resume), cx);
+                        }
                     });
                     if stored.is_err() {
                         log::debug!("dropped the resume of Codex thread {session_id}");

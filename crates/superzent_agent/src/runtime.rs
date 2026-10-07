@@ -45,12 +45,17 @@ fi
 "#;
 
 // The arguments the agent was started with, so a restart can resume it the same way. They
-// are NUL-separated, which no argument can contain, and encoded to fit in a variable.
+// are NUL-separated, which no argument can contain, and encoded to fit in a variable. Long
+// ones are left out: the agent's environment and the hook's command line would carry them,
+// and an oversized variable or argument keeps a program from starting at all.
 const WRAPPER_LAUNCH_ARGS: &str = r#"
+unset SUPERZENT_AGENT_ARGS
 if [ "$#" -gt 0 ]; then
-  export SUPERZENT_AGENT_ARGS="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
-else
-  unset SUPERZENT_AGENT_ARGS
+  _superzent_agent_args="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
+  if [ "${#_superzent_agent_args}" -le 16384 ]; then
+    export SUPERZENT_AGENT_ARGS="$_superzent_agent_args"
+  fi
+  unset _superzent_agent_args
 fi
 "#;
 
@@ -1570,6 +1575,21 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             Some(launch_args.iter().map(|arg| arg.to_string()).collect())
         );
         assert_eq!(decode_launch_args("not base64!"), None);
+
+        let long_prompt = "a".repeat(64 * 1024);
+        let output = smol::block_on(
+            smol::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "{WRAPPER_LAUNCH_ARGS}\nprintf '%s' \"${{SUPERZENT_AGENT_ARGS-unset}}\""
+                ))
+                .arg("wrapper")
+                .args(["--append-system-prompt", &long_prompt])
+                .output(),
+        )
+        .expect("run wrapper snippet");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "unset");
     }
 
     #[test]
