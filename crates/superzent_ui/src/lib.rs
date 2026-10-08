@@ -819,7 +819,7 @@ impl WorkspaceAttentionController {
                 agent_resume,
                 session_id,
             } => {
-                let codex_home = agent_directory(event, event.codex_home.as_ref());
+                let codex_home = codex_sessions_home(event);
                 // Finding an old thread's rollout can take a while.
                 let is_saved = cx.background_spawn({
                     let session_id = session_id.clone();
@@ -9091,6 +9091,13 @@ fn agent_directory(event: &AgentHookEvent, directory: Option<&PathBuf>) -> Optio
     Some(event.cwd.as_ref()?.join(directory))
 }
 
+/// Where the agent's Codex keeps its sessions: its `CODEX_HOME`, or else `~/.codex` under
+/// its own `HOME`, which a preset can set apart from Superzent's.
+fn codex_sessions_home(event: &AgentHookEvent) -> Option<PathBuf> {
+    agent_directory(event, event.codex_home.as_ref())
+        .or_else(|| Some(agent_directory(event, event.home.as_ref())?.join(".codex")))
+}
+
 /// What a hook event says about the session a restart could resume.
 fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
     // Agents read from the screen report no sessions.
@@ -10579,6 +10586,7 @@ mod tests {
             prompt: None,
             launch_args: Some(Vec::new()),
             codex_home: None,
+            home: None,
             claude_config_dir: None,
             skips_claude_history: false,
         }
@@ -10638,6 +10646,28 @@ mod tests {
                 },
                 session_id: "019a".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn codex_sessions_are_looked_up_under_the_agents_home() {
+        let mut codex = hook_event(
+            AgentHookEventType::Stop,
+            Some(AgentKind::Codex),
+            Some("019a"),
+        );
+        assert_eq!(codex_sessions_home(&codex), None);
+
+        codex.home = Some(PathBuf::from("/custom/home"));
+        assert_eq!(
+            codex_sessions_home(&codex),
+            Some(PathBuf::from("/custom/home/.codex"))
+        );
+
+        codex.codex_home = Some(PathBuf::from("/work/.codex"));
+        assert_eq!(
+            codex_sessions_home(&codex),
+            Some(PathBuf::from("/work/.codex"))
         );
     }
 
