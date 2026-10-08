@@ -443,6 +443,7 @@ impl TerminalView {
         if text.is_empty() {
             return self.clear_marked_text(cx);
         }
+        self.cancel_pending_resume(cx);
         self.ime_state = Some(ImeState { marked_text: text });
         cx.notify();
     }
@@ -465,6 +466,8 @@ impl TerminalView {
     /// Commits (sends) the given text to the PTY. Called by InputHandler::replace_text_in_range.
     pub(crate) fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if !text.is_empty() {
+            // Typed text reaches the terminal here rather than as an input event.
+            self.cancel_pending_resume(cx);
             self.terminal.update(cx, |term, _| {
                 term.input(text.to_string().into_bytes());
             });
@@ -3135,6 +3138,24 @@ mod tests {
             assert!(view.pending_resume_deadline.is_none());
             assert_eq!(view.agent_resume(), None);
         });
+
+        // Text typed through the input method, like a plain `ls` or a composed Hangul
+        // syllable, skips the input event.
+        for type_text in [
+            (|view: &mut TerminalView, cx: &mut Context<TerminalView>| view.commit_text("ls", cx))
+                as fn(&mut TerminalView, &mut Context<TerminalView>),
+            |view, cx| view.set_marked_text("ㅎ".to_string(), cx),
+        ] {
+            terminal_view.update(cx, |view, cx| {
+                view.pending_resume = Some(codex.clone());
+                view.agent_resume = Some(codex.clone());
+                view.schedule_pending_resume(cx);
+                type_text(view, cx);
+                assert_eq!(view.pending_resume, None);
+                assert!(view.pending_resume_deadline.is_none());
+                assert_eq!(view.agent_resume(), None);
+            });
+        }
     }
 
     #[gpui::test]
