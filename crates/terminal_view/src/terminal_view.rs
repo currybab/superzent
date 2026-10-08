@@ -1994,6 +1994,11 @@ impl Item for TerminalView {
             ))
             .detach();
         }
+        if self.workspace_id != workspace.database_id() {
+            // A save still in flight can land under the old workspace after the row moved, so
+            // the row is saved again under the new one.
+            self.needs_serialize = true;
+        }
         self.workspace_id = workspace.database_id();
 
         let new_workspace = workspace.weak_handle();
@@ -3156,6 +3161,54 @@ mod tests {
                 assert_eq!(view.agent_resume(), None);
             });
         }
+    }
+
+    #[gpui::test]
+    async fn test_moving_to_another_workspace_saves_the_terminal_again(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace, window) = init_test_with_window(cx).await;
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+        let terminal_view = window
+            .update(cx, |_, window, cx| {
+                cx.new(|cx| {
+                    TerminalView::new(
+                        terminal,
+                        workspace.downgrade(),
+                        Some(WorkspaceId::from_i64(1)),
+                        project.downgrade(),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap();
+
+        let add_to_workspace = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        terminal_view.update(cx, |view, cx| {
+                            view.needs_serialize = false;
+                            view.added_to_workspace(workspace, window, cx);
+                            view.needs_serialize
+                        })
+                    })
+                })
+                .unwrap()
+        };
+        let other_workspace_id = workspace.read_with(cx, |workspace, _| workspace.database_id());
+        assert_ne!(other_workspace_id, Some(WorkspaceId::from_i64(1)));
+        assert!(add_to_workspace(cx));
+        assert_eq!(
+            terminal_view.read_with(cx, |view, _| view.workspace_id),
+            other_workspace_id
+        );
+        // Staying in the same workspace needs no save.
+        assert!(!add_to_workspace(cx));
     }
 
     #[gpui::test]
