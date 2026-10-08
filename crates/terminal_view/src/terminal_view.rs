@@ -348,6 +348,11 @@ impl TerminalView {
             focus_out,
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
+            cx.subscribe_self(|this: &mut Self, event: &Event, cx| {
+                if matches!(event, Event::Input) {
+                    this.cancel_pending_resume(cx);
+                }
+            }),
         ];
 
         Self {
@@ -574,17 +579,28 @@ impl TerminalView {
     }
 
     fn resume_pending_agent(&mut self, cx: &mut Context<Self>) {
-        self.pending_resume_settle = None;
-        self.pending_resume_deadline = None;
-        let Some(pending_resume) = self.pending_resume.take() else {
+        let Some(pending_resume) = self.take_pending_resume(cx) else {
             return;
         };
         self.terminal.update(cx, |terminal, _| {
             terminal.input(format!("{}\r", pending_resume.command).into_bytes());
         });
-        // The agent records its session again once it runs, so a resume that fails isn't
-        // retried on every launch.
+    }
+
+    /// Typing into the shell first means the user took it over, so the command isn't typed
+    /// after their input.
+    fn cancel_pending_resume(&mut self, cx: &mut Context<Self>) {
+        self.take_pending_resume(cx);
+    }
+
+    fn take_pending_resume(&mut self, cx: &mut Context<Self>) -> Option<AgentResume> {
+        self.pending_resume_settle = None;
+        self.pending_resume_deadline = None;
+        let pending_resume = self.pending_resume.take()?;
+        // The agent records its session again once it runs, so a resume that fails or is
+        // cancelled isn't retried on every launch.
         self.set_agent_resume(None, cx);
+        Some(pending_resume)
     }
 
     fn dynamic_title(&self, truncate: bool, cx: &App) -> String {
@@ -3075,6 +3091,49 @@ mod tests {
 
             view.resume_pending_agent_once_settled(cx);
             assert!(view.pending_resume_settle.is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_input_cancels_pending_resume(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+        let terminal_view = cx
+            .add_window(|window, cx| {
+                TerminalView::new(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+            .root(cx)
+            .unwrap();
+        let codex = AgentResume {
+            command: "codex resume 1b2c".to_string(),
+            environment: BTreeMap::new(),
+        };
+
+        terminal_view.update(cx, |view, cx| {
+            view.pending_resume = Some(codex.clone());
+            view.agent_resume = Some(codex.clone());
+            view.schedule_pending_resume(cx);
+            cx.emit(Event::Input);
+        });
+        cx.run_until_parked();
+
+        terminal_view.update(cx, |view, _| {
+            assert_eq!(view.pending_resume, None);
+            assert!(view.pending_resume_settle.is_none());
+            assert!(view.pending_resume_deadline.is_none());
+            assert_eq!(view.agent_resume(), None);
         });
     }
 
