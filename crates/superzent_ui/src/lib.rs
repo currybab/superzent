@@ -819,7 +819,7 @@ impl WorkspaceAttentionController {
                 agent_resume,
                 session_id,
             } => {
-                let codex_home = agent_codex_home(event);
+                let codex_home = agent_directory(event, event.codex_home.as_ref());
                 // Finding an old thread's rollout can take a while.
                 let is_saved = cx.background_spawn({
                     let session_id = session_id.clone();
@@ -9081,13 +9081,14 @@ enum AgentResumeUpdate {
     },
 }
 
-/// The `CODEX_HOME` the agent reported, which Codex reads relative to its own directory.
-fn agent_codex_home(event: &AgentHookEvent) -> Option<PathBuf> {
-    let codex_home = event.codex_home.clone()?;
-    if codex_home.is_absolute() {
-        return Some(codex_home);
+/// A directory the agent reported from its environment, which it reads relative to its own
+/// directory.
+fn agent_directory(event: &AgentHookEvent, directory: Option<&PathBuf>) -> Option<PathBuf> {
+    let directory = directory?;
+    if directory.is_absolute() {
+        return Some(directory.clone());
     }
-    Some(event.cwd.as_ref()?.join(codex_home))
+    Some(event.cwd.as_ref()?.join(directory))
 }
 
 /// What a hook event says about the session a restart could resume.
@@ -9099,22 +9100,28 @@ fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
         // Agents nested in another agent's terminal never report these, so they can't
         // replace the outer agent's session.
         AgentHookEventType::SessionStart | AgentHookEventType::Stop => {
+            if kind == AgentKind::Claude && event.skips_claude_history {
+                return None;
+            }
             let launch_args = event.launch_args.as_deref().unwrap_or_default();
             let session_id = event
                 .session_id
                 .clone()
                 .or_else(|| kind.resumed_session_id(launch_args))?;
-            // The agent's own `CODEX_HOME`, which its shell may have set by hand, is where
-            // its session has to be looked up again.
-            let environment = agent_codex_home(event)
-                .iter()
-                .filter(|_| kind == AgentKind::Codex)
-                .map(|codex_home| {
+            // Where the agent keeps its sessions, which its shell may have set by hand, is
+            // where its session has to be found again.
+            let (home_variable, home) = match kind {
+                AgentKind::Claude => ("CLAUDE_CONFIG_DIR", event.claude_config_dir.as_ref()),
+                AgentKind::Codex => ("CODEX_HOME", event.codex_home.as_ref()),
+            };
+            let environment = agent_directory(event, home)
+                .map(|home| {
                     (
-                        "CODEX_HOME".to_string(),
-                        codex_home.to_string_lossy().into_owned(),
+                        home_variable.to_string(),
+                        home.to_string_lossy().into_owned(),
                     )
                 })
+                .into_iter()
                 .collect();
             let agent_resume = AgentResume {
                 command: kind.resume_command(&session_id, launch_args)?,
@@ -10570,6 +10577,8 @@ mod tests {
             prompt: None,
             launch_args: None,
             codex_home: None,
+            claude_config_dir: None,
+            skips_claude_history: false,
         }
     }
 
@@ -10648,6 +10657,29 @@ mod tests {
         let newer_thread = sequence.issue();
         assert!(sequence.apply(newer_thread));
         assert!(!sequence.apply(older_thread));
+    }
+
+    #[test]
+    fn claude_resumes_from_its_own_config_and_only_if_it_saved_the_session() {
+        let mut claude = hook_event(
+            AgentHookEventType::SessionStart,
+            Some(AgentKind::Claude),
+            Some("1b2c"),
+        );
+        claude.claude_config_dir = Some(PathBuf::from("/work/.claude"));
+        // Codex's home means nothing to Claude.
+        claude.codex_home = Some(PathBuf::from("/work/.codex"));
+        assert_eq!(
+            agent_resume_update(&claude),
+            Some(AgentResumeUpdate::Set(AgentResume {
+                command: "claude --resume 1b2c".to_string(),
+                environment: [("CLAUDE_CONFIG_DIR".to_string(), "/work/.claude".to_string())]
+                    .into(),
+            }))
+        );
+
+        claude.skips_claude_history = true;
+        assert_eq!(agent_resume_update(&claude), None);
     }
 
     #[test]

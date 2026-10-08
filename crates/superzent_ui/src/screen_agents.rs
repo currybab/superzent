@@ -256,6 +256,8 @@ impl WorkspaceAttentionController {
                 prompt: None,
                 launch_args: None,
                 codex_home: None,
+                claude_config_dir: None,
+                skips_claude_history: false,
             },
             cx,
         );

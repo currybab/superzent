@@ -57,7 +57,6 @@ const CLAUDE_OPTIONS: &[CliOption] = &[
             "--include-hook-events",
             "--include-partial-messages",
             "--no-chrome",
-            "--no-session-persistence",
             "--replay-user-messages",
             "--restricted",
             "--safe-mode",
@@ -111,6 +110,11 @@ const CLAUDE_OPTIONS: &[CliOption] = &[
     option(&["--fallback-model"], OptionValue::Required, OnResume::Keep),
     option(&["--file"], OptionValue::Variadic, OnResume::Drop),
     option(&["--fork-session"], OptionValue::None, OnResume::Drop),
+    option(
+        &["--no-session-persistence"],
+        OptionValue::None,
+        OnResume::NotResumable,
+    ),
     option(&["--from-pr"], OptionValue::Optional, OnResume::Drop),
     option(&["--input-format"], OptionValue::Required, OnResume::Keep),
     option(&["--json-schema"], OptionValue::Required, OnResume::Keep),
@@ -692,6 +696,10 @@ mod tests {
         );
         assert_eq!(
             AgentKind::Codex.resume_command("019a", &args(&["exec", "summarize"])),
+            None
+        );
+        assert_eq!(
+            AgentKind::Claude.resume_command("1b2c", &args(&["--no-session-persistence"])),
             None
         );
     }

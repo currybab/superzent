@@ -98,6 +98,10 @@ pub struct AgentHookEvent {
     pub launch_args: Option<Vec<String>>,
     /// Where Codex keeps its sessions, when the agent's environment sets it.
     pub codex_home: Option<PathBuf>,
+    /// Where Claude keeps its sessions, when the agent's environment sets it.
+    pub claude_config_dir: Option<PathBuf>,
+    /// Whether Claude was told not to save its session, which then can't be resumed.
+    pub skips_claude_history: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -494,6 +498,14 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
             .codex_home
             .filter(|codex_home| !codex_home.is_empty())
             .map(PathBuf::from),
+        claude_config_dir: params
+            .claude_config_dir
+            .filter(|claude_config_dir| !claude_config_dir.is_empty())
+            .map(PathBuf::from),
+        skips_claude_history: params
+            .claude_skip_history
+            .as_deref()
+            .is_some_and(|value| !matches!(value.trim(), "" | "0" | "false" | "FALSE" | "False")),
     }))
 }
 
@@ -505,6 +517,10 @@ struct HookRequestParams {
     agent_args: Option<String>,
     #[serde(rename = "codex_home")]
     codex_home: Option<String>,
+    #[serde(rename = "claude_config_dir")]
+    claude_config_dir: Option<String>,
+    #[serde(rename = "claude_skip_history")]
+    claude_skip_history: Option<String>,
     #[serde(rename = "cwd")]
     cwd: Option<String>,
     #[serde(rename = "event_type")]
@@ -713,6 +729,8 @@ _superzent_status=$(printf '%s' "$_superzent_payload" | curl -sS "$SUPERZENT_AGE
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
   --data-urlencode "agent_args=${SUPERZENT_AGENT_ARGS:-}" \
   --data-urlencode "codex_home=${CODEX_HOME:-}" \
+  --data-urlencode "claude_config_dir=${CLAUDE_CONFIG_DIR:-}" \
+  --data-urlencode "claude_skip_history=${CLAUDE_CODE_SKIP_PROMPT_HISTORY:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
   --data-urlencode "payload@-" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
@@ -1539,6 +1557,8 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
                     .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
                     .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
                     .env("CODEX_HOME", "/work/.codex")
+                    .env("CLAUDE_CONFIG_DIR", "/work/.claude")
+                    .env("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1")
                     .output(),
             )
             .expect("run notify script");
@@ -1550,6 +1570,11 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
                 "{payload}"
             );
             assert_eq!(event.codex_home, Some(PathBuf::from("/work/.codex")));
+            assert_eq!(
+                event.claude_config_dir,
+                Some(PathBuf::from("/work/.claude"))
+            );
+            assert!(event.skips_claude_history);
         }
     }
 
