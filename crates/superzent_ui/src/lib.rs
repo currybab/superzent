@@ -9120,10 +9120,15 @@ fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
             // Where the agent keeps its sessions, which its shell may have set by hand, is
             // where its session has to be found again.
             let (home_variable, home) = match kind {
-                AgentKind::Claude => ("CLAUDE_CONFIG_DIR", event.claude_config_dir.as_ref()),
-                AgentKind::Codex => ("CODEX_HOME", event.codex_home.as_ref()),
+                AgentKind::Claude => (
+                    "CLAUDE_CONFIG_DIR",
+                    agent_directory(event, event.claude_config_dir.as_ref()),
+                ),
+                // A `HOME` exported in the shell isn't restored with it, so the Codex home
+                // it put the session under is kept instead.
+                AgentKind::Codex => ("CODEX_HOME", codex_sessions_home(event)),
             };
-            let environment = agent_directory(event, home)
+            let environment = home
                 .map(|home| {
                     (
                         home_variable.to_string(),
@@ -10662,6 +10667,17 @@ mod tests {
         assert_eq!(
             codex_sessions_home(&codex),
             Some(PathBuf::from("/custom/home/.codex"))
+        );
+        assert_eq!(
+            agent_resume_update(&codex),
+            Some(AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume: AgentResume {
+                    command: "codex resume 019a".to_string(),
+                    environment: [("CODEX_HOME".to_string(), "/custom/home/.codex".to_string())]
+                        .into(),
+                },
+                session_id: "019a".to_string(),
+            })
         );
 
         codex.codex_home = Some(PathBuf::from("/work/.codex"));
