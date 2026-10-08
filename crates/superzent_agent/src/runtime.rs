@@ -46,18 +46,22 @@ fi
 
 // The arguments the agent was started with, so a restart can resume it the same way. They
 // are NUL-separated, which no argument can contain, and encoded to fit in a variable. Long
-// ones are left out: the agent's environment and the hook's command line would carry them,
-// and an oversized variable or argument keeps a program from starting at all.
+// ones are left out, and marked as such: the agent's environment and the hook's command
+// line would carry them, and an oversized variable or argument keeps a program from
+// starting at all.
 const WRAPPER_LAUNCH_ARGS: &str = r#"
 unset SUPERZENT_AGENT_ARGS
 if [ "$#" -gt 0 ]; then
   _superzent_agent_args="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
   if [ "${#_superzent_agent_args}" -le 16384 ]; then
     export SUPERZENT_AGENT_ARGS="$_superzent_agent_args"
+  else
+    export SUPERZENT_AGENT_ARGS=omitted
   fi
   unset _superzent_agent_args
 fi
 "#;
+const LAUNCH_ARGS_OMITTED: &str = "omitted";
 
 static HOOK_RUNTIME: OnceLock<AgentHookRuntime> = OnceLock::new();
 
@@ -94,7 +98,8 @@ pub struct AgentHookEvent {
     pub agent: Option<AgentKind>,
     /// The first line of the user's prompt, when the hook payload carries one.
     pub prompt: Option<String>,
-    /// The arguments the agent was started with, when its wrapper reported them.
+    /// The arguments the agent was started with, or `None` when they were too long to
+    /// report.
     pub launch_args: Option<Vec<String>>,
     /// Where Codex keeps its sessions, when the agent's environment sets it.
     pub codex_home: Option<PathBuf>,
@@ -221,7 +226,14 @@ pub fn prepare_workspace_launch(
 /// The environment a preset gives its agent, beyond what Superzent sets for every
 /// terminal. A restored terminal needs it to run the agent the same way.
 pub fn preset_launch_environment(preset: &AgentPreset) -> BTreeMap<String, String> {
-    let mut environment = preset.env.clone().into_iter().collect::<BTreeMap<_, _>>();
+    // Every terminal gets its own id, and a terminal created with one is taken to have its
+    // agent environment already, so a restored one would be left without its hooks.
+    let mut environment = preset
+        .env
+        .iter()
+        .filter(|(key, _)| key.as_str() != AGENT_TERMINAL_ID_ENV_VAR)
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
     if let Some(managed_command) = AgentKind::for_command(&preset.command) {
         environment.insert(
             managed_command.real_binary_env_var().to_string(),
@@ -489,11 +501,11 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
         cwd: params.cwd.map(PathBuf::from),
         agent: params.agent.as_deref().and_then(AgentKind::from_hook_value),
         prompt: params.payload.as_deref().and_then(prompt_from_hook_payload),
-        launch_args: params
-            .agent_args
-            .as_deref()
-            .filter(|agent_args| !agent_args.is_empty())
-            .and_then(decode_launch_args),
+        launch_args: match params.agent_args.as_deref() {
+            None | Some("") => Some(Vec::new()),
+            Some(LAUNCH_ARGS_OMITTED) => None,
+            Some(encoded) => decode_launch_args(encoded),
+        },
         codex_home: params
             .codex_home
             .filter(|codex_home| !codex_home.is_empty())
@@ -1325,6 +1337,10 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             env: [
                 ("PATH".to_string(), "/opt/tools/bin:/usr/bin".to_string()),
                 ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+                (
+                    AGENT_TERMINAL_ID_ENV_VAR.to_string(),
+                    "terminal-1".to_string(),
+                ),
             ]
             .into(),
             acp_agent_name: None,
@@ -1614,7 +1630,7 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
         )
         .expect("run wrapper snippet");
         assert!(output.status.success(), "{output:?}");
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "unset");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), LAUNCH_ARGS_OMITTED);
     }
 
     #[test]

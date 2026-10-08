@@ -9103,7 +9103,9 @@ fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
             if kind == AgentKind::Claude && event.skips_claude_history {
                 return None;
             }
-            let launch_args = event.launch_args.as_deref().unwrap_or_default();
+            // Arguments too long to report could have made the session one that can't be
+            // resumed, like `claude -p`.
+            let launch_args = event.launch_args.as_deref()?;
             let session_id = event
                 .session_id
                 .clone()
@@ -10575,7 +10577,7 @@ mod tests {
             cwd: None,
             agent,
             prompt: None,
-            launch_args: None,
+            launch_args: Some(Vec::new()),
             codex_home: None,
             claude_config_dir: None,
             skips_claude_history: false,
@@ -10679,6 +10681,17 @@ mod tests {
         );
 
         claude.skips_claude_history = true;
+        assert_eq!(agent_resume_update(&claude), None);
+    }
+
+    #[test]
+    fn a_launch_whose_arguments_were_too_long_to_report_is_not_resumed() {
+        let mut claude = hook_event(
+            AgentHookEventType::SessionStart,
+            Some(AgentKind::Claude),
+            Some("1b2c"),
+        );
+        claude.launch_args = None;
         assert_eq!(agent_resume_update(&claude), None);
     }
 
