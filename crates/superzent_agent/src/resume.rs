@@ -277,13 +277,25 @@ fn split_launch_args(args: &[String], known_options: &[CliOption]) -> Option<Lau
             continue;
         }
         let start = index - 1;
+        let find_option = |name: &str| {
+            known_options
+                .iter()
+                .find(|known_option| known_option.names.contains(&name))
+        };
+        // `--name=value`, or a short option with its value attached, like `-mgpt-5`.
+        let short_name = arg
+            .get(..2)
+            .filter(|_| !arg.starts_with("--") && arg.len() > 2);
         let (name, has_inline_value) = match arg.split_once('=') {
             Some((name, _)) if name.starts_with("--") => (name, true),
-            _ => (arg.as_str(), false),
+            _ => match short_name.filter(|short_name| {
+                find_option(short_name).is_some_and(|option| option.value != OptionValue::None)
+            }) {
+                Some(short_name) => (short_name, true),
+                None => (arg.as_str(), false),
+            },
         };
-        let known_option = known_options
-            .iter()
-            .find(|known_option| known_option.names.contains(&name));
+        let known_option = find_option(name);
         let takes_next = |index: usize| args.get(index).is_some_and(|next| !next.starts_with('-'));
         if !has_inline_value {
             match known_option.map_or(OptionValue::None, |option| option.value) {
@@ -605,6 +617,12 @@ mod tests {
                 .resume_command("019a", &args(&["--yolo", "Fix it"]))
                 .as_deref(),
             Some("codex --yolo resume 019a")
+        );
+        assert_eq!(
+            AgentKind::Codex
+                .resume_command("019a", &args(&["-mgpt-5", "-C/work", "Fix it"]))
+                .as_deref(),
+            Some("codex -mgpt-5 -C/work resume 019a")
         );
         // A prompt that reads like a subcommand.
         assert_eq!(
