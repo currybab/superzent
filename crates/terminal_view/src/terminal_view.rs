@@ -16,7 +16,7 @@ use gpui::{
 };
 use itertools::Itertools;
 use menu;
-use persistence::TERMINAL_DB;
+use persistence::{SaveOrder, TERMINAL_DB};
 use project::{Project, ProjectEntryId, search::SearchQuery};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -167,6 +167,7 @@ pub struct TerminalView {
     agent_resume: Option<AgentResume>,
     // Whether a task terminal's row holds a session, which then has to be cleared too.
     saved_agent_resume: bool,
+    agent_resume_save_order: SaveOrder,
     // The environment the terminal was restored with, for the agents it runs to keep.
     launch_environment: BTreeMap<String, String>,
     // A session from the last run, resumed once the restored shell is ready for input.
@@ -384,6 +385,7 @@ impl TerminalView {
             tab_agent_title: None,
             agent_resume: None,
             saved_agent_resume: false,
+            agent_resume_save_order: SaveOrder::default(),
             launch_environment: BTreeMap::new(),
             pending_resume: None,
             pending_resume_settle: None,
@@ -2056,6 +2058,7 @@ impl SerializableItem for TerminalView {
         let cwd = terminal.working_directory();
         let custom_title = self.custom_title.clone();
         let agent_resume = self.agent_resume.clone();
+        let agent_resume_ticket = self.agent_resume_save_order.next();
         self.saved_agent_resume = agent_resume.is_some();
         self.needs_serialize = false;
 
@@ -2069,7 +2072,7 @@ impl SerializableItem for TerminalView {
                 .save_custom_title(item_id, workspace_id, custom_title)
                 .await?;
             TERMINAL_DB
-                .save_agent_resume(item_id, workspace_id, agent_resume)
+                .save_agent_resume(item_id, workspace_id, agent_resume, agent_resume_ticket)
                 .await?;
             Ok(())
         }))

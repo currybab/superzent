@@ -6,6 +6,10 @@ use gpui::{AppContext as _, AsyncWindowContext, Axis, Entity, Task, WeakEntity};
 use project::Project;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use ui::{App, Context, Pixels, Window};
 use util::ResultExt as _;
 
@@ -433,6 +437,33 @@ impl Domain for TerminalDb {
 
 db::static_connection!(TERMINAL_DB, TerminalDb, [WorkspaceDb]);
 
+/// Orders a terminal's saves by when they were made. The database runs writes one at a
+/// time, but saves made close together can reach it out of order, and an older one must
+/// not undo a newer one, like a session saved again after its agent exited.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SaveOrder(Arc<AtomicU64>);
+
+impl SaveOrder {
+    pub(crate) fn next(&self) -> SaveTicket {
+        SaveTicket {
+            order: self.0.clone(),
+            number: self.0.fetch_add(1, Ordering::SeqCst) + 1,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SaveTicket {
+    order: Arc<AtomicU64>,
+    number: u64,
+}
+
+impl SaveTicket {
+    fn is_latest(&self) -> bool {
+        self.order.load(Ordering::SeqCst) == self.number
+    }
+}
+
 impl TerminalDb {
     query! {
        pub async fn update_workspace_id(
@@ -525,11 +556,18 @@ impl TerminalDb {
         item_id: ItemId,
         workspace_id: WorkspaceId,
         agent_resume: Option<AgentResume>,
+        ticket: SaveTicket,
     ) -> Result<()> {
         let agent_resume = agent_resume
             .map(|agent_resume| serde_json::to_string(&agent_resume))
             .transpose()?;
         self.write(move |conn| {
+            // Checked as the write runs, since writes run in the order they reach the
+            // database.
+            if !ticket.is_latest() {
+                log::debug!("skipped a superseded agent resume save for item {item_id}");
+                return Ok(());
+            }
             let query = "INSERT INTO terminals (item_id, workspace_id, agent_resume)
                 VALUES (?1, ?2, ?3)
                 ON CONFLICT (workspace_id, item_id) DO UPDATE SET
@@ -595,19 +633,31 @@ mod tests {
         db.save_custom_title(item_id, workspace_id, Some("api".to_string()))
             .await
             .unwrap();
-        db.save_agent_resume(item_id, workspace_id, Some(agent_resume.clone()))
-            .await
-            .unwrap();
+        let save_order = SaveOrder::default();
+        db.save_agent_resume(
+            item_id,
+            workspace_id,
+            Some(agent_resume.clone()),
+            save_order.next(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             db.get_agent_resume(item_id, workspace_id).unwrap(),
-            Some(agent_resume)
+            Some(agent_resume.clone())
         );
         assert_eq!(
             db.get_custom_title(item_id, workspace_id).unwrap(),
             Some("api".to_string())
         );
 
-        db.save_agent_resume(item_id, workspace_id, None)
+        let older_save = save_order.next();
+        db.save_agent_resume(item_id, workspace_id, None, save_order.next())
+            .await
+            .unwrap();
+        assert_eq!(db.get_agent_resume(item_id, workspace_id).unwrap(), None);
+        // A save made before the one that cleared it, reaching the database after.
+        db.save_agent_resume(item_id, workspace_id, Some(agent_resume), older_save)
             .await
             .unwrap();
         assert_eq!(db.get_agent_resume(item_id, workspace_id).unwrap(), None);
