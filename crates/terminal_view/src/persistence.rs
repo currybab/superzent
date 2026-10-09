@@ -6,6 +6,10 @@ use gpui::{AppContext as _, AsyncWindowContext, Axis, Entity, Task, WeakEntity};
 use project::Project;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use ui::{App, Context, Pixels, Window};
 use util::ResultExt as _;
 
@@ -20,7 +24,7 @@ use workspace::{
 };
 
 use crate::{
-    TerminalView, default_working_directory,
+    AgentResume, TerminalView, default_working_directory,
     terminal_panel::{TerminalPanel, new_terminal_pane},
 };
 
@@ -64,7 +68,10 @@ fn serialize_pane(pane: &Entity<Pane>, active: bool, cx: &mut App) -> Serialized
         .items()
         .filter_map(|item| {
             let terminal_view = item.act_as::<TerminalView>(cx)?;
-            if terminal_view.read(cx).terminal().read(cx).task().is_some() {
+            let terminal_view = terminal_view.read(cx);
+            if terminal_view.terminal().read(cx).task().is_some()
+                && terminal_view.agent_resume().is_none()
+            {
                 None
             } else {
                 let id = item.item_id().as_u64();
@@ -422,10 +429,40 @@ impl Domain for TerminalDb {
         sql! (
             ALTER TABLE terminals ADD COLUMN custom_title TEXT;
         ),
+        sql! (
+            ALTER TABLE terminals ADD COLUMN agent_resume TEXT;
+        ),
     ];
 }
 
 db::static_connection!(TERMINAL_DB, TerminalDb, [WorkspaceDb]);
+
+/// Orders a terminal's saves by when they were made. The database runs writes one at a
+/// time, but saves made close together can reach it out of order, and an older one must
+/// not undo a newer one, like a session saved again after its agent exited.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SaveOrder(Arc<AtomicU64>);
+
+impl SaveOrder {
+    pub(crate) fn next(&self) -> SaveTicket {
+        SaveTicket {
+            order: self.0.clone(),
+            number: self.0.fetch_add(1, Ordering::SeqCst) + 1,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SaveTicket {
+    order: Arc<AtomicU64>,
+    number: u64,
+}
+
+impl SaveTicket {
+    fn is_latest(&self) -> bool {
+        self.order.load(Ordering::SeqCst) == self.number
+    }
+}
 
 impl TerminalDb {
     query! {
@@ -512,5 +549,117 @@ impl TerminalDb {
             FROM terminals
             WHERE item_id = ? AND workspace_id = ?
         }
+    }
+
+    pub async fn save_agent_resume(
+        &self,
+        item_id: ItemId,
+        workspace_id: WorkspaceId,
+        agent_resume: Option<AgentResume>,
+        ticket: SaveTicket,
+    ) -> Result<()> {
+        let agent_resume = agent_resume
+            .map(|agent_resume| serde_json::to_string(&agent_resume))
+            .transpose()?;
+        self.write(move |conn| {
+            // Checked as the write runs, since writes run in the order they reach the
+            // database.
+            if !ticket.is_latest() {
+                log::debug!("skipped a superseded agent resume save for item {item_id}");
+                return Ok(());
+            }
+            let query = "INSERT INTO terminals (item_id, workspace_id, agent_resume)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT (workspace_id, item_id) DO UPDATE SET
+                    agent_resume = excluded.agent_resume";
+            let mut statement = Statement::prepare(conn, query)?;
+            let mut next_index = statement.bind(&item_id, 1)?;
+            next_index = statement.bind(&workspace_id, next_index)?;
+            statement.bind(&agent_resume, next_index)?;
+            statement.exec()
+        })
+        .await
+    }
+
+    pub fn get_agent_resume(
+        &self,
+        item_id: ItemId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<AgentResume>> {
+        // A terminal row without a session reads back as an empty string.
+        let Some(agent_resume) = self
+            .get_agent_resume_json(item_id, workspace_id)?
+            .filter(|agent_resume| !agent_resume.is_empty())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::from_str(&agent_resume)?))
+    }
+
+    query! {
+        fn get_agent_resume_json(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<String>> {
+            SELECT agent_resume
+            FROM terminals
+            WHERE item_id = ? AND workspace_id = ?
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl TerminalDb {
+        query! {
+            async fn next_workspace_id() -> Result<WorkspaceId> {
+                INSERT INTO workspaces DEFAULT VALUES RETURNING workspace_id
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn test_saves_and_restores_agent_resume() {
+        let db = TerminalDb(
+            db::open_test_db::<(WorkspaceDb, TerminalDb)>("test_saves_and_restores_agent_resume")
+                .await,
+        );
+        let workspace_id = db.next_workspace_id().await.unwrap();
+        let item_id = 1;
+        let agent_resume = AgentResume {
+            command: "codex resume 019a".to_string(),
+            environment: [("CODEX_HOME".to_string(), "/work/.codex".to_string())].into(),
+        };
+
+        db.save_custom_title(item_id, workspace_id, Some("api".to_string()))
+            .await
+            .unwrap();
+        let save_order = SaveOrder::default();
+        db.save_agent_resume(
+            item_id,
+            workspace_id,
+            Some(agent_resume.clone()),
+            save_order.next(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.get_agent_resume(item_id, workspace_id).unwrap(),
+            Some(agent_resume.clone())
+        );
+        assert_eq!(
+            db.get_custom_title(item_id, workspace_id).unwrap(),
+            Some("api".to_string())
+        );
+
+        let older_save = save_order.next();
+        db.save_agent_resume(item_id, workspace_id, None, save_order.next())
+            .await
+            .unwrap();
+        assert_eq!(db.get_agent_resume(item_id, workspace_id).unwrap(), None);
+        // A save made before the one that cleared it, reaching the database after.
+        db.save_agent_resume(item_id, workspace_id, Some(agent_resume), older_save)
+            .await
+            .unwrap();
+        assert_eq!(db.get_agent_resume(item_id, workspace_id).unwrap(), None);
     }
 }

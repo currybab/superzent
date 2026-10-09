@@ -1034,7 +1034,7 @@ impl TerminalPanel {
         })
     }
 
-    fn serialize(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn serialize(&mut self, cx: &mut Context<Self>) {
         let height = self.height;
         let width = self.width;
         let Some(serialization_key) = self

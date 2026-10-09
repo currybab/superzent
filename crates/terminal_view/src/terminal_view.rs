@@ -16,14 +16,15 @@ use gpui::{
 };
 use itertools::Itertools;
 use menu;
-use persistence::TERMINAL_DB;
+use persistence::{SaveOrder, TERMINAL_DB};
 use project::{Project, ProjectEntryId, search::SearchQuery};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsStore, TerminalBlink, WorkingDirectory};
 use std::{
     any::Any,
     cmp,
+    collections::BTreeMap,
     ops::{Range, RangeInclusive},
     path::{Path, PathBuf},
     rc::Rc,
@@ -161,9 +162,35 @@ pub struct TerminalView {
     tab_attention: Option<TerminalTabAttention>,
     tab_agent_icon: Option<IconName>,
     tab_agent_title: Option<String>,
+    // The agent session running in the terminal, saved so it can be resumed after a
+    // restart.
+    agent_resume: Option<AgentResume>,
+    // Whether a task terminal's row holds a session, which then has to be cleared too.
+    saved_agent_resume: bool,
+    agent_resume_save_order: SaveOrder,
+    // The environment the terminal was restored with, for the agents it runs to keep.
+    launch_environment: BTreeMap<String, String>,
+    // A session from the last run, resumed once the restored shell is ready for input.
+    pending_resume: Option<AgentResume>,
+    pending_resume_settle: Option<Task<()>>,
+    pending_resume_deadline: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
 }
+
+/// An agent session that can be continued with a command typed into the terminal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentResume {
+    pub command: String,
+    /// What the terminal's environment had to carry for the agent, like a preset's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+}
+
+// A restored shell is ready for input once its startup output settles; typing earlier can
+// be swallowed while it loads its configuration.
+const SHELL_SETTLE_DELAY: Duration = Duration::from_millis(500);
+const SHELL_READY_LIMIT: Duration = Duration::from_secs(3);
 
 /// Something in the terminal that is waiting on the user, surfaced as a dot on its tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,6 +349,11 @@ impl TerminalView {
             focus_out,
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
+            cx.subscribe_self(|this: &mut Self, event: &Event, cx| {
+                if matches!(event, Event::Input) {
+                    this.cancel_pending_resume(cx);
+                }
+            }),
         ];
 
         Self {
@@ -351,6 +383,13 @@ impl TerminalView {
             tab_attention: None,
             tab_agent_icon: None,
             tab_agent_title: None,
+            agent_resume: None,
+            saved_agent_resume: false,
+            agent_resume_save_order: SaveOrder::default(),
+            launch_environment: BTreeMap::new(),
+            pending_resume: None,
+            pending_resume_settle: None,
+            pending_resume_deadline: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
         }
@@ -406,6 +445,7 @@ impl TerminalView {
         if text.is_empty() {
             return self.clear_marked_text(cx);
         }
+        self.cancel_pending_resume(cx);
         self.ime_state = Some(ImeState { marked_text: text });
         cx.notify();
     }
@@ -428,6 +468,8 @@ impl TerminalView {
     /// Commits (sends) the given text to the PTY. Called by InputHandler::replace_text_in_range.
     pub(crate) fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if !text.is_empty() {
+            // Typed text reaches the terminal here rather than as an input event.
+            self.cancel_pending_resume(cx);
             self.terminal.update(cx, |term, _| {
                 term.input(text.to_string().into_bytes());
             });
@@ -486,6 +528,84 @@ impl TerminalView {
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
+    }
+
+    pub fn agent_resume(&self) -> Option<&AgentResume> {
+        self.agent_resume.as_ref()
+    }
+
+    pub fn launch_environment(&self) -> &BTreeMap<String, String> {
+        &self.launch_environment
+    }
+
+    /// Records the agent session running in the terminal, or that none is.
+    pub fn set_agent_resume(&mut self, agent_resume: Option<AgentResume>, cx: &mut Context<Self>) {
+        if self.agent_resume == agent_resume {
+            return;
+        }
+        let resumability_changed = self.agent_resume.is_some() != agent_resume.is_some();
+        self.agent_resume = agent_resume;
+        self.needs_serialize = true;
+        cx.emit(ItemEvent::UpdateTab);
+        // The terminal panel saves only the tasks that can be resumed, and saves its layout
+        // only when its panes change.
+        if resumability_changed
+            && self.terminal.read(cx).task().is_some()
+            && let Some(terminal_panel) = self
+                .workspace
+                .upgrade()
+                .and_then(|workspace| workspace.read(cx).panel::<TerminalPanel>(cx))
+        {
+            terminal_panel.update(cx, |terminal_panel, cx| terminal_panel.serialize(cx));
+        }
+    }
+
+    /// Resumes the session from the last run once the shell's startup output settles, or
+    /// at the latest once the deadline passes.
+    fn schedule_pending_resume(&mut self, cx: &mut Context<Self>) {
+        self.pending_resume_deadline = Some(self.resume_pending_agent_after(SHELL_READY_LIMIT, cx));
+    }
+
+    fn resume_pending_agent_once_settled(&mut self, cx: &mut Context<Self>) {
+        if self.pending_resume.is_some() {
+            self.pending_resume_settle =
+                Some(self.resume_pending_agent_after(SHELL_SETTLE_DELAY, cx));
+        }
+    }
+
+    fn resume_pending_agent_after(&self, delay: Duration, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let resumed = this.update(cx, |this, cx| this.resume_pending_agent(cx));
+            if let Err(error) = resumed {
+                log::debug!("dropped an agent resume: {error}");
+            }
+        })
+    }
+
+    fn resume_pending_agent(&mut self, cx: &mut Context<Self>) {
+        let Some(pending_resume) = self.take_pending_resume(cx) else {
+            return;
+        };
+        self.terminal.update(cx, |terminal, _| {
+            terminal.input(format!("{}\r", pending_resume.command).into_bytes());
+        });
+    }
+
+    /// Typing into the shell first means the user took it over, so the command isn't typed
+    /// after their input.
+    fn cancel_pending_resume(&mut self, cx: &mut Context<Self>) {
+        self.take_pending_resume(cx);
+    }
+
+    fn take_pending_resume(&mut self, cx: &mut Context<Self>) -> Option<AgentResume> {
+        self.pending_resume_settle = None;
+        self.pending_resume_deadline = None;
+        let pending_resume = self.pending_resume.take()?;
+        // The agent records its session again once it runs, so a resume that fails or is
+        // cancelled isn't retried on every launch.
+        self.set_agent_resume(None, cx);
+        Some(pending_resume)
     }
 
     fn dynamic_title(&self, truncate: bool, cx: &App) -> String {
@@ -1149,6 +1269,7 @@ fn subscribe_for_terminal_events(
 
             match event {
                 Event::Wakeup => {
+                    terminal_view.resume_pending_agent_once_settled(cx);
                     cx.notify();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
@@ -1864,20 +1985,23 @@ impl Item for TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal().read(cx).task().is_none() {
-            if let Some((new_id, old_id)) = workspace.database_id().zip(self.workspace_id) {
-                log::debug!(
-                    "Updating workspace id for the terminal, old: {old_id:?}, new: {new_id:?}",
-                );
-                cx.background_spawn(TERMINAL_DB.update_workspace_id(
-                    new_id,
-                    old_id,
-                    cx.entity_id().as_u64(),
-                ))
-                .detach();
-            }
-            self.workspace_id = workspace.database_id();
+        // A task's row only exists while it hosts an agent session, which must follow the
+        // terminal to its new workspace.
+        if let Some((new_id, old_id)) = workspace.database_id().zip(self.workspace_id) {
+            log::debug!("Updating workspace id for the terminal, old: {old_id:?}, new: {new_id:?}");
+            cx.background_spawn(TERMINAL_DB.update_workspace_id(
+                new_id,
+                old_id,
+                cx.entity_id().as_u64(),
+            ))
+            .detach();
         }
+        if self.workspace_id != workspace.database_id() {
+            // A save still in flight can land under the old workspace after the row moved, so
+            // the row is saved again under the new one.
+            self.needs_serialize = true;
+        }
+        self.workspace_id = workspace.database_id();
 
         let new_workspace = workspace.weak_handle();
         let is_same_workspace = self
@@ -1920,7 +2044,9 @@ impl SerializableItem for TerminalView {
         cx: &mut Context<Self>,
     ) -> Option<Task<anyhow::Result<()>>> {
         let terminal = self.terminal().read(cx);
-        if terminal.task().is_some() {
+        // A task reruns rather than restores, unless it hosts an agent session that can be
+        // resumed, or its saved one needs clearing.
+        if terminal.task().is_some() && self.agent_resume.is_none() && !self.saved_agent_resume {
             return None;
         }
 
@@ -1931,6 +2057,9 @@ impl SerializableItem for TerminalView {
         let workspace_id = self.workspace_id?;
         let cwd = terminal.working_directory();
         let custom_title = self.custom_title.clone();
+        let agent_resume = self.agent_resume.clone();
+        let agent_resume_ticket = self.agent_resume_save_order.next();
+        self.saved_agent_resume = agent_resume.is_some();
         self.needs_serialize = false;
 
         Some(cx.background_spawn(async move {
@@ -1941,6 +2070,9 @@ impl SerializableItem for TerminalView {
             }
             TERMINAL_DB
                 .save_custom_title(item_id, workspace_id, custom_title)
+                .await?;
+            TERMINAL_DB
+                .save_agent_resume(item_id, workspace_id, agent_resume, agent_resume_ticket)
                 .await?;
             Ok(())
         }))
@@ -1959,7 +2091,7 @@ impl SerializableItem for TerminalView {
         cx: &mut App,
     ) -> Task<anyhow::Result<Entity<Self>>> {
         window.spawn(cx, async move |cx| {
-            let (cwd, custom_title) = cx
+            let (cwd, custom_title, agent_resume) = cx
                 .update(|_window, cx| {
                     let from_db = TERMINAL_DB
                         .get_working_directory(item_id, workspace_id)
@@ -1980,13 +2112,27 @@ impl SerializableItem for TerminalView {
                         .log_err()
                         .flatten()
                         .filter(|title| !title.trim().is_empty());
-                    (cwd, custom_title)
+                    let agent_resume = TERMINAL_DB
+                        .get_agent_resume(item_id, workspace_id)
+                        .log_err()
+                        .flatten();
+                    (cwd, custom_title, agent_resume)
                 })
                 .ok()
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, None));
 
+            let launch_environment = agent_resume
+                .as_ref()
+                .map(|agent_resume| agent_resume.environment.clone())
+                .unwrap_or_default();
             let terminal = project
-                .update(cx, |project, cx| project.create_terminal_shell(cwd, cx))
+                .update(cx, |project, cx| {
+                    project.create_terminal_shell_with_environment(
+                        cwd,
+                        launch_environment.clone().into_iter().collect(),
+                        cx,
+                    )
+                })
                 .await?;
             cx.update(|window, cx| {
                 cx.new(|cx| {
@@ -2001,6 +2147,11 @@ impl SerializableItem for TerminalView {
                     if custom_title.is_some() {
                         view.custom_title = custom_title;
                     }
+                    view.launch_environment = launch_environment;
+                    // Kept saved until it is resumed, in case Superzent quits before then.
+                    view.pending_resume = agent_resume.clone();
+                    view.agent_resume = agent_resume;
+                    view.schedule_pending_resume(cx);
                     view
                 })
             })
@@ -2899,6 +3050,168 @@ mod tests {
             view.set_custom_title(Some("new_label".to_string()), cx);
             assert!(view.needs_serialize);
         });
+    }
+
+    #[gpui::test]
+    async fn test_restored_agent_resumes_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+        let terminal_view = cx
+            .add_window(|window, cx| {
+                TerminalView::new(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+            .root(cx)
+            .unwrap();
+        let claude = AgentResume {
+            command: "claude --resume 1b2c".to_string(),
+            environment: BTreeMap::new(),
+        };
+
+        terminal_view.update(cx, |view, cx| {
+            view.pending_resume = Some(claude.clone());
+            view.agent_resume = Some(claude.clone());
+            view.needs_serialize = false;
+            view.schedule_pending_resume(cx);
+        });
+        // Output that never settles doesn't hold the resume past its deadline.
+        for _ in 0..16 {
+            terminal_view.update(cx, |view, cx| view.resume_pending_agent_once_settled(cx));
+            cx.executor().advance_clock(SHELL_SETTLE_DELAY / 2);
+            cx.run_until_parked();
+        }
+
+        terminal_view.update(cx, |view, cx| {
+            assert_eq!(view.pending_resume, None);
+            assert!(view.pending_resume_settle.is_none());
+            assert!(view.pending_resume_deadline.is_none());
+            // Saved again only once the resumed agent reports its session.
+            assert_eq!(view.agent_resume(), None);
+            assert!(view.needs_serialize);
+
+            view.resume_pending_agent_once_settled(cx);
+            assert!(view.pending_resume_settle.is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_input_cancels_pending_resume(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+        let terminal_view = cx
+            .add_window(|window, cx| {
+                TerminalView::new(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+            .root(cx)
+            .unwrap();
+        let codex = AgentResume {
+            command: "codex resume 1b2c".to_string(),
+            environment: BTreeMap::new(),
+        };
+
+        terminal_view.update(cx, |view, cx| {
+            view.pending_resume = Some(codex.clone());
+            view.agent_resume = Some(codex.clone());
+            view.schedule_pending_resume(cx);
+            cx.emit(Event::Input);
+        });
+        cx.run_until_parked();
+
+        terminal_view.update(cx, |view, _| {
+            assert_eq!(view.pending_resume, None);
+            assert!(view.pending_resume_settle.is_none());
+            assert!(view.pending_resume_deadline.is_none());
+            assert_eq!(view.agent_resume(), None);
+        });
+
+        // Text typed through the input method, like a plain `ls` or a composed Hangul
+        // syllable, skips the input event.
+        for type_text in [
+            (|view: &mut TerminalView, cx: &mut Context<TerminalView>| view.commit_text("ls", cx))
+                as fn(&mut TerminalView, &mut Context<TerminalView>),
+            |view, cx| view.set_marked_text("ㅎ".to_string(), cx),
+        ] {
+            terminal_view.update(cx, |view, cx| {
+                view.pending_resume = Some(codex.clone());
+                view.agent_resume = Some(codex.clone());
+                view.schedule_pending_resume(cx);
+                type_text(view, cx);
+                assert_eq!(view.pending_resume, None);
+                assert!(view.pending_resume_deadline.is_none());
+                assert_eq!(view.agent_resume(), None);
+            });
+        }
+    }
+
+    #[gpui::test]
+    async fn test_moving_to_another_workspace_saves_the_terminal_again(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace, window) = init_test_with_window(cx).await;
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+        let terminal_view = window
+            .update(cx, |_, window, cx| {
+                cx.new(|cx| {
+                    TerminalView::new(
+                        terminal,
+                        workspace.downgrade(),
+                        Some(WorkspaceId::from_i64(1)),
+                        project.downgrade(),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap();
+
+        let add_to_workspace = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        terminal_view.update(cx, |view, cx| {
+                            view.needs_serialize = false;
+                            view.added_to_workspace(workspace, window, cx);
+                            view.needs_serialize
+                        })
+                    })
+                })
+                .unwrap()
+        };
+        let other_workspace_id = workspace.read_with(cx, |workspace, _| workspace.database_id());
+        assert_ne!(other_workspace_id, Some(WorkspaceId::from_i64(1)));
+        assert!(add_to_workspace(cx));
+        assert_eq!(
+            terminal_view.read_with(cx, |view, _| view.workspace_id),
+            other_workspace_id
+        );
+        // Staying in the same workspace needs no save.
+        assert!(!add_to_workspace(cx));
     }
 
     #[gpui::test]

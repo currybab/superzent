@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
-use collections::HashMap;
+use base64::Engine as _;
+use collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 use std::{
     fs,
@@ -43,6 +44,27 @@ if [ -n "$SUPERZENT_TERMINAL_ID" ]; then
 fi
 "#;
 
+// The arguments the agent was started with, so a restart can resume it the same way. They
+// are NUL-separated, which no argument can contain, and encoded to fit in a variable. Long
+// ones are left out, and marked as such: the agent's environment and the hook's command
+// line would carry them, and an oversized variable or argument keeps a program from
+// starting at all.
+const WRAPPER_LAUNCH_ARGS: &str = r#"
+# Tells this launch's reports apart from a previous agent's that arrive after it started.
+export SUPERZENT_AGENT_LAUNCH_ID="$$.$RANDOM.$(date +%s 2>/dev/null)"
+unset SUPERZENT_AGENT_ARGS
+if [ "$#" -gt 0 ]; then
+  _superzent_agent_args="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
+  if [ "${#_superzent_agent_args}" -le 16384 ]; then
+    export SUPERZENT_AGENT_ARGS="$_superzent_agent_args"
+  else
+    export SUPERZENT_AGENT_ARGS=omitted
+  fi
+  unset _superzent_agent_args
+fi
+"#;
+const LAUNCH_ARGS_OMITTED: &str = "omitted";
+
 static HOOK_RUNTIME: OnceLock<AgentHookRuntime> = OnceLock::new();
 
 fn debug_hooks_enabled() -> bool {
@@ -78,6 +100,19 @@ pub struct AgentHookEvent {
     pub agent: Option<AgentKind>,
     /// The first line of the user's prompt, when the hook payload carries one.
     pub prompt: Option<String>,
+    /// Which run of an agent wrapper reported the event.
+    pub launch_id: Option<String>,
+    /// The arguments the agent was started with, or `None` when they were too long to
+    /// report.
+    pub launch_args: Option<Vec<String>>,
+    /// Where Codex keeps its sessions, when the agent's environment sets it.
+    pub codex_home: Option<PathBuf>,
+    /// The agent's `HOME`, under which Codex keeps its sessions by default.
+    pub home: Option<PathBuf>,
+    /// Where Claude keeps its sessions, when the agent's environment sets it.
+    pub claude_config_dir: Option<PathBuf>,
+    /// Whether Claude was told not to save its session, which then can't be resumed.
+    pub skips_claude_history: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -173,22 +208,18 @@ pub fn prepare_workspace_launch(
         bail!("ACP presets cannot be launched in a terminal");
     }
 
-    let mut environment = preset.env.clone().into_iter().collect::<HashMap<_, _>>();
+    let mut environment = preset_launch_environment(preset)
+        .into_iter()
+        .collect::<HashMap<_, _>>();
     inject_terminal_environment(&mut environment)?;
     environment.insert(AGENT_WORKSPACE_ID_ENV_VAR.to_string(), workspace.id.clone());
 
-    let managed_command = AgentKind::for_command(&preset.command);
-    let (command, args) = if let Some(managed_command) = managed_command {
-        environment.insert(
-            managed_command.real_binary_env_var().to_string(),
-            preset.command.clone(),
-        );
-        (
+    let (command, args) = match AgentKind::for_command(&preset.command) {
+        Some(managed_command) => (
             managed_command.binary_name().to_string(),
             preset.args.clone(),
-        )
-    } else {
-        (preset.command.clone(), preset.args.clone())
+        ),
+        None => (preset.command.clone(), preset.args.clone()),
     };
 
     Ok(PreparedWorkspaceLaunch {
@@ -196,6 +227,26 @@ pub fn prepare_workspace_launch(
         args,
         environment,
     })
+}
+
+/// The environment a preset gives its agent, beyond what Superzent sets for every
+/// terminal. A restored terminal needs it to run the agent the same way.
+pub fn preset_launch_environment(preset: &AgentPreset) -> BTreeMap<String, String> {
+    // Every terminal gets its own id, and a terminal created with one is taken to have its
+    // agent environment already, so a restored one would be left without its hooks.
+    let mut environment = preset
+        .env
+        .iter()
+        .filter(|(key, _)| key.as_str() != AGENT_TERMINAL_ID_ENV_VAR)
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    if let Some(managed_command) = AgentKind::for_command(&preset.command) {
+        environment.insert(
+            managed_command.real_binary_env_var().to_string(),
+            preset.command.clone(),
+        );
+    }
+    environment
 }
 
 fn terminal_tab_labels(workspace: &WorkspaceEntry, preset: &AgentPreset) -> (String, String) {
@@ -456,6 +507,28 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
         cwd: params.cwd.map(PathBuf::from),
         agent: params.agent.as_deref().and_then(AgentKind::from_hook_value),
         prompt: params.payload.as_deref().and_then(prompt_from_hook_payload),
+        launch_id: params.launch_id.filter(|launch_id| !launch_id.is_empty()),
+        launch_args: match params.agent_args.as_deref() {
+            None | Some("") => Some(Vec::new()),
+            Some(LAUNCH_ARGS_OMITTED) => None,
+            Some(encoded) => decode_launch_args(encoded),
+        },
+        codex_home: params
+            .codex_home
+            .filter(|codex_home| !codex_home.is_empty())
+            .map(PathBuf::from),
+        home: params
+            .home
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from),
+        claude_config_dir: params
+            .claude_config_dir
+            .filter(|claude_config_dir| !claude_config_dir.is_empty())
+            .map(PathBuf::from),
+        skips_claude_history: params
+            .claude_skip_history
+            .as_deref()
+            .is_some_and(|value| !matches!(value.trim(), "" | "0" | "false" | "FALSE" | "False")),
     }))
 }
 
@@ -463,6 +536,18 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
 struct HookRequestParams {
     #[serde(rename = "agent")]
     agent: Option<String>,
+    #[serde(rename = "agent_args")]
+    agent_args: Option<String>,
+    #[serde(rename = "launch_id")]
+    launch_id: Option<String>,
+    #[serde(rename = "codex_home")]
+    codex_home: Option<String>,
+    #[serde(rename = "home")]
+    home: Option<String>,
+    #[serde(rename = "claude_config_dir")]
+    claude_config_dir: Option<String>,
+    #[serde(rename = "claude_skip_history")]
+    claude_skip_history: Option<String>,
     #[serde(rename = "cwd")]
     cwd: Option<String>,
     #[serde(rename = "event_type")]
@@ -477,6 +562,24 @@ struct HookRequestParams {
     version: Option<String>,
     #[serde(rename = "workspace_id")]
     workspace_id: Option<String>,
+}
+
+fn decode_launch_args(encoded: &str) -> Option<Vec<String>> {
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(encoded) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            log::warn!("ignoring undecodable agent launch arguments: {error}");
+            return None;
+        }
+    };
+    let Some(arguments) = decoded.strip_suffix(&[0]) else {
+        log::warn!("ignoring agent launch arguments without a terminator");
+        return None;
+    };
+    arguments
+        .split(|byte| *byte == 0)
+        .map(|argument| String::from_utf8(argument.to_vec()).ok())
+        .collect()
 }
 
 /// Claude sends the prompt as `prompt` when it is submitted; Codex sends the turn's
@@ -629,6 +732,9 @@ if [ "${SUPERZENT_SUPPRESS_AGENT_COMPLETION:-}" = "1" ]; then
   esac
 fi
 
+# Claude names its session in every payload; Codex names its thread when a turn completes.
+_superzent_session_id=$(printf '%s\n' "$INPUT" | grep -oE '"(session_id|thread-id)"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | grep -oE '"[^"]*"$' | tr -d '"')
+
 # Only these payloads carry the prompt; tool events carry tool output, which can be
 # large, and Claude waits for every hook to finish.
 _superzent_payload=""
@@ -645,9 +751,15 @@ _superzent_status=$(printf '%s' "$_superzent_payload" | curl -sS "$SUPERZENT_AGE
   --data-urlencode "event_type=$EVENT_TYPE" \
   --data-urlencode "terminal_id=$SUPERZENT_TERMINAL_ID" \
   --data-urlencode "workspace_id=$SUPERZENT_WORKSPACE_ID" \
-  --data-urlencode "session_id=$SUPERZENT_SESSION_ID" \
+  --data-urlencode "session_id=$_superzent_session_id" \
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
+  --data-urlencode "agent_args=${SUPERZENT_AGENT_ARGS:-}" \
+  --data-urlencode "launch_id=${SUPERZENT_AGENT_LAUNCH_ID:-}" \
+  --data-urlencode "codex_home=${CODEX_HOME:-}" \
+  --data-urlencode "home=${HOME:-}" \
+  --data-urlencode "claude_config_dir=${CLAUDE_CONFIG_DIR:-}" \
+  --data-urlencode "claude_skip_history=${CLAUDE_CODE_SKIP_PROMPT_HISTORY:-}" \
   --data-urlencode "version=$SUPERZENT_HOOK_VERSION" \
   --data-urlencode "payload@-" \
   -o /dev/null -w "%{http_code}" 2>/dev/null)
@@ -740,7 +852,7 @@ fi
 
 {WRAPPER_NOTIFICATION_SCOPE}
 export {AGENT_KIND_ENV_VAR}=claude
-
+{WRAPPER_LAUNCH_ARGS}
 if [ "$_superzent_debug_enabled" = "1" ]; then
   echo "$(date '+%H:%M:%S') claude wrapper exec REAL_BIN=$REAL_BIN" >> "$_superzent_debug_log"
 fi
@@ -764,7 +876,7 @@ fi
 
 {WRAPPER_NOTIFICATION_SCOPE}
 export {AGENT_KIND_ENV_VAR}=codex
-
+{WRAPPER_LAUNCH_ARGS}
 _superzent_report_session() {{
   if [ -n "$SUPERZENT_TERMINAL_ID" ] && [ -f "{notify_script_path}" ]; then
     bash "{notify_script_path}" "$(printf '{{"hook_event_name":"%s"}}' "$1")" >/dev/null 2>&1 || true
@@ -1231,6 +1343,39 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
         );
     }
 
+    #[test]
+    fn presets_give_their_agents_their_own_environment() {
+        let preset = AgentPreset {
+            id: "codex".to_string(),
+            label: "Codex".to_string(),
+            launch_mode: PresetLaunchMode::Terminal,
+            command: "/opt/codex/bin/codex".to_string(),
+            args: Vec::new(),
+            env: [
+                ("PATH".to_string(), "/opt/tools/bin:/usr/bin".to_string()),
+                ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+                (
+                    AGENT_TERMINAL_ID_ENV_VAR.to_string(),
+                    "terminal-1".to_string(),
+                ),
+            ]
+            .into(),
+            acp_agent_name: None,
+            attention_patterns: Vec::new(),
+        };
+        assert_eq!(
+            preset_launch_environment(&preset),
+            BTreeMap::from_iter([
+                ("OPENAI_BASE_URL".to_string(), "https://proxy".to_string()),
+                ("PATH".to_string(), "/opt/tools/bin:/usr/bin".to_string()),
+                (
+                    AGENT_REAL_CODEX_BIN_ENV_VAR.to_string(),
+                    "/opt/codex/bin/codex".to_string(),
+                ),
+            ])
+        );
+    }
+
     fn spawn_test_hook_server() -> (
         std::net::SocketAddr,
         smol::channel::Receiver<AgentHookEvent>,
@@ -1411,6 +1556,118 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             let event = receiver.recv_blocking().expect("receive hook event");
             assert_eq!(event.prompt.as_deref(), expected_prompt, "{payload}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notify_script_reports_the_agent_session() {
+        let (addr, receiver) = spawn_test_hook_server();
+        let directory = tempfile::tempdir().expect("create notify test directory");
+        let notify_script = directory.path().join("notify.sh");
+        write_executable_file(&notify_script, notify_script_content())
+            .expect("write notification hook");
+
+        for (payload, expected_session_id) in [
+            (
+                r#"{"hook_event_name":"Stop","session_id":"1b2c-claude","last_assistant_message":"see \"session_id\": \"other\""}"#,
+                Some("1b2c-claude"),
+            ),
+            (
+                r#"{"type":"agent-turn-complete","thread-id":"019a-codex","input-messages":["Rename"]}"#,
+                Some("019a-codex"),
+            ),
+            (r#"{"hook_event_name":"SessionStart"}"#, None),
+        ] {
+            let output = smol::block_on(
+                smol::process::Command::new("bash")
+                    .arg(&notify_script)
+                    .arg(payload)
+                    .env(
+                        AGENT_HOOK_URL_ENV_VAR,
+                        format!("http://{addr}{HOOK_ENDPOINT_PATH}"),
+                    )
+                    .env(AGENT_TERMINAL_ID_ENV_VAR, "terminal-1")
+                    .env(AGENT_HOOK_VERSION_ENV_VAR, AGENT_HOOK_VERSION)
+                    .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
+                    .env("CODEX_HOME", "/work/.codex")
+                    .env("HOME", "/work")
+                    .env("SUPERZENT_AGENT_LAUNCH_ID", "4242.7.1760000000")
+                    .env("CLAUDE_CONFIG_DIR", "/work/.claude")
+                    .env("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1")
+                    .output(),
+            )
+            .expect("run notify script");
+            assert!(output.status.success(), "{output:?}");
+            let event = receiver.recv_blocking().expect("receive hook event");
+            assert_eq!(
+                event.session_id.as_deref(),
+                expected_session_id,
+                "{payload}"
+            );
+            assert_eq!(event.codex_home, Some(PathBuf::from("/work/.codex")));
+            assert_eq!(event.home, Some(PathBuf::from("/work")));
+            assert_eq!(event.launch_id.as_deref(), Some("4242.7.1760000000"));
+            assert_eq!(
+                event.claude_config_dir,
+                Some(PathBuf::from("/work/.claude"))
+            );
+            assert!(event.skips_claude_history);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrappers_report_the_arguments_the_agent_started_with() {
+        let launch_args = ["--model", "opus", "Don't \"push\"\nyet", "", "--verbose"];
+        let output = smol::block_on(
+            smol::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "{WRAPPER_LAUNCH_ARGS}\nprintf '%s' \"$SUPERZENT_AGENT_ARGS\""
+                ))
+                .arg("wrapper")
+                .args(launch_args)
+                .output(),
+        )
+        .expect("run wrapper snippet");
+        assert!(output.status.success(), "{output:?}");
+        let encoded = String::from_utf8(output.stdout).expect("encoded arguments");
+        assert_eq!(
+            decode_launch_args(&encoded),
+            Some(launch_args.iter().map(|arg| arg.to_string()).collect())
+        );
+        assert_eq!(decode_launch_args("not base64!"), None);
+
+        let launch_id = || {
+            let output = smol::block_on(
+                smol::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(format!(
+                        "{WRAPPER_LAUNCH_ARGS}\nprintf '%s' \"$SUPERZENT_AGENT_LAUNCH_ID\""
+                    ))
+                    .output(),
+            )
+            .expect("run wrapper snippet");
+            String::from_utf8(output.stdout).expect("launch id")
+        };
+        let first_launch = launch_id();
+        assert!(!first_launch.is_empty());
+        assert_ne!(first_launch, launch_id());
+
+        let long_prompt = "a".repeat(64 * 1024);
+        let output = smol::block_on(
+            smol::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "{WRAPPER_LAUNCH_ARGS}\nprintf '%s' \"${{SUPERZENT_AGENT_ARGS-unset}}\""
+                ))
+                .arg("wrapper")
+                .args(["--append-system-prompt", &long_prompt])
+                .output(),
+        )
+        .expect("run wrapper snippet");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), LAUNCH_ARGS_OMITTED);
     }
 
     #[test]

@@ -75,7 +75,7 @@ use std::{
 };
 use superzent_agent::{
     AGENT_TERMINAL_ID_ENV_VAR, AGENT_WORKSPACE_ID_ENV_VAR, AgentHookEvent, AgentHookEventType,
-    AgentKind, ScreenAgent,
+    AgentKind, ScreenAgent, codex_session_is_saved, preset_launch_environment,
 };
 use superzent_model::{
     AgentPreset, GitChangeSummary, PresetLaunchMode, ProjectEntry, ProjectLocation,
@@ -88,7 +88,9 @@ use terminal::{
     Event as TerminalEvent, Terminal,
     terminal_settings::{TerminalAgentNotificationMode, TerminalSettings},
 };
-use terminal_view::{TerminalTabAttention, TerminalView, terminal_panel::TerminalPanel};
+use terminal_view::{
+    AgentResume, TerminalTabAttention, TerminalView, terminal_panel::TerminalPanel,
+};
 #[cfg(feature = "acp_tabs")]
 use ui::ContextMenuEntry;
 use ui::{
@@ -346,6 +348,23 @@ struct TrackedPresetTerminal {
     launch: PresetLaunch,
 }
 
+fn remember_preset_environment(terminal_id: Option<&String>, preset: &AgentPreset, cx: &mut App) {
+    let Some(terminal_id) = terminal_id else {
+        return;
+    };
+    let Some(controller) = cx
+        .try_global::<GlobalAttentionController>()
+        .map(|controller| controller.0.clone())
+    else {
+        return;
+    };
+    controller.update(cx, |controller, _| {
+        controller
+            .preset_environments
+            .insert(terminal_id.clone(), preset_launch_environment(preset));
+    });
+}
+
 fn track_preset_terminal(terminal: WeakEntity<Terminal>, launch: PresetLaunch, cx: &mut App) {
     let Some(controller) = cx
         .try_global::<GlobalAttentionController>()
@@ -406,6 +425,14 @@ struct WorkspaceAttentionController {
     terminal_ids_by_entity: BTreeMap<EntityId, String>,
     workspace_ids_by_terminal: BTreeMap<String, String>,
     terminal_views_by_terminal: BTreeMap<String, WeakEntity<TerminalView>>,
+    // Sessions an agent reported before its terminal's view was registered, which happens
+    // when a preset's agent starts while its terminal is still being set up.
+    pending_agent_resumes: BTreeMap<String, Option<AgentResume>>,
+    // The environment each preset gave the terminal it launched in, which its agents are
+    // resumed with after a restart.
+    preset_environments: BTreeMap<String, BTreeMap<String, String>>,
+    agent_resume_sequences: BTreeMap<String, AgentResumeSequence>,
+    agent_launch_ids: BTreeMap<String, String>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
@@ -511,6 +538,10 @@ impl WorkspaceAttentionController {
             terminal_ids_by_entity: BTreeMap::new(),
             workspace_ids_by_terminal: BTreeMap::new(),
             terminal_views_by_terminal: BTreeMap::new(),
+            pending_agent_resumes: BTreeMap::new(),
+            agent_resume_sequences: BTreeMap::new(),
+            agent_launch_ids: BTreeMap::new(),
+            preset_environments: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
             next_attention_sequence: 0,
@@ -559,6 +590,12 @@ impl WorkspaceAttentionController {
         let entity_id = terminal.entity_id();
         self.terminal_ids_by_entity
             .insert(entity_id, terminal_id.clone());
+        if let Some(update) = self.pending_agent_resumes.remove(&terminal_id)
+            && let Some(terminal_view) = terminal_view.upgrade()
+        {
+            let preset_environment = self.preset_environments.get(&terminal_id).cloned();
+            apply_agent_resume(terminal_view, preset_environment, update, cx);
+        }
         self.terminal_views_by_terminal
             .insert(terminal_id.clone(), terminal_view);
         self.sync_terminal_tab_attention(&terminal_id, cx);
@@ -581,6 +618,10 @@ impl WorkspaceAttentionController {
     ) {
         self.terminal_ids_by_entity.remove(&entity_id);
         self.terminal_views_by_terminal.remove(terminal_id);
+        self.pending_agent_resumes.remove(terminal_id);
+        self.agent_resume_sequences.remove(terminal_id);
+        self.agent_launch_ids.remove(terminal_id);
+        self.preset_environments.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
         self.agent_sessions.remove(terminal_id);
@@ -749,6 +790,96 @@ impl WorkspaceAttentionController {
                 terminal_view.set_tab_agent(icon, title, cx);
             });
         });
+    }
+
+    fn sync_terminal_agent_resume(&mut self, event: &AgentHookEvent, cx: &mut Context<Self>) {
+        let terminal_id = event.terminal_id.clone();
+        if event.event_type == AgentHookEventType::SessionStart
+            && let Some(launch_id) = &event.launch_id
+        {
+            self.agent_launch_ids
+                .insert(terminal_id.clone(), launch_id.clone());
+        } else if !is_current_launch(self.agent_launch_ids.get(&terminal_id), event) {
+            log::debug!("dropped a resume update from an earlier agent in terminal {terminal_id}");
+            return;
+        }
+        let Some(update) = agent_resume_update(event) else {
+            return;
+        };
+        // A turn's completion can arrive after its agent exited, and the session it names
+        // has ended.
+        let agent_exited = self
+            .agent_sessions
+            .get(&terminal_id)
+            .is_some_and(|session| !session.running);
+        if agent_exited && update != AgentResumeUpdate::Clear {
+            return;
+        }
+        let sequence = self
+            .agent_resume_sequences
+            .entry(terminal_id.clone())
+            .or_default()
+            .issue();
+        match update {
+            AgentResumeUpdate::Clear => {
+                self.store_agent_resume(&terminal_id, sequence, None, cx);
+            }
+            AgentResumeUpdate::Set(agent_resume) => {
+                self.store_agent_resume(&terminal_id, sequence, Some(agent_resume), cx);
+            }
+            AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume,
+                session_id,
+            } => {
+                let codex_home = codex_sessions_home(event);
+                // Finding an old thread's rollout can take a while.
+                let is_saved = cx.background_spawn({
+                    let session_id = session_id.clone();
+                    async move { codex_session_is_saved(&session_id, codex_home.as_deref()) }
+                });
+                cx.spawn(async move |this, cx| {
+                    if !is_saved.await {
+                        log::debug!("not resuming Codex thread {session_id}: it isn't saved");
+                        return;
+                    }
+                    let stored = this.update(cx, |this, cx| {
+                        // The terminal may have closed while its thread was being looked up.
+                        if this.agent_sessions.contains_key(&terminal_id) {
+                            this.store_agent_resume(&terminal_id, sequence, Some(agent_resume), cx);
+                        }
+                    });
+                    if stored.is_err() {
+                        log::debug!("dropped the resume of Codex thread {session_id}");
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
+    fn store_agent_resume(
+        &mut self,
+        terminal_id: &str,
+        sequence: u64,
+        update: Option<AgentResume>,
+        cx: &mut Context<Self>,
+    ) {
+        let is_latest = self
+            .agent_resume_sequences
+            .entry(terminal_id.to_string())
+            .or_default()
+            .apply(sequence);
+        if !is_latest {
+            log::debug!("dropped a superseded agent resume for terminal {terminal_id}");
+            return;
+        }
+        let Some(terminal_view) = self.live_terminal_view(terminal_id) else {
+            self.pending_agent_resumes
+                .insert(terminal_id.to_string(), update);
+            return;
+        };
+        let preset_environment = self.preset_environments.get(terminal_id).cloned();
+        apply_agent_resume(terminal_view, preset_environment, update, cx);
     }
 
     /// The icon and title a terminal's tab shows while an agent runs in it: the same task
@@ -963,6 +1094,7 @@ impl WorkspaceAttentionController {
         }
         self.track_agent_session(&event);
         self.sync_terminal_tab_agent(&event.terminal_id, cx);
+        self.sync_terminal_agent_resume(&event, cx);
         match event.event_type {
             AgentHookEventType::SessionStart => {
                 cx.notify();
@@ -2534,6 +2666,11 @@ fn launch_workspace_preset_in_terminal(
         }
     };
 
+    remember_preset_environment(
+        launch.environment.get(AGENT_TERMINAL_ID_ENV_VAR),
+        &preset,
+        cx,
+    );
     let workspace_path = workspace_entry.cwd_path();
     let (command_line, open_terminal_task) = workspace_handle.update(cx, |workspace, cx| {
         let shell_kind = preset_shell_kind(workspace, &workspace_path, cx);
@@ -2705,6 +2842,11 @@ fn launch_workspace_preset_task(
                 return;
             }
         };
+    remember_preset_environment(
+        spawn_in_terminal.env.get(AGENT_TERMINAL_ID_ENV_VAR),
+        &preset,
+        cx,
+    );
     let spawn_task = terminal_panel.update(cx, |terminal_panel, cx| {
         terminal_panel.spawn_task(&spawn_in_terminal, window, cx)
     });
@@ -8889,6 +9031,150 @@ fn agent_display_name(
     }
 }
 
+fn apply_agent_resume(
+    terminal_view: Entity<TerminalView>,
+    preset_environment: Option<BTreeMap<String, String>>,
+    update: Option<AgentResume>,
+    cx: &mut Context<WorkspaceAttentionController>,
+) {
+    // Hook events can arrive while the terminal view is being updated.
+    cx.defer(move |cx| {
+        terminal_view.update(cx, |terminal_view, cx| {
+            // An agent runs with the environment its preset gave the terminal, or the one a
+            // restored terminal was restored with.
+            let mut environment =
+                preset_environment.unwrap_or_else(|| terminal_view.launch_environment().clone());
+            let update = update.map(|agent_resume| {
+                environment.extend(agent_resume.environment);
+                AgentResume {
+                    environment,
+                    ..agent_resume
+                }
+            });
+            terminal_view.set_agent_resume(update, cx);
+        });
+    });
+}
+
+/// Orders a terminal's resume updates by when they were reported, since a Codex thread is
+/// only recorded once a background lookup finds it saved: a lookup that finishes after a
+/// later update landed (another thread, or the agent's exit) is stale. A lookup that finds
+/// nothing doesn't hold back the ones before it, like the main thread's while the thread
+/// that titles it is looked up.
+#[derive(Debug, Default)]
+struct AgentResumeSequence {
+    issued: u64,
+    applied: u64,
+}
+
+impl AgentResumeSequence {
+    fn issue(&mut self) -> u64 {
+        self.issued += 1;
+        self.issued
+    }
+
+    fn apply(&mut self, sequence: u64) -> bool {
+        if sequence <= self.applied {
+            return false;
+        }
+        self.applied = sequence;
+        true
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum AgentResumeUpdate {
+    Clear,
+    Set(AgentResume),
+    // Codex also reports threads it never saves, so one only counts once it is found saved.
+    SetIfCodexSaved {
+        agent_resume: AgentResume,
+        session_id: String,
+    },
+}
+
+/// A directory the agent reported from its environment, which it reads relative to its own
+/// directory.
+fn agent_directory(event: &AgentHookEvent, directory: Option<&PathBuf>) -> Option<PathBuf> {
+    let directory = directory?;
+    if directory.is_absolute() {
+        return Some(directory.clone());
+    }
+    Some(event.cwd.as_ref()?.join(directory))
+}
+
+/// Where the agent's Codex keeps its sessions: its `CODEX_HOME`, or else `~/.codex` under
+/// its own `HOME`, which a preset can set apart from Superzent's.
+fn codex_sessions_home(event: &AgentHookEvent) -> Option<PathBuf> {
+    agent_directory(event, event.codex_home.as_ref())
+        .or_else(|| Some(agent_directory(event, event.home.as_ref())?.join(".codex")))
+}
+
+/// Whether the event comes from the agent launched last in its terminal. An agent that
+/// exited can still report a turn once the next one started, and its session isn't the
+/// one running.
+fn is_current_launch(current_launch_id: Option<&String>, event: &AgentHookEvent) -> bool {
+    match (current_launch_id, &event.launch_id) {
+        (Some(current_launch_id), Some(launch_id)) => current_launch_id == launch_id,
+        _ => true,
+    }
+}
+
+/// What a hook event says about the session a restart could resume.
+fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
+    // Agents read from the screen report no sessions.
+    let kind = event.agent?;
+    match event.event_type {
+        AgentHookEventType::SessionEnd => Some(AgentResumeUpdate::Clear),
+        // Agents nested in another agent's terminal never report these, so they can't
+        // replace the outer agent's session.
+        AgentHookEventType::SessionStart | AgentHookEventType::Stop => {
+            if kind == AgentKind::Claude && event.skips_claude_history {
+                return None;
+            }
+            // Arguments too long to report could have made the session one that can't be
+            // resumed, like `claude -p`.
+            let launch_args = event.launch_args.as_deref()?;
+            let session_id = event
+                .session_id
+                .clone()
+                .or_else(|| kind.resumed_session_id(launch_args))?;
+            // Where the agent keeps its sessions, which its shell may have set by hand, is
+            // where its session has to be found again.
+            let (home_variable, home) = match kind {
+                AgentKind::Claude => (
+                    "CLAUDE_CONFIG_DIR",
+                    agent_directory(event, event.claude_config_dir.as_ref()),
+                ),
+                // A `HOME` exported in the shell isn't restored with it, so the Codex home
+                // it put the session under is kept instead.
+                AgentKind::Codex => ("CODEX_HOME", codex_sessions_home(event)),
+            };
+            let environment = home
+                .map(|home| {
+                    (
+                        home_variable.to_string(),
+                        home.to_string_lossy().into_owned(),
+                    )
+                })
+                .into_iter()
+                .collect();
+            let agent_resume = AgentResume {
+                command: kind.resume_command(&session_id, launch_args)?,
+                environment,
+            };
+            Some(match kind {
+                AgentKind::Claude => AgentResumeUpdate::Set(agent_resume),
+                AgentKind::Codex => AgentResumeUpdate::SetIfCodexSaved {
+                    agent_resume,
+                    session_id,
+                },
+            })
+        }
+        AgentHookEventType::Start | AgentHookEventType::PermissionRequest => None,
+    }
+}
+
 fn terminal_runs_agent(terminal: &Terminal) -> bool {
     agent_process_alive(
         terminal
@@ -10310,6 +10596,228 @@ mod tests {
             acp_agent_name: None,
             attention_patterns: Vec::new(),
         }
+    }
+
+    fn hook_event(
+        event_type: AgentHookEventType,
+        agent: Option<AgentKind>,
+        session_id: Option<&str>,
+    ) -> AgentHookEvent {
+        AgentHookEvent {
+            event_type,
+            terminal_id: "terminal".to_string(),
+            workspace_id: None,
+            session_id: session_id.map(str::to_string),
+            cwd: None,
+            agent,
+            prompt: None,
+            launch_id: None,
+            launch_args: Some(Vec::new()),
+            codex_home: None,
+            home: None,
+            claude_config_dir: None,
+            skips_claude_history: false,
+        }
+    }
+
+    fn agent_resume(command: &str) -> AgentResume {
+        AgentResume {
+            command: command.to_string(),
+            environment: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_session_is_resumable_until_its_agent_exits() {
+        let claude = Some(AgentKind::Claude);
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::SessionStart,
+                claude,
+                Some("1b2c")
+            )),
+            Some(AgentResumeUpdate::Set(agent_resume("claude --resume 1b2c")))
+        );
+        // Codex also reports threads it never saves, like the one that titles a
+        // conversation, so its threads are looked up first.
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::Stop,
+                Some(AgentKind::Codex),
+                Some("019a")
+            )),
+            Some(AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume: agent_resume("codex resume 019a"),
+                session_id: "019a".to_string(),
+            })
+        );
+        assert_eq!(
+            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, claude, None)),
+            Some(AgentResumeUpdate::Clear)
+        );
+
+        // A resumed Codex session is known from its launch before any turn completes.
+        let mut resumed_codex = hook_event(
+            AgentHookEventType::SessionStart,
+            Some(AgentKind::Codex),
+            None,
+        );
+        resumed_codex.launch_args = Some(vec!["resume".to_string(), "019a".to_string()]);
+        resumed_codex.codex_home = Some(PathBuf::from(".codex"));
+        resumed_codex.cwd = Some(PathBuf::from("/work"));
+        assert_eq!(
+            agent_resume_update(&resumed_codex),
+            Some(AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume: AgentResume {
+                    command: "codex resume 019a".to_string(),
+                    environment: [("CODEX_HOME".to_string(), "/work/.codex".to_string())].into(),
+                },
+                session_id: "019a".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn codex_sessions_are_looked_up_under_the_agents_home() {
+        let mut codex = hook_event(
+            AgentHookEventType::Stop,
+            Some(AgentKind::Codex),
+            Some("019a"),
+        );
+        assert_eq!(codex_sessions_home(&codex), None);
+
+        codex.home = Some(PathBuf::from("/custom/home"));
+        assert_eq!(
+            codex_sessions_home(&codex),
+            Some(PathBuf::from("/custom/home/.codex"))
+        );
+        assert_eq!(
+            agent_resume_update(&codex),
+            Some(AgentResumeUpdate::SetIfCodexSaved {
+                agent_resume: AgentResume {
+                    command: "codex resume 019a".to_string(),
+                    environment: [("CODEX_HOME".to_string(), "/custom/home/.codex".to_string())]
+                        .into(),
+                },
+                session_id: "019a".to_string(),
+            })
+        );
+
+        codex.codex_home = Some(PathBuf::from("/work/.codex"));
+        assert_eq!(
+            codex_sessions_home(&codex),
+            Some(PathBuf::from("/work/.codex"))
+        );
+    }
+
+    #[test]
+    fn only_the_last_launched_agent_updates_the_resume() {
+        let mut stop = hook_event(
+            AgentHookEventType::Stop,
+            Some(AgentKind::Codex),
+            Some("019a"),
+        );
+        let current_launch_id = "2.1".to_string();
+        // Reports from before launches were told apart, or from before Superzent saw the
+        // agent start, still count.
+        assert!(is_current_launch(None, &stop));
+        assert!(is_current_launch(Some(&current_launch_id), &stop));
+
+        stop.launch_id = Some("2.1".to_string());
+        assert!(is_current_launch(Some(&current_launch_id), &stop));
+        assert!(is_current_launch(None, &stop));
+        // A turn the previous agent finished after the next one started.
+        stop.launch_id = Some("1.1".to_string());
+        assert!(!is_current_launch(Some(&current_launch_id), &stop));
+    }
+
+    #[test]
+    fn a_resume_update_reported_later_wins() {
+        let mut sequence = AgentResumeSequence::default();
+        let main_thread = sequence.issue();
+        let title_thread = sequence.issue();
+        let exit = sequence.issue();
+        // The thread that titles the conversation is never found saved, so it never
+        // applies, and the main thread's lookup still can.
+        assert!(sequence.apply(main_thread));
+        assert!(sequence.apply(exit));
+        // A lookup finishing after the agent exited.
+        assert!(!sequence.apply(title_thread));
+
+        let mut sequence = AgentResumeSequence::default();
+        let older_thread = sequence.issue();
+        let newer_thread = sequence.issue();
+        assert!(sequence.apply(newer_thread));
+        assert!(!sequence.apply(older_thread));
+    }
+
+    #[test]
+    fn claude_resumes_from_its_own_config_and_only_if_it_saved_the_session() {
+        let mut claude = hook_event(
+            AgentHookEventType::SessionStart,
+            Some(AgentKind::Claude),
+            Some("1b2c"),
+        );
+        claude.claude_config_dir = Some(PathBuf::from("/work/.claude"));
+        // Codex's home means nothing to Claude.
+        claude.codex_home = Some(PathBuf::from("/work/.codex"));
+        assert_eq!(
+            agent_resume_update(&claude),
+            Some(AgentResumeUpdate::Set(AgentResume {
+                command: "claude --resume 1b2c".to_string(),
+                environment: [("CLAUDE_CONFIG_DIR".to_string(), "/work/.claude".to_string())]
+                    .into(),
+            }))
+        );
+
+        claude.skips_claude_history = true;
+        assert_eq!(agent_resume_update(&claude), None);
+    }
+
+    #[test]
+    fn a_launch_whose_arguments_were_too_long_to_report_is_not_resumed() {
+        let mut claude = hook_event(
+            AgentHookEventType::SessionStart,
+            Some(AgentKind::Claude),
+            Some("1b2c"),
+        );
+        claude.launch_args = None;
+        assert_eq!(agent_resume_update(&claude), None);
+    }
+
+    #[test]
+    fn nested_and_screen_agents_do_not_change_what_resumes() {
+        // Activity can come from an agent nested in the terminal's agent.
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::Start,
+                Some(AgentKind::Claude),
+                Some("nested")
+            )),
+            None
+        );
+        // Codex reports its thread only once a turn completes.
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::SessionStart,
+                Some(AgentKind::Codex),
+                None
+            )),
+            None
+        );
+        // Agents read from the screen have no session to resume.
+        assert_eq!(
+            agent_resume_update(&hook_event(AgentHookEventType::SessionEnd, None, None)),
+            None
+        );
+        assert_eq!(
+            agent_resume_update(&hook_event(
+                AgentHookEventType::Stop,
+                Some(AgentKind::Claude),
+                Some("1; rm -rf ~")
+            )),
+            None
+        );
     }
 
     fn workspace_entry(kind: WorkspaceKind) -> WorkspaceEntry {
