@@ -432,6 +432,7 @@ struct WorkspaceAttentionController {
     // resumed with after a restart.
     preset_environments: BTreeMap<String, BTreeMap<String, String>>,
     agent_resume_sequences: BTreeMap<String, AgentResumeSequence>,
+    agent_launch_ids: BTreeMap<String, String>,
     live_terminal_attention: BTreeMap<String, LiveTerminalAttention>,
     attention_queue: BTreeMap<String, AttentionQueueEntry>,
     next_attention_sequence: u64,
@@ -539,6 +540,7 @@ impl WorkspaceAttentionController {
             terminal_views_by_terminal: BTreeMap::new(),
             pending_agent_resumes: BTreeMap::new(),
             agent_resume_sequences: BTreeMap::new(),
+            agent_launch_ids: BTreeMap::new(),
             preset_environments: BTreeMap::new(),
             live_terminal_attention: BTreeMap::new(),
             attention_queue: BTreeMap::new(),
@@ -618,6 +620,7 @@ impl WorkspaceAttentionController {
         self.terminal_views_by_terminal.remove(terminal_id);
         self.pending_agent_resumes.remove(terminal_id);
         self.agent_resume_sequences.remove(terminal_id);
+        self.agent_launch_ids.remove(terminal_id);
         self.preset_environments.remove(terminal_id);
         self.attention_queue.remove(terminal_id);
         self.hook_reporting_terminals.remove(terminal_id);
@@ -790,10 +793,19 @@ impl WorkspaceAttentionController {
     }
 
     fn sync_terminal_agent_resume(&mut self, event: &AgentHookEvent, cx: &mut Context<Self>) {
+        let terminal_id = event.terminal_id.clone();
+        if event.event_type == AgentHookEventType::SessionStart
+            && let Some(launch_id) = &event.launch_id
+        {
+            self.agent_launch_ids
+                .insert(terminal_id.clone(), launch_id.clone());
+        } else if !is_current_launch(self.agent_launch_ids.get(&terminal_id), event) {
+            log::debug!("dropped a resume update from an earlier agent in terminal {terminal_id}");
+            return;
+        }
         let Some(update) = agent_resume_update(event) else {
             return;
         };
-        let terminal_id = event.terminal_id.clone();
         // A turn's completion can arrive after its agent exited, and the session it names
         // has ended.
         let agent_exited = self
@@ -9098,6 +9110,16 @@ fn codex_sessions_home(event: &AgentHookEvent) -> Option<PathBuf> {
         .or_else(|| Some(agent_directory(event, event.home.as_ref())?.join(".codex")))
 }
 
+/// Whether the event comes from the agent launched last in its terminal. An agent that
+/// exited can still report a turn once the next one started, and its session isn't the
+/// one running.
+fn is_current_launch(current_launch_id: Option<&String>, event: &AgentHookEvent) -> bool {
+    match (current_launch_id, &event.launch_id) {
+        (Some(current_launch_id), Some(launch_id)) => current_launch_id == launch_id,
+        _ => true,
+    }
+}
+
 /// What a hook event says about the session a restart could resume.
 fn agent_resume_update(event: &AgentHookEvent) -> Option<AgentResumeUpdate> {
     // Agents read from the screen report no sessions.
@@ -10589,6 +10611,7 @@ mod tests {
             cwd: None,
             agent,
             prompt: None,
+            launch_id: None,
             launch_args: Some(Vec::new()),
             codex_home: None,
             home: None,
@@ -10685,6 +10708,27 @@ mod tests {
             codex_sessions_home(&codex),
             Some(PathBuf::from("/work/.codex"))
         );
+    }
+
+    #[test]
+    fn only_the_last_launched_agent_updates_the_resume() {
+        let mut stop = hook_event(
+            AgentHookEventType::Stop,
+            Some(AgentKind::Codex),
+            Some("019a"),
+        );
+        let current_launch_id = "2.1".to_string();
+        // Reports from before launches were told apart, or from before Superzent saw the
+        // agent start, still count.
+        assert!(is_current_launch(None, &stop));
+        assert!(is_current_launch(Some(&current_launch_id), &stop));
+
+        stop.launch_id = Some("2.1".to_string());
+        assert!(is_current_launch(Some(&current_launch_id), &stop));
+        assert!(is_current_launch(None, &stop));
+        // A turn the previous agent finished after the next one started.
+        stop.launch_id = Some("1.1".to_string());
+        assert!(!is_current_launch(Some(&current_launch_id), &stop));
     }
 
     #[test]

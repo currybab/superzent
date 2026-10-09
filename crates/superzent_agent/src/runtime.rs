@@ -50,6 +50,8 @@ fi
 // line would carry them, and an oversized variable or argument keeps a program from
 // starting at all.
 const WRAPPER_LAUNCH_ARGS: &str = r#"
+# Tells this launch's reports apart from a previous agent's that arrive after it started.
+export SUPERZENT_AGENT_LAUNCH_ID="$$.$RANDOM.$(date +%s 2>/dev/null)"
 unset SUPERZENT_AGENT_ARGS
 if [ "$#" -gt 0 ]; then
   _superzent_agent_args="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
@@ -98,6 +100,8 @@ pub struct AgentHookEvent {
     pub agent: Option<AgentKind>,
     /// The first line of the user's prompt, when the hook payload carries one.
     pub prompt: Option<String>,
+    /// Which run of an agent wrapper reported the event.
+    pub launch_id: Option<String>,
     /// The arguments the agent was started with, or `None` when they were too long to
     /// report.
     pub launch_args: Option<Vec<String>>,
@@ -503,6 +507,7 @@ fn parse_request(url: &str, body: Option<&str>) -> Result<Option<AgentHookEvent>
         cwd: params.cwd.map(PathBuf::from),
         agent: params.agent.as_deref().and_then(AgentKind::from_hook_value),
         prompt: params.payload.as_deref().and_then(prompt_from_hook_payload),
+        launch_id: params.launch_id.filter(|launch_id| !launch_id.is_empty()),
         launch_args: match params.agent_args.as_deref() {
             None | Some("") => Some(Vec::new()),
             Some(LAUNCH_ARGS_OMITTED) => None,
@@ -533,6 +538,8 @@ struct HookRequestParams {
     agent: Option<String>,
     #[serde(rename = "agent_args")]
     agent_args: Option<String>,
+    #[serde(rename = "launch_id")]
+    launch_id: Option<String>,
     #[serde(rename = "codex_home")]
     codex_home: Option<String>,
     #[serde(rename = "home")]
@@ -748,6 +755,7 @@ _superzent_status=$(printf '%s' "$_superzent_payload" | curl -sS "$SUPERZENT_AGE
   --data-urlencode "cwd=$PWD" \
   --data-urlencode "agent=${SUPERZENT_AGENT_KIND:-}" \
   --data-urlencode "agent_args=${SUPERZENT_AGENT_ARGS:-}" \
+  --data-urlencode "launch_id=${SUPERZENT_AGENT_LAUNCH_ID:-}" \
   --data-urlencode "codex_home=${CODEX_HOME:-}" \
   --data-urlencode "home=${HOME:-}" \
   --data-urlencode "claude_config_dir=${CLAUDE_CONFIG_DIR:-}" \
@@ -1583,6 +1591,7 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
                     .env(AGENT_DEBUG_HOOKS_ENV_VAR, "0")
                     .env("CODEX_HOME", "/work/.codex")
                     .env("HOME", "/work")
+                    .env("SUPERZENT_AGENT_LAUNCH_ID", "4242.7.1760000000")
                     .env("CLAUDE_CONFIG_DIR", "/work/.claude")
                     .env("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1")
                     .output(),
@@ -1597,6 +1606,7 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             );
             assert_eq!(event.codex_home, Some(PathBuf::from("/work/.codex")));
             assert_eq!(event.home, Some(PathBuf::from("/work")));
+            assert_eq!(event.launch_id.as_deref(), Some("4242.7.1760000000"));
             assert_eq!(
                 event.claude_config_dir,
                 Some(PathBuf::from("/work/.claude"))
@@ -1627,6 +1637,22 @@ bash "$SUPERZENT_TEST_NOTIFY_SCRIPT" "$SUPERZENT_TEST_CHILD_STOP"
             Some(launch_args.iter().map(|arg| arg.to_string()).collect())
         );
         assert_eq!(decode_launch_args("not base64!"), None);
+
+        let launch_id = || {
+            let output = smol::block_on(
+                smol::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(format!(
+                        "{WRAPPER_LAUNCH_ARGS}\nprintf '%s' \"$SUPERZENT_AGENT_LAUNCH_ID\""
+                    ))
+                    .output(),
+            )
+            .expect("run wrapper snippet");
+            String::from_utf8(output.stdout).expect("launch id")
+        };
+        let first_launch = launch_id();
+        assert!(!first_launch.is_empty());
+        assert_ne!(first_launch, launch_id());
 
         let long_prompt = "a".repeat(64 * 1024);
         let output = smol::block_on(
