@@ -744,7 +744,7 @@ toml_edit = { version = "0.22", default-features = false, features = [
     "serde",
 ] }
 tower-http = "0.4.4"
-tree-sitter = { version = "0.26", features = ["wasm"] }
+tree-sitter = { version = "0.26.8", features = ["wasm"] }
 tree-sitter-bash = "0.25.1"
 tree-sitter-c = "0.24.1"
 tree-sitter-cpp = { git = "https://github.com/tree-sitter/tree-sitter-cpp", rev = "5cb9b693cfd7bfacab1d9ff4acac1a4150700609" }
@@ -779,7 +779,7 @@ uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde"] }
 walkdir = "2.5"
 wasm-encoder = "0.221"
 wasmparser = "0.221"
-wasmtime = { version = "33", default-features = false, features = [
+wasmtime = { version = "36.0.17", default-features = false, features = [
     "async",
     "demangle",
     "runtime",
@@ -788,7 +788,7 @@ wasmtime = { version = "33", default-features = false, features = [
     "incremental-cache",
     "parallel-compilation",
 ] }
-wasmtime-wasi = "33"
+wasmtime-wasi = "36.0.17"
 wax = "0.7"
 which = "6.0.0"
 wasm-bindgen = "0.2.113"
