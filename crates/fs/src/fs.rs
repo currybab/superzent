@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Instant;
 use util::maybe;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use ashpd::desktop::trash;
 use futures::stream::iter;
@@ -529,6 +529,59 @@ fn path_to_c_string(path: &Path) -> io::Result<CString> {
     })
 }
 
+// On Unix targets, std::fs::ReadDir panics in its Drop implementation
+// when an unexpected error is returned from closedir(2). We hit this
+// condition in production; one cause seems to be macOS's FSEventStream
+// incorrectly closing fds it doesn't own, resulting in closedir returning
+// EBADF, see https://github.com/zed-industries/zed/issues/59952#issuecomment-5080178879.
+//
+// We also see occasional errors like ENXIO and ETIMEDOUT that seem to
+// come from network or other exotic filesystems.
+//
+// To avoid crashing the app in this situation, we use the rustix analogue of
+// ReadDir, which doesn't have this panic in drop.
+#[cfg(unix)]
+fn read_dir_entries(path: PathBuf) -> Result<impl Send + Iterator<Item = Result<PathBuf>>> {
+    use rustix::fs::{Dir, Mode, OFlags};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let directory_fd = rustix::fs::open(
+        &path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("failed to open directory {path:?}"))?;
+    let directory =
+        Dir::new(directory_fd).with_context(|| format!("failed to read directory {path:?}"))?;
+
+    Ok(directory.filter_map(move |entry| {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Some(Err(anyhow::Error::new(error)
+                    .context(format!("failed to read directory entry in {path:?}"))));
+            }
+        };
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            return None;
+        }
+        Some(Ok(path.join(OsStr::from_bytes(name))))
+    }))
+}
+
+#[cfg(not(unix))]
+fn read_dir_entries(path: PathBuf) -> Result<impl Send + Iterator<Item = Result<PathBuf>>> {
+    let entries =
+        std::fs::read_dir(&path).with_context(|| format!("failed to open directory {path:?}"))?;
+    Ok(entries.map(move |entry| {
+        entry
+            .map(|entry| entry.path())
+            .with_context(|| format!("failed to read directory entry in {path:?}"))
+    }))
+}
+
 #[async_trait::async_trait]
 impl Fs for RealFs {
     async fn create_dir(&self, path: &Path) -> Result<()> {
@@ -1031,16 +1084,11 @@ impl Fs for RealFs {
         path: &Path,
     ) -> Result<Pin<Box<dyn Send + Stream<Item = Result<PathBuf>>>>> {
         let path = path.to_owned();
-        let result = iter(
-            self.executor
-                .spawn(async move { std::fs::read_dir(path) })
-                .await?,
-        )
-        .map(|entry| match entry {
-            Ok(entry) => Ok(entry.path()),
-            Err(error) => Err(anyhow!("failed to read dir entry {error:?}")),
-        });
-        Ok(Box::pin(result))
+        let entries = self
+            .executor
+            .spawn(async move { read_dir_entries(path) })
+            .await?;
+        Ok(Box::pin(iter(entries)))
     }
 
     async fn watch(
@@ -1483,7 +1531,7 @@ impl FakeFsState {
         Ok(self
             .try_entry(target, true)
             .ok_or_else(|| {
-                anyhow!(io::Error::new(
+                anyhow::anyhow!(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("not found: {target:?}")
                 ))

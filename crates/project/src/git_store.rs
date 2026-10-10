@@ -979,7 +979,9 @@ impl GitStore {
                 diff_state.language_registry = language_registry;
 
                 match kind {
-                    DiffKind::Unstaged => diff_state.unstaged_diff = Some(diff.downgrade()),
+                    DiffKind::Unstaged => {
+                        diff_state.unstaged_diff.get_or_insert(diff.downgrade());
+                    }
                     DiffKind::Uncommitted => {
                         let unstaged_diff = if let Some(diff) = diff_state.unstaged_diff() {
                             diff
@@ -1558,13 +1560,17 @@ impl GitStore {
             } else if let UpdatedGitRepository {
                 new_work_directory_abs_path: Some(work_directory_abs_path),
                 dot_git_abs_path: Some(dot_git_abs_path),
-                repository_dir_abs_path: Some(_repository_dir_abs_path),
+                repository_dir_abs_path: Some(repository_dir_abs_path),
                 common_dir_abs_path: Some(common_dir_abs_path),
                 ..
             } = update
             {
-                let original_repo_abs_path: Arc<Path> =
-                    git::repository::original_repo_path_from_common_dir(common_dir_abs_path).into();
+                let original_repo_abs_path: Arc<Path> = git::repository::original_repo_path(
+                    work_directory_abs_path,
+                    common_dir_abs_path,
+                    repository_dir_abs_path,
+                )
+                .into();
                 let id = RepositoryId(next_repository_id.fetch_add(1, atomic::Ordering::Release));
                 let is_trusted = TrustedWorktrees::try_get_global(cx)
                     .map(|trusted_worktrees| {
@@ -3501,7 +3507,7 @@ impl BufferGitState {
                 uncommitted_diff
                     .update(cx, |diff, cx| {
                         if language_changed {
-                            diff.language_changed(language.clone(), language_registry, cx);
+                            diff.language_changed(language.clone(), language_registry.clone(), cx);
                         }
                         diff.set_snapshot_with_secondary(
                             new_uncommitted_diff,
@@ -3530,7 +3536,12 @@ impl BufferGitState {
                     .await;
 
                 oid_diff
-                    .update(cx, |diff, cx| diff.set_snapshot(new_oid_diff, &buffer, cx))
+                    .update(cx, |diff, cx| {
+                        if language_changed {
+                            diff.language_changed(language.clone(), language_registry.clone(), cx);
+                        }
+                        diff.set_snapshot(new_oid_diff, &buffer, cx)
+                    })
                     .await;
 
                 log::debug!(
@@ -4107,15 +4118,16 @@ impl Repository {
                         ) in &repo_diff_state_updates
                         {
                             let index_text = if current_index_text.is_some() && !*is_symlink {
-                                backend.load_index_text(repo_path.clone()).await
+                                backend.load_index_text(repo_path.clone())
                             } else {
-                                None
+                                future::ready(None).boxed()
                             };
                             let head_text = if current_head_text.is_some() && !*is_symlink {
-                                backend.load_committed_text(repo_path.clone()).await
+                                backend.load_committed_text(repo_path.clone())
                             } else {
-                                None
+                                future::ready(None).boxed()
                             };
+                            let (index_text, head_text) = future::join(index_text, head_text).await;
 
                             let change =
                                 match (current_index_text.as_ref(), current_head_text.as_ref()) {
@@ -4724,12 +4736,11 @@ impl Repository {
                                 .commit_oid_to_index
                                 .insert(commit_data.sha, graph_data.commit_data.len());
                             graph_data.commit_data.push(commit_data);
-
-                            cx.emit(RepositoryEvent::GraphEvent(
-                                graph_data_key.clone(),
-                                GitGraphEvent::CountUpdated(graph_data.commit_data.len()),
-                            ));
                         }
+                        cx.emit(RepositoryEvent::GraphEvent(
+                            graph_data_key.clone(),
+                            GitGraphEvent::CountUpdated(graph_data.commit_data.len()),
+                        ));
                     });
 
                 match &graph_data {

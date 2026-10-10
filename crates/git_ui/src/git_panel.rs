@@ -11,6 +11,7 @@ use crate::{
 };
 #[cfg(feature = "ai")]
 use agent_settings::AgentSettings;
+use alacritty_terminal::vte::ansi;
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
 #[cfg(feature = "ai")]
@@ -34,7 +35,7 @@ use git::repository::{
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
-use git::{Amend, Signoff, ToggleStaged, repository::RepoPath, status::FileStatus};
+use git::{Amend, Commit, Signoff, ToggleStaged, repository::RepoPath, status::FileStatus};
 use git::{
     ExpandCommitEditor, GitHostingProviderRegistry, GitRemote, RestoreTrackedFiles, StageAll,
     StashAll, StashApply, StashPop, TrashUntrackedFiles, UnstageAll, parse_git_remote_url,
@@ -1155,11 +1156,11 @@ impl GitPanel {
                 .iter()
                 .position(|entry| entry.status_entry().is_some()),
             GitPanelViewMode::Tree(state) => {
-                let index = self.entries.iter().position(|entry| {
-                    entry.status_entry().is_some() || entry.directory_entry().is_some()
-                });
-
-                index.map(|index| state.logical_indices[index])
+                state.logical_indices.iter().copied().find(|&index| {
+                    self.entries.get(index).is_some_and(|entry| {
+                        entry.status_entry().is_some() || entry.directory_entry().is_some()
+                    })
+                })
             }
         };
 
@@ -1847,13 +1848,20 @@ impl GitPanel {
                     })
                     .collect::<Vec<_>>()
             })?;
+            let total_count = tasks.len();
             let to_unstage = to_delete
                 .into_iter()
                 .filter(|entry| !entry.status.staging().is_fully_unstaged())
                 .collect();
             this.update(cx, |this, cx| this.change_file_stage(false, to_unstage, cx))?;
-            for task in tasks {
-                task.await?;
+
+            let results = futures::future::join_all(tasks).await;
+            let errors: Vec<anyhow::Error> = results.into_iter().filter_map(|r| r.err()).collect();
+            let failed_count = errors.len();
+            if let Some(first_error) = errors.into_iter().next() {
+                return Err(anyhow::anyhow!(
+                    "Failed to trash {failed_count} of {total_count} files: {first_error:#}"
+                ));
             }
             Ok(())
         })
@@ -2245,13 +2253,19 @@ impl GitPanel {
         }
     }
 
-    fn on_commit(&mut self, _: &git::Commit, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
+        let is_amend = self.amend_pending;
         if self.commit(&self.commit_editor.focus_handle(cx), window, cx) {
-            telemetry::event!("Git Committed", source = "Git Panel");
+            if is_amend {
+                telemetry::event!("Git Amended", source = "Git Panel");
+            } else {
+                telemetry::event!("Git Committed", source = "Git Panel");
+            }
         }
     }
 
     /// Commits staged changes with the current commit message.
+    /// When `amend_pending` is true, performs an amend commit instead.
     ///
     /// Returns `true` if the commit was executed, `false` otherwise.
     pub(crate) fn commit(
@@ -2260,14 +2274,10 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.amend_pending {
-            return false;
-        }
-
         if commit_editor_focus_handle.contains_focused(window, cx) {
             self.commit_changes(
                 CommitOptions {
-                    amend: false,
+                    amend: self.amend_pending,
                     signoff: self.signoff_enabled,
                 },
                 window,
@@ -2280,17 +2290,16 @@ impl GitPanel {
         }
     }
 
-    fn on_amend(&mut self, _: &git::Amend, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_amend(&mut self, _: &Amend, window: &mut Window, cx: &mut Context<Self>) {
         if self.amend(&self.commit_editor.focus_handle(cx), window, cx) {
             telemetry::event!("Git Amended", source = "Git Panel");
         }
     }
 
-    /// Amends the most recent commit with staged changes and/or an updated commit message.
-    ///
-    /// Uses a two-stage workflow where the first invocation loads the commit
-    /// message for editing, second invocation performs the amend. Returns
-    /// `true` if the amend was executed, `false` otherwise.
+    /// Enters the amend state on first invocation, loading the last commit
+    /// message for editing. On second invocation, performs the amend commit
+    /// by delegating to [`Self::commit`]. Returns `true` if a commit was
+    /// executed.
     pub(crate) fn amend(
         &mut self,
         commit_editor_focus_handle: &FocusHandle,
@@ -2300,27 +2309,15 @@ impl GitPanel {
         if commit_editor_focus_handle.contains_focused(window, cx) {
             if self.head_commit(cx).is_some() {
                 if !self.amend_pending {
-                    self.set_amend_pending(true, cx);
-                    self.load_last_commit_message(cx);
-
-                    return false;
+                    self.toggle_amend_pending(cx);
                 } else {
-                    self.commit_changes(
-                        CommitOptions {
-                            amend: true,
-                            signoff: self.signoff_enabled,
-                        },
-                        window,
-                        cx,
-                    );
-
-                    return true;
+                    return self.commit(commit_editor_focus_handle, window, cx);
                 }
             }
-            return false;
+            false
         } else {
             cx.propagate();
-            return false;
+            false
         }
     }
     pub fn head_commit(&self, cx: &App) -> Option<CommitDetails> {
@@ -3042,10 +3039,11 @@ impl GitPanel {
             .project
             .read(cx)
             .visible_worktrees(cx)
+            .filter(|worktree| !worktree.read(cx).is_single_file())
             .collect::<Vec<_>>();
 
-        let worktree = if worktrees.len() == 1 {
-            Task::ready(Some(worktrees.first().unwrap().clone()))
+        let worktree = if let [worktree] = worktrees.as_slice() {
+            Task::ready(Some(worktree.clone()))
         } else if worktrees.is_empty() {
             let result = window.prompt(
                 PromptLevel::Warning,
@@ -3213,6 +3211,14 @@ impl GitPanel {
             let remote = match remote.await {
                 Ok(Some(remote)) => remote,
                 Ok(None) => {
+                    this.update(cx, |this, cx| {
+                        this.show_error_toast(
+                            "push",
+                            anyhow::anyhow!("No remote available to push to. Add a remote to be able to publish changes."),
+                            cx,
+                        )
+                    })
+                    .ok();
                     return Ok(());
                 }
                 Err(e) => {
@@ -4443,7 +4449,7 @@ impl GitPanel {
                         if can_commit {
                             Tooltip::with_meta_in(
                                 tooltip,
-                                Some(if amend { &git::Amend } else { &git::Commit }),
+                                Some(&git::Commit),
                                 format!(
                                     "git commit{}{}",
                                     if amend { " --amend" } else { "" },
@@ -5261,7 +5267,12 @@ impl GitPanel {
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_repo = self.active_repository.is_some();
         let has_no_repo = self.active_repository.is_none();
-        let worktree_count = self.project.read(cx).visible_worktrees(cx).count();
+        // `git init` can't run inside a worktree whose root is a single file.
+        let has_directory_worktree = self
+            .project
+            .read(cx)
+            .visible_worktrees(cx)
+            .any(|worktree| !worktree.read(cx).is_single_file());
 
         let should_show_branch_diff =
             has_repo && self.changes_count == 0 && !self.is_on_main_branch(cx);
@@ -5278,7 +5289,7 @@ impl GitPanel {
             .items_center()
             .justify_center()
             .child(Label::new(label).size(LabelSize::Small).color(Color::Muted))
-            .when(has_no_repo && worktree_count > 0, |this| {
+            .when(has_no_repo && has_directory_worktree, |this| {
                 this.child(
                     panel_filled_button("Initialize Repository")
                         .tooltip(Tooltip::for_action_title_in(
@@ -5534,7 +5545,7 @@ impl GitPanel {
     }
 
     fn entry_label(&self, label: impl Into<SharedString>, color: Color) -> Label {
-        Label::new(label.into()).color(color)
+        Label::new(label.into()).single_line().color(color)
     }
 
     fn list_item_height(&self) -> Rems {
@@ -7035,7 +7046,13 @@ fn open_output(
     cx: &mut Context<Workspace>,
 ) {
     let operation = operation.into();
-    let buffer = cx.new(|cx| Buffer::local(output, cx));
+
+    let mut handler = GitOutputHandler::default();
+    let mut processor = ansi::Processor::<ansi::StdSyncHandler>::default();
+    processor.advance(&mut handler, output.as_bytes());
+    let plain_text = handler.output;
+
+    let buffer = cx.new(|cx| Buffer::local(plain_text.as_str(), cx));
     buffer.update(cx, |buffer, cx| {
         buffer.set_capability(language::Capability::ReadOnly, cx);
     });
@@ -7049,6 +7066,32 @@ fn open_output(
     });
 
     workspace.add_item_to_center(Box::new(editor), window, cx);
+}
+
+#[derive(Default)]
+struct GitOutputHandler {
+    output: String,
+    line_start: usize,
+}
+
+impl ansi::Handler for GitOutputHandler {
+    fn input(&mut self, c: char) {
+        self.output.push(c);
+    }
+
+    fn linefeed(&mut self) {
+        self.output.push('\n');
+        self.line_start = self.output.len();
+    }
+
+    fn carriage_return(&mut self) {
+        self.output.truncate(self.line_start);
+    }
+
+    fn put_tab(&mut self, count: u16) {
+        self.output
+            .extend(std::iter::repeat_n('\t', count as usize));
+    }
 }
 
 pub(crate) fn show_error_toast(
@@ -7065,21 +7108,23 @@ pub(crate) fn show_error_toast(
         .is_some()
     { // Hide the cancelled by user message
     } else {
-        workspace.update(cx, |workspace, cx| {
-            let workspace_weak = cx.weak_entity();
-            let toast = StatusToast::new(format!("git {} failed", action), cx, |this, _cx| {
-                this.icon(ToastIcon::new(IconName::XCircle).color(Color::Error))
-                    .action("View Log", move |window, cx| {
-                        let message = message.clone();
-                        let action = action.clone();
-                        workspace_weak
-                            .update(cx, move |workspace, cx| {
-                                open_output(action, workspace, &message, window, cx)
-                            })
-                            .ok();
-                    })
+        cx.defer(move |cx| {
+            workspace.update(cx, |workspace, cx| {
+                let workspace_weak = cx.weak_entity();
+                let toast = StatusToast::new(format!("git {} failed", action), cx, |this, _cx| {
+                    this.icon(ToastIcon::new(IconName::XCircle).color(Color::Error))
+                        .action("View Log", move |window, cx| {
+                            let message = message.clone();
+                            let action = action.clone();
+                            workspace_weak
+                                .update(cx, move |workspace, cx| {
+                                    open_output(action, workspace, &message, window, cx)
+                                })
+                                .ok();
+                        })
+                });
+                workspace.toggle_status_toast(toast, cx)
             });
-            workspace.toggle_status_toast(toast, cx)
         });
     }
 }
@@ -7353,6 +7398,37 @@ mod tests {
         assert_eq!(
             message,
             "Your local changes to the following files would be overwritten by merge"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_git_init_ignores_single_file_worktrees(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/demo"), json!({ "plain.txt": "hello" }))
+            .await;
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/demo/plain.txt"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        cx.run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        panel.update_in(cx, |panel, window, cx| panel.git_init(window, cx));
+        cx.run_until_parked();
+
+        assert!(
+            cx.has_pending_prompt(),
+            "git init should ask for a directory instead of running in a single-file worktree"
+        );
+        assert!(
+            !fs.is_dir(Path::new(path!("/demo/plain.txt/.git"))).await,
+            "git init should not run inside a single-file worktree"
         );
     }
 
@@ -8696,5 +8772,24 @@ mod tests {
         // "Update tracked"
         let message = panel.update(cx, |panel, cx| panel.suggest_commit_message(cx));
         assert_eq!(message, Some("Update tracked".to_string()));
+    }
+
+    #[test]
+    fn test_git_output_handler_strips_ansi_codes() {
+        use alacritty_terminal::vte::ansi;
+
+        let cases = [
+            ("no escape codes here\n", "no escape codes here\n"),
+            ("\x1b[31mhello\x1b[0m", "hello"),
+            ("\x1b[1;32mfoo\x1b[0m bar", "foo bar"),
+            ("progress 10%\rprogress 100%\n", "progress 100%\n"),
+        ];
+
+        for (input, expected) in cases {
+            let mut handler = GitOutputHandler::default();
+            let mut processor = ansi::Processor::<ansi::StdSyncHandler>::default();
+            processor.advance(&mut handler, input.as_bytes());
+            assert_eq!(handler.output, expected);
+        }
     }
 }

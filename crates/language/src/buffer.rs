@@ -1,8 +1,8 @@
 pub mod row_chunk;
 
 use crate::{
-    DebuggerTextObject, LanguageScope, Outline, OutlineConfig, PLAIN_TEXT, RunnableCapture,
-    RunnableTag, TextObject, TreeSitterOptions,
+    ByteContent, DebuggerTextObject, LanguageScope, Outline, OutlineConfig, PLAIN_TEXT,
+    RunnableCapture, RunnableTag, TextObject, TreeSitterOptions, analyze_byte_content,
     diagnostic_set::{DiagnosticEntry, DiagnosticEntryRef, DiagnosticGroup},
     language_settings::{AutoIndentMode, LanguageSettings, language_settings},
     outline::OutlineItem,
@@ -503,6 +503,8 @@ pub trait LocalFile: File {
 pub enum AutoindentMode {
     /// Indent each line of inserted text.
     EachLine,
+    /// Autoindent multiline edits, but only apply syntax-triggered outdents to single-line edits.
+    PreserveSingleLine,
     /// Apply the same indentation adjustment to all of the lines
     /// in a given insertion.
     Block {
@@ -537,6 +539,7 @@ struct AutoindentRequestEntry {
     old_row: Option<u32>,
     indent_size: IndentSize,
     original_indent_column: Option<u32>,
+    only_explicit_outdents: bool,
 }
 
 #[derive(Debug)]
@@ -544,6 +547,7 @@ struct IndentSuggestion {
     basis_row: u32,
     delta: Ordering,
     within_error: bool,
+    explicit_outdent: bool,
 }
 
 struct BufferChunkHighlights<'a> {
@@ -1602,16 +1606,21 @@ impl Buffer {
 
             let target_encoding = force_encoding.unwrap_or(current_encoding);
 
+            let bytes = load_bytes_task.await?;
+
+            anyhow::ensure!(
+                analyze_byte_content(&bytes) != ByteContent::Binary,
+                "Binary files are not supported"
+            );
+
             let is_unicode = target_encoding == encoding_rs::UTF_8
                 || target_encoding == encoding_rs::UTF_16LE
                 || target_encoding == encoding_rs::UTF_16BE;
 
             let (new_text, has_bom, encoding_used) = if force_encoding.is_some() && !is_unicode {
-                let bytes = load_bytes_task.await?;
                 let (cow, _had_errors) = target_encoding.decode_without_bom_handling(&bytes);
                 (cow.into_owned(), false, target_encoding)
             } else {
-                let bytes = load_bytes_task.await?;
                 let (cow, used_enc, _had_errors) = target_encoding.decode(&bytes);
 
                 let actual_has_bom = if used_enc == encoding_rs::UTF_8 {
@@ -2032,7 +2041,11 @@ impl Buffer {
                     if let Some(old_row) = entry.old_row {
                         old_to_new_rows.insert(old_row, new_row);
                     }
-                    row_ranges.push((new_row..new_end_row, entry.original_indent_column));
+                    row_ranges.push((
+                        new_row..new_end_row,
+                        entry.original_indent_column,
+                        entry.only_explicit_outdents,
+                    ));
                 }
 
                 // Build a map containing the suggested indentation for each of the edited lines
@@ -2084,7 +2097,7 @@ impl Buffer {
                 // if they differ from the old suggestion for that line.
                 let mut language_indent_sizes = language_indent_sizes_by_new_row.iter().peekable();
                 let mut language_indent_size = IndentSize::default();
-                for (row_range, original_indent_column) in row_ranges {
+                for (row_range, original_indent_column, only_explicit_outdents) in row_ranges {
                     let new_edited_row_range = if request.is_block_mode {
                         row_range.start..row_range.start + 1
                     } else {
@@ -2120,7 +2133,8 @@ impl Buffer {
                                     suggested_indent != *old_indentation
                                         && (!suggestion.within_error || *was_within_error)
                                 },
-                            ) {
+                            ) && (!only_explicit_outdents || suggestion.explicit_outdent)
+                            {
                                 indent_sizes.insert(
                                     new_row,
                                     (suggested_indent, request.ignore_empty_lines),
@@ -2770,6 +2784,7 @@ impl Buffer {
                 .map(|((ix, (range, _)), new_text)| {
                     let new_text_length = new_text.len();
                     let old_start = range.start.to_point(&before_edit);
+                    let old_end = range.end.to_point(&before_edit);
                     let new_start = (delta + range.start as isize) as usize;
                     let range_len = range.end - range.start;
                     delta += new_text_length as isize - range_len as isize;
@@ -2831,6 +2846,9 @@ impl Buffer {
                     }
 
                     AutoindentRequestEntry {
+                        only_explicit_outdents: matches!(mode, AutoindentMode::PreserveSingleLine)
+                            && old_start.row == old_end.row
+                            && !new_text.contains('\n'),
                         original_indent_column,
                         old_row: if first_line_is_new {
                             None
@@ -2903,6 +2921,7 @@ impl Buffer {
                 old_row: None,
                 indent_size: before_edit.language_indent_size_at(range.start, cx),
                 original_indent_column: None,
+                only_explicit_outdents: false,
             })
             .collect();
         self.autoindent_requests.push(Arc::new(AutoindentRequest {
@@ -3306,6 +3325,10 @@ impl Buffer {
     pub fn preserve_preview(&self) -> bool {
         !self.has_edits_since(&self.preview_version)
     }
+
+    pub fn set_group_interval(&mut self, group_interval: Duration) {
+        self.text.set_group_interval(group_interval);
+    }
 }
 
 #[doc(hidden)]
@@ -3319,10 +3342,6 @@ impl Buffer {
     ) {
         let edits = self.edits_for_marked_text(marked_string);
         self.edit(edits, autoindent_mode, cx);
-    }
-
-    pub fn set_group_interval(&mut self, group_interval: Duration) {
-        self.text.set_group_interval(group_interval);
     }
 
     pub fn randomly_edit<T>(&mut self, rng: &mut T, old_range_count: usize, cx: &mut Context<Self>)
@@ -3694,24 +3713,28 @@ impl BufferSnapshot {
                     basis_row: prev_row,
                     delta: Ordering::Equal,
                     within_error: within_error && !from_regex,
+                    explicit_outdent: true,
                 })
             } else if indent_from_prev_row {
                 Some(IndentSuggestion {
                     basis_row: prev_row,
                     delta: Ordering::Greater,
                     within_error: within_error && !from_regex,
+                    explicit_outdent: false,
                 })
             } else if outdent_to_row < prev_row {
                 Some(IndentSuggestion {
                     basis_row: outdent_to_row,
                     delta: Ordering::Equal,
                     within_error: within_error && !from_regex,
+                    explicit_outdent: true,
                 })
             } else if outdent_from_prev_row {
                 Some(IndentSuggestion {
                     basis_row: prev_row,
                     delta: Ordering::Less,
                     within_error: within_error && !from_regex,
+                    explicit_outdent: true,
                 })
             } else if config.auto_indent_using_last_non_empty_line || !self.is_line_blank(prev_row)
             {
@@ -3719,6 +3742,7 @@ impl BufferSnapshot {
                     basis_row: prev_row,
                     delta: Ordering::Equal,
                     within_error: within_error && !from_regex,
+                    explicit_outdent: false,
                 })
             } else {
                 None
@@ -3924,7 +3948,12 @@ impl BufferSnapshot {
             let mut range = None;
             loop {
                 let child_range = cursor.node().byte_range();
-                if !child_range.contains(&offset) {
+                let contains_offset = child_range.contains(&offset)
+                // `Range::contains` is end-exclusive, which rejects every node at EOF
+                // (including the root). Accept the end boundary only at the buffer's end,
+                // so mid-buffer behavior is unchanged.
+                    || (child_range.end == offset && offset == text.len());
+                if !contains_offset {
                     break;
                 }
 
@@ -4615,7 +4644,7 @@ impl BufferSnapshot {
                 continue;
             }
 
-            let mut all_brackets: Vec<(BracketMatch<usize>, bool)> = Vec::new();
+            let mut all_brackets: Vec<(BracketMatch<usize>, usize, bool)> = Vec::new();
             let mut opens = Vec::new();
             let mut color_pairs = Vec::new();
 
@@ -4641,8 +4670,9 @@ impl BufferSnapshot {
                 let mut open = None;
                 let mut close = None;
                 let syntax_layer_depth = mat.depth;
+                let pattern_index = mat.pattern_index;
                 let config = configs[mat.grammar_index];
-                let pattern = &config.patterns[mat.pattern_index];
+                let pattern = &config.patterns[pattern_index];
                 for capture in mat.captures {
                     if capture.index == config.open_capture_ix {
                         open = Some(capture.node.byte_range());
@@ -4663,7 +4693,7 @@ impl BufferSnapshot {
                 }
 
                 open_to_close_ranges
-                    .entry((open_range.start, open_range.end))
+                    .entry((open_range.start, open_range.end, pattern_index))
                     .or_insert_with(BTreeMap::new)
                     .insert(
                         (close_range.start, close_range.end),
@@ -4684,6 +4714,7 @@ impl BufferSnapshot {
                         newline_only: pattern.newline_only,
                         color_index: None,
                     },
+                    pattern_index,
                     pattern.rainbow_exclude,
                 ));
             }
@@ -4697,22 +4728,43 @@ impl BufferSnapshot {
                 // For each close, we know the expected open_len from tree-sitter matches.
 
                 // Map each close to its expected open length (for inferring opens)
-                let close_to_open_len: HashMap<(usize, usize), usize> = all_brackets
+                let close_to_open_len: HashMap<(usize, usize, usize), usize> = all_brackets
                     .iter()
-                    .map(|(m, _)| ((m.close_range.start, m.close_range.end), m.open_range.len()))
+                    .map(|(bracket_match, pattern_index, _)| {
+                        (
+                            (
+                                bracket_match.close_range.start,
+                                bracket_match.close_range.end,
+                                *pattern_index,
+                            ),
+                            bracket_match.open_range.len(),
+                        )
+                    })
                     .collect();
 
                 // Collect unique opens and closes within this chunk
-                let mut unique_opens: HashSet<(usize, usize)> = all_brackets
+                let mut unique_opens: HashSet<(usize, usize, usize)> = all_brackets
                     .iter()
-                    .map(|(m, _)| (m.open_range.start, m.open_range.end))
-                    .filter(|(start, _)| chunk_range.contains(start))
+                    .map(|(bracket_match, pattern_index, _)| {
+                        (
+                            bracket_match.open_range.start,
+                            bracket_match.open_range.end,
+                            *pattern_index,
+                        )
+                    })
+                    .filter(|(start, _, _)| chunk_range.contains(start))
                     .collect();
 
-                let mut unique_closes: Vec<(usize, usize)> = all_brackets
+                let mut unique_closes: Vec<(usize, usize, usize)> = all_brackets
                     .iter()
-                    .map(|(m, _)| (m.close_range.start, m.close_range.end))
-                    .filter(|(start, _)| chunk_range.contains(start))
+                    .map(|(bracket_match, pattern_index, _)| {
+                        (
+                            bracket_match.close_range.start,
+                            bracket_match.close_range.end,
+                            *pattern_index,
+                        )
+                    })
+                    .filter(|(start, _, _)| chunk_range.contains(start))
                     .collect();
                 unique_closes.sort();
                 unique_closes.dedup();
@@ -4721,8 +4773,9 @@ impl BufferSnapshot {
                 let mut unique_opens_vec: Vec<_> = unique_opens.iter().copied().collect();
                 unique_opens_vec.sort();
 
-                let mut valid_pairs: HashSet<((usize, usize), (usize, usize))> = HashSet::default();
-                let mut open_stack: Vec<(usize, usize)> = Vec::new();
+                let mut valid_pairs: HashSet<((usize, usize, usize), (usize, usize, usize))> =
+                    HashSet::default();
+                let mut open_stacks: HashMap<usize, Vec<(usize, usize)>> = HashMap::default();
                 let mut open_idx = 0;
 
                 for close in &unique_closes {
@@ -4730,36 +4783,53 @@ impl BufferSnapshot {
                     while open_idx < unique_opens_vec.len()
                         && unique_opens_vec[open_idx].0 < close.0
                     {
-                        open_stack.push(unique_opens_vec[open_idx]);
+                        let (start, end, pattern_index) = unique_opens_vec[open_idx];
+                        open_stacks
+                            .entry(pattern_index)
+                            .or_default()
+                            .push((start, end));
                         open_idx += 1;
                     }
 
                     // Try to match with most recent open
-                    if let Some(open) = open_stack.pop() {
-                        valid_pairs.insert((open, *close));
+                    let (close_start, close_end, pattern_index) = *close;
+                    if let Some(open) = open_stacks
+                        .get_mut(&pattern_index)
+                        .and_then(|open_stack| open_stack.pop())
+                    {
+                        valid_pairs.insert(((open.0, open.1, pattern_index), *close));
                     } else if let Some(&open_len) = close_to_open_len.get(close) {
                         // No open on stack - infer one based on expected open_len
-                        if close.0 >= open_len {
-                            let inferred = (close.0 - open_len, close.0);
+                        if close_start >= open_len {
+                            let inferred = (close_start - open_len, close_start, pattern_index);
                             unique_opens.insert(inferred);
                             valid_pairs.insert((inferred, *close));
                             all_brackets.push((
                                 BracketMatch {
                                     open_range: inferred.0..inferred.1,
-                                    close_range: close.0..close.1,
+                                    close_range: close_start..close_end,
                                     newline_only: false,
                                     syntax_layer_depth: 0,
                                     color_index: None,
                                 },
+                                pattern_index,
                                 false,
                             ));
                         }
                     }
                 }
 
-                all_brackets.retain(|(m, _)| {
-                    let open = (m.open_range.start, m.open_range.end);
-                    let close = (m.close_range.start, m.close_range.end);
+                all_brackets.retain(|(bracket_match, pattern_index, _)| {
+                    let open = (
+                        bracket_match.open_range.start,
+                        bracket_match.open_range.end,
+                        *pattern_index,
+                    );
+                    let close = (
+                        bracket_match.close_range.start,
+                        bracket_match.close_range.end,
+                        *pattern_index,
+                    );
                     valid_pairs.contains(&(open, close))
                 });
             }
@@ -4767,7 +4837,7 @@ impl BufferSnapshot {
             let mut all_brackets = all_brackets
                 .into_iter()
                 .enumerate()
-                .map(|(index, (bracket_match, rainbow_exclude))| {
+                .map(|(index, (bracket_match, _, rainbow_exclude))| {
                     // Certain languages have "brackets" that are not brackets, e.g. tags. and such
                     // bracket will match the entire tag with all text inside.
                     // For now, avoid highlighting any pair that has more than single char in each bracket.

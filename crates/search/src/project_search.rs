@@ -237,6 +237,7 @@ pub struct ProjectSearch {
     search_id: usize,
     no_results: Option<bool>,
     limit_reached: bool,
+    waiting_for_scan: bool,
     search_history_cursor: SearchHistoryCursor,
     search_included_history_cursor: SearchHistoryCursor,
     search_excluded_history_cursor: SearchHistoryCursor,
@@ -299,6 +300,7 @@ impl ProjectSearch {
             search_id: 0,
             no_results: None,
             limit_reached: false,
+            waiting_for_scan: false,
             search_history_cursor: Default::default(),
             search_included_history_cursor: Default::default(),
             search_excluded_history_cursor: Default::default(),
@@ -323,6 +325,7 @@ impl ProjectSearch {
                 search_id: self.search_id,
                 no_results: self.no_results,
                 limit_reached: self.limit_reached,
+                waiting_for_scan: false,
                 search_history_cursor: self.search_history_cursor.clone(),
                 search_included_history_cursor: self.search_included_history_cursor.clone(),
                 search_excluded_history_cursor: self.search_excluded_history_cursor.clone(),
@@ -431,15 +434,17 @@ impl ProjectSearch {
                         .update(cx, |excerpts, cx| excerpts.clear(cx));
                     project_search.no_results = Some(true);
                     project_search.limit_reached = false;
+                    project_search.waiting_for_scan = false;
                 })
                 .ok()?;
 
             let mut limit_reached = false;
             while let Some(results) = matches.next().await {
-                let (buffers_with_ranges, has_reached_limit) = cx
+                let (buffers_with_ranges, has_reached_limit, is_waiting_for_scan) = cx
                     .background_executor()
                     .spawn(async move {
                         let mut limit_reached = false;
+                        let mut waiting_for_scan = false;
                         let mut buffers_with_ranges = Vec::with_capacity(results.len());
                         for result in results {
                             match result {
@@ -449,12 +454,23 @@ impl ProjectSearch {
                                 project::search::SearchResult::LimitReached => {
                                     limit_reached = true;
                                 }
+                                project::search::SearchResult::WaitingForScan => {
+                                    waiting_for_scan = true;
+                                }
                             }
                         }
-                        (buffers_with_ranges, limit_reached)
+                        (buffers_with_ranges, limit_reached, waiting_for_scan)
                     })
                     .await;
                 limit_reached |= has_reached_limit;
+                if is_waiting_for_scan {
+                    project_search
+                        .update(cx, |project_search, cx| {
+                            project_search.waiting_for_scan = true;
+                            cx.notify();
+                        })
+                        .ok()?;
+                }
                 let mut new_ranges = project_search
                     .update(cx, |project_search, cx| {
                         project_search.excerpts.update(cx, |excerpts, cx| {
@@ -492,6 +508,7 @@ impl ProjectSearch {
                         project_search.no_results = Some(false);
                     }
                     project_search.limit_reached = limit_reached;
+                    project_search.waiting_for_scan = false;
                     project_search.pending_search.take();
                     cx.notify();
                 })
@@ -526,8 +543,11 @@ impl Render for ProjectSearchView {
             let model = self.entity.read(cx);
             let has_no_results = model.no_results.unwrap_or(false);
             let is_search_underway = model.pending_search.is_some();
+            let is_waiting_for_scan = model.waiting_for_scan;
 
-            let heading_text = if is_search_underway {
+            let heading_text = if is_waiting_for_scan {
+                "Loading project…"
+            } else if is_search_underway {
                 "Searching…"
             } else if has_no_results {
                 "No Results"
@@ -1857,7 +1877,7 @@ impl ProjectSearchBar {
     fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(search_view) = self.active_project_search.as_ref() {
             search_view.update(cx, |search_view, cx| {
-                search_view.query_editor.focus_handle(cx).focus(window, cx);
+                search_view.focus_query_editor(window, cx);
             });
         }
     }
@@ -2679,6 +2699,175 @@ pub mod tests {
         assert_eq!(split_glob_patterns(r"\{a,b\}"), vec![r"\{a", r"b\}"]);
         assert_eq!(split_glob_patterns(r"a\\,b"), vec![r"a\\", "b"]);
         assert_eq!(split_glob_patterns(r"a\\\,b"), vec![r"a\\\,b"]);
+    }
+
+    #[perf]
+    #[gpui::test]
+    async fn test_ignored_dot_git_directory_results_follow_include_ignored_option(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                ".gitignore": "log/\n",
+                "app": {
+                    "a.txt": "hello",
+                },
+                "log": {
+                    ".git": {},
+                    "b.txt": "hello",
+                },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let search = cx.new(|cx| ProjectSearch::new(project, cx));
+        let search_view = cx.add_window(|window, cx| {
+            ProjectSearchView::new(workspace.downgrade(), search, window, cx, None)
+        });
+
+        perform_search(search_view, "hello", cx);
+        assert_eq!(
+            search_view
+                .update(cx, |search_view, _, cx| {
+                    search_view.entity.read(cx).match_ranges.len()
+                })
+                .unwrap(),
+            1
+        );
+
+        search_view
+            .update(cx, |search_view, _, cx| {
+                search_view.toggle_search_option(SearchOptions::INCLUDE_IGNORED, cx);
+            })
+            .unwrap();
+        perform_search(search_view, "hello", cx);
+        assert_eq!(
+            search_view
+                .update(cx, |search_view, _, cx| {
+                    search_view.entity.read(cx).match_ranges.len()
+                })
+                .unwrap(),
+            2
+        );
+
+        search_view
+            .update(cx, |search_view, _, cx| {
+                search_view.toggle_search_option(SearchOptions::INCLUDE_IGNORED, cx);
+            })
+            .unwrap();
+        perform_search(search_view, "hello", cx);
+        assert_eq!(
+            search_view
+                .update(cx, |search_view, _, cx| {
+                    search_view.entity.read(cx).match_ranges.len()
+                })
+                .unwrap(),
+            1
+        );
+    }
+
+    #[perf]
+    #[gpui::test]
+    async fn test_unignored_dot_git_directory_results_are_included(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                "app": {
+                    "a.txt": "hello",
+                },
+                "log": {
+                    ".git": {},
+                    "b.txt": "hello",
+                },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let search = cx.new(|cx| ProjectSearch::new(project, cx));
+        let search_view = cx.add_window(|window, cx| {
+            ProjectSearchView::new(workspace.downgrade(), search, window, cx, None)
+        });
+
+        perform_search(search_view, "hello", cx);
+        assert_eq!(
+            search_view
+                .update(cx, |search_view, _, cx| {
+                    search_view.entity.read(cx).match_ranges.len()
+                })
+                .unwrap(),
+            2
+        );
+    }
+
+    #[perf]
+    #[gpui::test]
+    async fn test_nested_gitignore_results_follow_include_ignored_option(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({
+                "app": {
+                    "a.txt": "hello",
+                },
+                "log": {
+                    ".git": {},
+                    ".gitignore": "b.txt\n",
+                    "b.txt": "hello",
+                },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let search = cx.new(|cx| ProjectSearch::new(project, cx));
+        let search_view = cx.add_window(|window, cx| {
+            ProjectSearchView::new(workspace.downgrade(), search, window, cx, None)
+        });
+
+        perform_search(search_view, "hello", cx);
+        assert_eq!(
+            search_view
+                .update(cx, |search_view, _, cx| {
+                    search_view.entity.read(cx).match_ranges.len()
+                })
+                .unwrap(),
+            1
+        );
+
+        search_view
+            .update(cx, |search_view, _, cx| {
+                search_view.toggle_search_option(SearchOptions::INCLUDE_IGNORED, cx);
+            })
+            .unwrap();
+        perform_search(search_view, "hello", cx);
+        assert_eq!(
+            search_view
+                .update(cx, |search_view, _, cx| {
+                    search_view.entity.read(cx).match_ranges.len()
+                })
+                .unwrap(),
+            2
+        );
     }
 
     #[perf]
