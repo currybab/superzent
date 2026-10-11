@@ -73,6 +73,13 @@ tags:
 - #51244 `4d13f01c89`: MCP refresh on worktree changes recalculates agent tools and breaks 12 agent tests without the rest of the upstream MCP series
 - #61562 `90b1549310`: per-chunk inlay hint replacement; fork cancels the in-flight fetch on refresh, so the upstream race (and its test) can't be reproduced
 
+## Local changes on top of ported code
+
+These fork-only follow-ups sit on top of upstream code, so expect small conflicts when upstream later touches the same lines:
+
+- `git_ui/src/branch_picker.rs` `update_matches`: the query is normalized before the empty and duplicate checks for the new-branch entry (upstream still checks the raw query).
+- `agent_ui/src/message_editor.rs` `confirm_command`: `.log_err()` instead of upstream's `let _ =`.
+
 ## Pending for the next sync
 
 These apply to the fork but were not ported yet. All were triaged against fork HEAD on 2026-10-10.
