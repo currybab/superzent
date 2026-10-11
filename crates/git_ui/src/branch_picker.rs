@@ -752,15 +752,24 @@ impl PickerDelegate for BranchListDelegate {
                         return;
                     }
 
-                    if !query.is_empty()
-                        && !matches.first().is_some_and(|entry| entry.name() == query)
+                    let new_branch_name = normalize_branch_name(&query);
+                    if !new_branch_name.is_empty()
+                        && !matches
+                            .first()
+                            .is_some_and(|entry| entry.name() == new_branch_name)
                     {
-                        let query = normalize_branch_name(&query);
-                        let is_url = query.trim_start_matches("git@").parse::<Url>().is_ok();
+                        let is_url = new_branch_name
+                            .trim_start_matches("git@")
+                            .parse::<Url>()
+                            .is_ok();
                         let entry = if is_url {
-                            Entry::NewUrl { url: query }
+                            Entry::NewUrl {
+                                url: new_branch_name,
+                            }
                         } else {
-                            Entry::NewBranch { name: query }
+                            Entry::NewBranch {
+                                name: new_branch_name,
+                            }
                         };
                         // Only transition to NewBranch/NewRemote states when we only show their list item
                         // Otherwise, stay in List state so footer buttons remain visible
@@ -1797,6 +1806,43 @@ mod tests {
             &format!("refs/heads/{NEW_BRANCH}"),
             "branch ref_name should not have duplicate refs/heads/ prefix"
         );
+    }
+
+    #[gpui::test]
+    async fn test_no_new_branch_entry_for_blank_or_existing_normalized_query(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let branches = create_test_branches();
+        let (branch_list, mut ctx) = init_branch_list_test(None, branches, cx).await;
+        let cx = &mut ctx;
+
+        for query in ["   ", " main "] {
+            branch_list
+                .update_in(cx, |branch_list, window, cx| {
+                    branch_list.picker.update(cx, |picker, cx| {
+                        picker
+                            .delegate
+                            .update_matches(query.to_string(), window, cx)
+                    })
+                })
+                .await;
+            cx.run_until_parked();
+
+            branch_list.update(cx, |branch_list, cx| {
+                branch_list.picker.update(cx, |picker, _cx| {
+                    assert!(
+                        !picker
+                            .delegate
+                            .matches
+                            .iter()
+                            .any(|entry| entry.is_new_branch()),
+                        "query {query:?} should not offer to create a branch"
+                    );
+                })
+            });
+        }
     }
 
     #[test]
