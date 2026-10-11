@@ -130,7 +130,9 @@ impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
     }
 
     fn confirm_command(&self, cx: &mut App) {
-        let _ = self.message_editor.update(cx, |this, cx| this.send(cx));
+        self.message_editor
+            .update(cx, |this, cx| this.send(cx))
+            .log_err();
     }
 }
 
