@@ -107,21 +107,17 @@ impl Editor {
         let accents = cx.theme().accents().clone();
 
         self.colorize_brackets_task = cx.spawn(async move |editor, cx| {
-            if invalidate {
-                editor
-                    .update(cx, |editor, cx| {
-                        editor.clear_highlights_with(
-                            &mut |key| matches!(key, HighlightKey::ColorizeBracket(_)),
-                            cx,
-                        );
-                    })
-                    .ok();
-            }
-
             let (bracket_matches_by_accent, updated_chunks) = bracket_matches_by_accent.await;
 
             editor
                 .update(cx, |editor, cx| {
+                    if invalidate {
+                        editor.clear_highlights_with(
+                            &mut |key| matches!(key, HighlightKey::ColorizeBracket(_)),
+                            cx,
+                        );
+                    }
+
                     editor
                         .bracket_fetched_tree_sitter_chunks
                         .extend(updated_chunks);
@@ -222,7 +218,7 @@ mod tests {
     use gpui::UpdateGlobal as _;
     use indoc::indoc;
     use itertools::Itertools;
-    use language::{Capability, markdown_lang};
+    use language::{Buffer, Capability, markdown_lang};
     use languages::rust_lang;
     use multi_buffer::{MultiBuffer, PathKey};
     use pretty_assertions::assert_eq;
@@ -356,6 +352,60 @@ where
         );
     }
 
+    #[gpui::test(iterations = 20)]
+    fn test_bracket_colorization_retained_during_reparse(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |language_settings| {
+            language_settings.defaults.colorize_brackets = Some(true);
+        });
+        let text = "fn main() { let value = 1; }";
+        let buffer = cx.new(|cx| {
+            let mut buffer = Buffer::local(text, cx);
+            buffer.set_language(Some(rust_lang()), cx);
+            buffer
+        });
+        let editor = cx.add_window(|window, cx| {
+            let multibuffer = cx.new(|cx| {
+                let mut multibuffer = MultiBuffer::without_headers(Capability::ReadOnly);
+                multibuffer.set_excerpts_for_path(
+                    PathKey::sorted(0),
+                    buffer.clone(),
+                    [Point::new(0, 0)..Point::new(0, text.len() as u32)],
+                    0,
+                    cx,
+                );
+                multibuffer
+            });
+            let mut editor = Editor::for_multibuffer(multibuffer, None, window, cx);
+            editor.set_read_only(true);
+            editor
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.executor().run_until_parked();
+
+        let bracket_colors = |cx: &mut gpui::TestAppContext| {
+            editor
+                .update(cx, |editor, window, cx| {
+                    editor_bracket_colors_markup(&editor.snapshot(window, cx))
+                })
+                .unwrap()
+        };
+        let expected = indoc! {"
+            fn main«1()1» «1{ let value = 1; }1»
+            1 hsla(207.80, 16.20%, 69.19%, 1.00)
+        "};
+        assert_eq!(bracket_colors(cx), expected);
+
+        let offset = text.find('1').expect("literal exists");
+        buffer.update(cx, |buffer, cx| {
+            buffer.edit([(offset..offset + 1, "2")], None, cx);
+        });
+        let expected = expected.replace("1;", "2;");
+        assert_eq!(bracket_colors(cx), expected);
+        while cx.executor().tick() {
+            assert_eq!(bracket_colors(cx), expected);
+        }
+    }
+
     #[gpui::test]
     async fn test_markdown_bracket_colorization(cx: &mut gpui::TestAppContext) {
         init_test(cx, |language_settings| {
@@ -391,6 +441,20 @@ where
 "#,
             &bracket_colors_markup(&mut cx),
             "All markdown brackets should be colored based on their depth, again"
+        );
+
+        cx.set_state(indoc! {r#"ˇ('')('')
+
+((''))('')
+
+('')((''))"#});
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.executor().run_until_parked();
+
+        assert_eq!(
+            "«1('')1»«1('')1»\n\n«1(«2('')2»)1»«1('')1»\n\n«1('')1»«1(«2('')2»)1»\n1 hsla(207.80, 16.20%, 69.19%, 1.00)\n2 hsla(29.00, 54.00%, 65.88%, 1.00)\n",
+            &bracket_colors_markup(&mut cx),
+            "Markdown quote pairs should not interfere with parenthesis pairing"
         );
     }
 

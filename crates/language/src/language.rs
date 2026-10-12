@@ -8,6 +8,7 @@
 //! Notably we do *not* assign a single language to a single file; in real world a single file can consist of multiple programming languages - HTML is a good example of that - and `language` crate tends to reflect that status quo in its API.
 mod buffer;
 mod diagnostic_set;
+mod file_content;
 mod highlight_map;
 mod language_registry;
 pub mod language_settings;
@@ -82,6 +83,7 @@ use util::serde::default_true;
 pub use buffer::Operation;
 pub use buffer::*;
 pub use diagnostic_set::{DiagnosticEntry, DiagnosticEntryRef, DiagnosticGroup};
+pub use file_content::{ByteContent, FILE_ANALYSIS_BYTES, analyze_byte_content};
 pub use language_registry::{
     AvailableLanguage, BinaryStatus, LanguageNotFound, LanguageQueries, LanguageRegistry,
     QUERY_FILENAME_PREFIXES,
@@ -109,6 +111,12 @@ where
             .unwrap();
         parser
     });
+    // Tree-sitter auto-resets the parser at the end of a successful parse,
+    // but the cancellation paths (progress callback returning `Break`,
+    // cancelled balancing) leave outstanding state on the parser. The next
+    // call to `parse_with_options` would then *resume* that cancelled parse
+    // instead of starting fresh.
+    parser.reset();
     parser.set_included_ranges(&[]).unwrap();
     let result = func(&mut parser);
     PARSERS.lock().push(parser);
@@ -2384,7 +2392,7 @@ impl Grammar {
                 .parse_with_options(
                     &mut move |offset, _| {
                         chunks.seek(offset);
-                        chunks.next().unwrap_or("").as_bytes()
+                        chunks.peek_bytes().unwrap_or_default()
                     },
                     old_tree.as_ref(),
                     None,
@@ -3116,5 +3124,81 @@ mod tests {
             assert_eq!(config.prefix.as_ref(), "");
             assert_eq!(config.tab_size, 0);
         }
+    }
+
+    #[test]
+    fn test_with_parser_resets_after_cancellation() {
+        use std::ops::ControlFlow;
+        use tree_sitter::{Language as TsLanguage, ParseOptions};
+
+        let rust_language: TsLanguage = tree_sitter_rust::LANGUAGE.into();
+
+        // Drain the shared pool so this test sees a deterministic LIFO order:
+        // the parser we push at the end of the first `with_parser` call is the
+        // one we pop at the start of the second call.
+        PARSERS.lock().clear();
+
+        // Large enough that tree-sitter invokes the progress callback before
+        // the parse completes; otherwise the cancellation never fires.
+        let large_input = format!("fn a() {{ {} }}", "b(c, d); e(f, g); ".repeat(5000));
+        let small_input = "fn z() {}";
+
+        // Cancel a parse via the progress callback. Tree-sitter retains the
+        // in-progress parse state on the parser (its `canceled_balancing` flag
+        // and/or non-empty parse stack), and the next call to
+        // `parse_with_options` will *resume* that parse unless the parser is
+        // reset first.
+        let cancelled = with_parser(|parser| {
+            parser.set_language(&rust_language).unwrap();
+            let bytes = large_input.as_bytes();
+            let mut break_immediately = |_: &_| ControlFlow::Break(());
+            parser.parse_with_options(
+                &mut |offset, _| {
+                    if offset < bytes.len() {
+                        &bytes[offset..]
+                    } else {
+                        &[]
+                    }
+                },
+                None,
+                Some(ParseOptions {
+                    progress_callback: Some(&mut break_immediately),
+                }),
+            )
+        });
+        assert!(
+            cancelled.is_none(),
+            "first parse should be cancelled by the progress callback"
+        );
+
+        // Deliberately do NOT call `set_language` here: tree-sitter's
+        // `ts_parser_set_language` internally calls `ts_parser_reset`, which
+        // would mask the very bug we're checking for. Instead we rely on the
+        // language being preserved across `parser.reset()` (it is) and verify
+        // that `with_parser` itself produces a clean parser for the next user.
+        let tree = with_parser(|parser| {
+            let bytes = small_input.as_bytes();
+            parser
+                .parse_with_options(
+                    &mut |offset, _| {
+                        if offset < bytes.len() {
+                            &bytes[offset..]
+                        } else {
+                            &[]
+                        }
+                    },
+                    None,
+                    None,
+                )
+                .expect("parse of small_input should succeed")
+        });
+
+        assert_eq!(tree.root_node().byte_range(), 0..small_input.len());
+        assert_eq!(tree.root_node().kind(), "source_file");
+        assert!(
+            !tree.root_node().has_error(),
+            "tree should be error-free, got: {}",
+            tree.root_node().to_sexp()
+        );
     }
 }

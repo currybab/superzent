@@ -199,9 +199,10 @@ where
             return;
         };
 
-        let diff = source_snapshot
-            .diff_for_buffer_id(first.source_buffer.remote_id())
-            .expect("buffer with no diff when creating patches");
+        let Some(diff) = source_snapshot.diff_for_buffer_id(first.source_buffer.remote_id()) else {
+            pending.clear();
+            return;
+        };
         let rhs_buffer = if first.source_buffer.remote_id() == diff.base_text().remote_id() {
             first.target_buffer
         } else {
@@ -518,8 +519,13 @@ impl SplittableEditor {
         };
         let project = workspace.read(cx).project().clone();
 
+        let is_rhs_singleton = self.rhs_multibuffer.read(cx).is_singleton();
         let lhs_multibuffer = cx.new(|cx| {
-            let mut multibuffer = MultiBuffer::new(Capability::ReadOnly);
+            let mut multibuffer = if is_rhs_singleton {
+                MultiBuffer::without_headers(Capability::ReadOnly)
+            } else {
+                MultiBuffer::new(Capability::ReadOnly)
+            };
             multibuffer.set_all_diff_hunks_expanded(cx);
             multibuffer
         });

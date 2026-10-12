@@ -144,6 +144,16 @@ impl SyntaxLayerContent {
             SyntaxLayerContent::Pending { .. } => None,
         }
     }
+
+    #[cfg(debug_assertions)]
+    fn language_name(&self) -> SharedString {
+        match self {
+            SyntaxLayerContent::Parsed { language, .. } => language.name().0,
+            SyntaxLayerContent::Pending { language_name } => {
+                SharedString::from(language_name.clone())
+            }
+        }
+    }
 }
 
 /// A layer of syntax highlighting, corresponding to a single syntax
@@ -245,8 +255,6 @@ struct ChangedRegion {
 struct ChangeRegionSet(Vec<ChangedRegion>);
 
 struct TextProvider<'a>(&'a Rope);
-
-struct ByteChunks<'a>(text::Chunks<'a>);
 
 pub(crate) struct QueryCursorHandle(Option<QueryCursor>);
 
@@ -893,22 +901,34 @@ impl SyntaxSnapshot {
 
     #[cfg(debug_assertions)]
     fn check_invariants(&self, text: &BufferSnapshot) {
+        let out_of_order = |reason: &str| -> ! {
+            let mut dump = format!("layers out of order: {reason}\nlayers:\n");
+            for layer in self.layers.iter() {
+                dump.push_str(&format!(
+                    "  depth={} range={:?} language={} id={:?}\n",
+                    layer.depth,
+                    layer.range.to_offset(text),
+                    layer.content.language_name(),
+                    layer.content.language_id(),
+                ));
+            }
+            panic!("{dump}");
+        };
+
         let mut max_depth = 0;
         let mut prev_layer: Option<(Range<Anchor>, Option<LanguageId>)> = None;
         for layer in self.layers.iter() {
             match Ord::cmp(&layer.depth, &max_depth) {
-                Ordering::Less => {
-                    panic!("layers out of order")
-                }
+                Ordering::Less => out_of_order("depth decreased"),
                 Ordering::Equal => {
                     if let Some((prev_range, prev_language_id)) = prev_layer {
                         match layer.range.start.cmp(&prev_range.start, text) {
-                            Ordering::Less => panic!("layers out of order"),
+                            Ordering::Less => out_of_order("start decreased"),
                             Ordering::Equal => match layer.range.end.cmp(&prev_range.end, text) {
-                                Ordering::Less => panic!("layers out of order"),
+                                Ordering::Less => out_of_order("end decreased at equal start"),
                                 Ordering::Equal => {
                                     if layer.content.language_id() < prev_language_id {
-                                        panic!("layers out of order")
+                                        out_of_order("language id decreased at equal range")
                                     }
                                 }
                                 Ordering::Greater => {}
@@ -1523,7 +1543,8 @@ fn parse_text(
             .parse_with_options(
                 &mut move |offset, _| {
                     chunks.seek(start_byte + offset);
-                    chunks.next().unwrap_or("").as_bytes()
+                    // Tree-sitter can request bytes inside a UTF-8 character.
+                    chunks.peek_bytes().unwrap_or_default()
                 },
                 old_tree,
                 progress_callback
@@ -1669,7 +1690,7 @@ fn get_injections(
             range: outer_range.clone(),
             included_ranges,
             mode: ParseMode::Combined {
-                parent_layer_range: node.start_byte()..node.end_byte(),
+                parent_layer_range: outer_range.to_offset(text),
                 parent_layer_changed_ranges: changed_ranges.to_vec(),
             },
         })
@@ -2098,18 +2119,10 @@ impl std::fmt::Debug for SyntaxLayerEntry {
 }
 
 impl<'a> tree_sitter::TextProvider<&'a [u8]> for TextProvider<'a> {
-    type I = ByteChunks<'a>;
+    type I = text::Bytes<'a>;
 
     fn text(&mut self, node: tree_sitter::Node) -> Self::I {
-        ByteChunks(self.0.chunks_in_range(node.byte_range()))
-    }
-}
-
-impl<'a> Iterator for ByteChunks<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(str::as_bytes)
+        self.0.bytes_in_range(node.byte_range())
     }
 }
 

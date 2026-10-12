@@ -56,6 +56,25 @@ pub const GRAPH_CHUNK_SIZE: usize = 1000;
 /// Default value for the `git.worktree_directory` setting.
 pub const DEFAULT_WORKTREE_DIRECTORY: &str = "../worktrees";
 
+/// Determine the original (main) repository's working directory.
+///
+/// For linked worktrees, `common_dir` differs from `repository_dir` and
+/// points to the main repo's `.git` directory, so we can derive the main
+/// repo's working directory from it. For normal repos and submodules,
+/// `common_dir` equals `repository_dir`, and the original repo is simply
+/// `work_directory` itself.
+pub fn original_repo_path(
+    work_directory: &Path,
+    common_dir: &Path,
+    repository_dir: &Path,
+) -> PathBuf {
+    if common_dir != repository_dir {
+        original_repo_path_from_common_dir(common_dir)
+    } else {
+        work_directory.to_path_buf()
+    }
+}
+
 /// Given the git common directory (from `commondir()`), derive the original
 /// repository's working directory.
 ///
@@ -565,110 +584,6 @@ impl std::fmt::Display for FetchOptions {
     }
 }
 
-/// Modifies .git/info/exclude temporarily
-pub struct GitExcludeOverride {
-    git_exclude_path: PathBuf,
-    original_excludes: Option<String>,
-    added_excludes: Option<String>,
-}
-
-impl GitExcludeOverride {
-    const START_BLOCK_MARKER: &str = "\n\n#  ====== Auto-added by Zed: =======\n";
-    const END_BLOCK_MARKER: &str = "\n#  ====== End of auto-added by Zed =======\n";
-
-    pub async fn new(git_exclude_path: PathBuf) -> Result<Self> {
-        let original_excludes =
-            smol::fs::read_to_string(&git_exclude_path)
-                .await
-                .ok()
-                .map(|content| {
-                    // Auto-generated lines are normally cleaned up in
-                    // `restore_original()` or `drop()`, but may stuck in rare cases.
-                    // Make sure to remove them.
-                    Self::remove_auto_generated_block(&content)
-                });
-
-        Ok(GitExcludeOverride {
-            git_exclude_path,
-            original_excludes,
-            added_excludes: None,
-        })
-    }
-
-    pub async fn add_excludes(&mut self, excludes: &str) -> Result<()> {
-        self.added_excludes = Some(if let Some(ref already_added) = self.added_excludes {
-            format!("{already_added}\n{excludes}")
-        } else {
-            excludes.to_string()
-        });
-
-        let mut content = self.original_excludes.clone().unwrap_or_default();
-
-        content.push_str(Self::START_BLOCK_MARKER);
-        content.push_str(self.added_excludes.as_ref().unwrap());
-        content.push_str(Self::END_BLOCK_MARKER);
-
-        smol::fs::write(&self.git_exclude_path, content).await?;
-        Ok(())
-    }
-
-    pub async fn restore_original(&mut self) -> Result<()> {
-        if let Some(ref original) = self.original_excludes {
-            smol::fs::write(&self.git_exclude_path, original).await?;
-        } else if self.git_exclude_path.exists() {
-            smol::fs::remove_file(&self.git_exclude_path).await?;
-        }
-
-        self.added_excludes = None;
-
-        Ok(())
-    }
-
-    fn remove_auto_generated_block(content: &str) -> String {
-        let start_marker = Self::START_BLOCK_MARKER;
-        let end_marker = Self::END_BLOCK_MARKER;
-        let mut content = content.to_string();
-
-        let start_index = content.find(start_marker);
-        let end_index = content.rfind(end_marker);
-
-        if let (Some(start), Some(end)) = (start_index, end_index) {
-            if end > start {
-                content.replace_range(start..end + end_marker.len(), "");
-            }
-        }
-
-        // Older versions of Zed didn't have end-of-block markers,
-        // so it's impossible to determine auto-generated lines.
-        // Conservatively remove the standard list of excludes
-        let standard_excludes = format!(
-            "{}{}",
-            Self::START_BLOCK_MARKER,
-            include_str!("./checkpoint.gitignore")
-        );
-        content = content.replace(&standard_excludes, "");
-
-        content
-    }
-}
-
-impl Drop for GitExcludeOverride {
-    fn drop(&mut self) {
-        if self.added_excludes.is_some() {
-            let git_exclude_path = self.git_exclude_path.clone();
-            let original_excludes = self.original_excludes.clone();
-            smol::spawn(async move {
-                if let Some(original) = original_excludes {
-                    smol::fs::write(&git_exclude_path, original).await
-                } else {
-                    smol::fs::remove_file(&git_exclude_path).await
-                }
-            })
-            .detach();
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Copy)]
 pub enum LogOrder {
     #[default]
@@ -1034,6 +949,7 @@ impl RealGitRepository {
             self.any_git_binary_path.clone(),
             self.working_directory()
                 .with_context(|| "Can't run git commands without a working directory")?,
+            self.path(),
             self.executor.clone(),
             self.is_trusted(),
         ))
@@ -1088,6 +1004,7 @@ pub async fn get_git_committer(cx: &AsyncApp) -> GitCommitter {
     let git = GitBinary::new(
         git_binary_path.unwrap_or(PathBuf::from("git")),
         paths::home_dir().clone(),
+        paths::home_dir().join(".git"),
         cx.background_executor().clone(),
         true,
     );
@@ -1135,6 +1052,9 @@ impl GitRepository for RealGitRepository {
                         "--no-patch",
                         "--format=%H%x00%B%x00%at%x00%ae%x00%an%x00",
                         &commit,
+                        // `commit` reaches here as whatever the user typed, so it can name
+                        // a branch that also names a path in the working tree.
+                        "--",
                     ])
                     .output()
                     .await?;
@@ -1177,6 +1097,7 @@ impl GitRepository for RealGitRepository {
                     "--first-parent",
                 ])
                 .arg(&commit)
+                .arg("--")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -1596,6 +1517,7 @@ impl GitRepository for RealGitRepository {
                 args.push(OsString::from(head.as_str()));
             }
         }
+        args.push("--".into());
 
         self.executor
             .spawn(async move {
@@ -1991,7 +1913,7 @@ impl GitRepository for RealGitRepository {
                     }
                     DiffType::HeadToWorktree => git.build_command(&["diff"]).output().await?,
                     DiffType::MergeBase { base_ref } => {
-                        git.build_command(&["diff", "--merge-base", base_ref.as_ref()])
+                        git.build_command(&["diff", "--merge-base", base_ref.as_ref(), "--"])
                             .output()
                             .await?
                     }
@@ -2246,6 +2168,7 @@ impl GitRepository for RealGitRepository {
         cx: AsyncApp,
     ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
         let working_directory = self.working_directory();
+        let git_directory = self.path();
         let executor = cx.background_executor().clone();
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
@@ -2257,6 +2180,7 @@ impl GitRepository for RealGitRepository {
             let git = GitBinary::new(
                 git_binary_path,
                 working_directory,
+                git_directory,
                 executor.clone(),
                 is_trusted,
             );
@@ -2288,6 +2212,7 @@ impl GitRepository for RealGitRepository {
         cx: AsyncApp,
     ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
         let working_directory = self.working_directory();
+        let git_directory = self.path();
         let executor = cx.background_executor().clone();
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
@@ -2299,6 +2224,7 @@ impl GitRepository for RealGitRepository {
             let git = GitBinary::new(
                 git_binary_path,
                 working_directory,
+                git_directory,
                 executor.clone(),
                 is_trusted,
             );
@@ -2328,6 +2254,7 @@ impl GitRepository for RealGitRepository {
         cx: AsyncApp,
     ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
         let working_directory = self.working_directory();
+        let git_directory = self.path();
         let remote_name = format!("{}", fetch_options);
         let git_binary_path = self.system_git_binary_path.clone();
         let executor = cx.background_executor().clone();
@@ -2340,6 +2267,7 @@ impl GitRepository for RealGitRepository {
             let git = GitBinary::new(
                 git_binary_path,
                 working_directory,
+                git_directory,
                 executor.clone(),
                 is_trusted,
             );
@@ -2515,9 +2443,10 @@ impl GitRepository for RealGitRepository {
                 let mut git = git_binary?.envs(checkpoint_author_envs());
                 git.with_temp_index(async |git| {
                     let head_sha = git.run(&["rev-parse", "HEAD"]).await.ok();
-                    let mut excludes = exclude_files(git).await?;
 
-                    git.run(&["add", "--all"]).await?;
+                    git.run(&["add", "--update"]).await?;
+                    let untracked_files = untracked_files_for_checkpoint(git).await?;
+                    add_files_to_index(git, &untracked_files).await?;
                     let tree = git.run(&["write-tree"]).await?;
                     let checkpoint_sha = if let Some(head_sha) = head_sha.as_deref() {
                         git.run(&["commit-tree", &tree, "-p", head_sha, "-m", "Checkpoint"])
@@ -2525,8 +2454,6 @@ impl GitRepository for RealGitRepository {
                     } else {
                         git.run(&["commit-tree", &tree, "-m", "Checkpoint"]).await?
                     };
-
-                    excludes.restore_original().await?;
 
                     Ok(GitRepositoryCheckpoint {
                         commit_sha: checkpoint_sha.parse()?,
@@ -2742,6 +2669,10 @@ impl GitRepository for RealGitRepository {
                 GRAPH_COMMIT_FORMAT,
                 log_order.as_arg(),
                 log_source.get_arg()?,
+                // Without a terminator git cannot tell a branch named `docs/rewrite` from a
+                // `docs/rewrite` directory in the working tree, and refuses the argument as
+                // ambiguous.
+                "--",
             ]);
             command.stdout(Stdio::piped());
             command.stderr(Stdio::null());
@@ -2951,47 +2882,115 @@ fn git_status_args(path_prefixes: &[RepoPath]) -> Vec<OsString> {
     args
 }
 
-/// Temporarily git-ignore commonly ignored files and files over 2MB
-async fn exclude_files(git: &GitBinary) -> Result<GitExcludeOverride> {
+/// Lists untracked files that should be included in a checkpoint, skipping
+/// commonly ignored file types and files over 2MB.
+async fn untracked_files_for_checkpoint(git: &GitBinary) -> Result<Vec<String>> {
     const MAX_SIZE: u64 = 2 * 1024 * 1024; // 2 MB
-    let mut excludes = git.with_exclude_overrides().await?;
-    excludes
-        .add_excludes(include_str!("./checkpoint.gitignore"))
-        .await?;
 
-    let working_directory = git.working_directory.clone();
-    let untracked_files = git.list_untracked_files().await?;
-    let excluded_paths = untracked_files.into_iter().map(|path| {
-        let working_directory = working_directory.clone();
-        smol::spawn(async move {
-            let full_path = working_directory.join(path.clone());
-            match smol::fs::metadata(&full_path).await {
-                Ok(metadata) if metadata.is_file() && metadata.len() >= MAX_SIZE => {
-                    Some(PathBuf::from("/").join(path.clone()))
-                }
-                _ => None,
-            }
-        })
+    // The extra checkpoint excludes are passed ad hoc via --exclude-from
+    // rather than by mutating .git/info/exclude, whose writes would trigger a
+    // rescan of the repository. The scratch file is placed directly in the
+    // .git directory with a .tmp extension so that the worktree scanner
+    // filters out the events it generates.
+    let excludes_file_path = git
+        .git_directory
+        .join(format!("checkpoint-excludes-{}.tmp", Uuid::new_v4()));
+
+    let delete_excludes_file = util::defer({
+        let excludes_file_path = excludes_file_path.clone();
+        let executor = git.executor.clone();
+        move || {
+            executor
+                .spawn(async move {
+                    smol::fs::remove_file(excludes_file_path).await.log_err();
+                })
+                .detach();
+        }
     });
 
-    let excluded_paths = futures::future::join_all(excluded_paths).await;
-    let excluded_paths = excluded_paths.into_iter().flatten().collect::<Vec<_>>();
+    smol::fs::write(&excludes_file_path, include_str!("./checkpoint.gitignore")).await?;
 
-    if !excluded_paths.is_empty() {
-        let exclude_patterns = excluded_paths
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("\n");
-        excludes.add_excludes(&exclude_patterns).await?;
+    let mut exclude_from_arg = OsString::from("--exclude-from=");
+    exclude_from_arg.push(&excludes_file_path);
+    let output = git
+        .run(&[
+            OsStr::new("ls-files"),
+            OsStr::new("--others"),
+            OsStr::new("--exclude-standard"),
+            OsStr::new("-z"),
+            exclude_from_arg.as_os_str(),
+        ])
+        .await;
+
+    smol::fs::remove_file(&excludes_file_path).await.ok();
+    delete_excludes_file.abort();
+    let output = output?;
+
+    let working_directory = git.working_directory.clone();
+    let size_checks = output
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            let full_path = working_directory.join(path);
+            let path = path.to_string();
+            smol::spawn(async move {
+                match smol::fs::metadata(&full_path).await {
+                    Ok(metadata) if metadata.is_file() && metadata.len() >= MAX_SIZE => None,
+                    _ => Some(path),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let untracked_files = futures::future::join_all(size_checks)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(untracked_files)
+}
+
+async fn add_files_to_index(git: &GitBinary, files: &[String]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
     }
 
-    Ok(excludes)
+    let mut process = git
+        .build_command(&["update-index", "--add", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = BufWriter::new(
+        process
+            .stdin
+            .take()
+            .context("no stdin for git update-index subprocess")?,
+    );
+    for file in files {
+        stdin.write_all(file.as_bytes()).await?;
+        stdin.write_all(b"\0").await?;
+    }
+    stdin.flush().await?;
+    drop(stdin);
+
+    let output = process.output().await?;
+    anyhow::ensure!(
+        output.status.success(),
+        GitBinaryCommandError {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            status: output.status,
+        }
+    );
+    Ok(())
 }
 
 pub(crate) struct GitBinary {
     git_binary_path: PathBuf,
     working_directory: PathBuf,
+    git_directory: PathBuf,
     executor: BackgroundExecutor,
     index_file_path: Option<PathBuf>,
     envs: HashMap<String, String>,
@@ -3002,30 +3001,19 @@ impl GitBinary {
     pub(crate) fn new(
         git_binary_path: PathBuf,
         working_directory: PathBuf,
+        git_directory: PathBuf,
         executor: BackgroundExecutor,
         is_trusted: bool,
     ) -> Self {
         Self {
             git_binary_path,
             working_directory,
+            git_directory,
             executor,
             index_file_path: None,
             envs: HashMap::default(),
             is_trusted,
         }
-    }
-
-    async fn list_untracked_files(&self) -> Result<Vec<PathBuf>> {
-        let status_output = self
-            .run(&["status", "--porcelain=v1", "--untracked-files=all", "-z"])
-            .await?;
-
-        let paths = status_output
-            .split('\0')
-            .filter(|entry| entry.len() >= 3 && entry.starts_with("?? "))
-            .map(|entry| PathBuf::from(&entry[3..]))
-            .collect::<Vec<_>>();
-        Ok(paths)
     }
 
     fn envs(mut self, envs: HashMap<String, String>) -> Self {
@@ -3053,12 +3041,9 @@ impl GitBinary {
 
         // Copy the default index file so that Git doesn't have to rebuild the
         // whole index from scratch. This might fail if this is an empty repository.
-        smol::fs::copy(
-            self.working_directory.join(".git").join("index"),
-            &index_file_path,
-        )
-        .await
-        .ok();
+        smol::fs::copy(self.git_directory.join("index"), &index_file_path)
+            .await
+            .ok();
 
         self.index_file_path = Some(index_file_path.clone());
         let result = f(self).await;
@@ -3071,20 +3056,8 @@ impl GitBinary {
         Ok(result)
     }
 
-    pub async fn with_exclude_overrides(&self) -> Result<GitExcludeOverride> {
-        let path = self
-            .working_directory
-            .join(".git")
-            .join("info")
-            .join("exclude");
-
-        GitExcludeOverride::new(path).await
-    }
-
     fn path_for_index_id(&self, id: Uuid) -> PathBuf {
-        self.working_directory
-            .join(".git")
-            .join(format!("index-{}.tmp", id))
+        self.git_directory.join(format!("index-{}.tmp", id))
     }
 
     pub async fn run<S>(&self, args: &[S]) -> Result<String>
@@ -3136,13 +3109,20 @@ impl GitBinary {
             command.args(["-c", "protocol.ext.allow=never"]);
             command.args(["-c", "diff.external="]);
         }
-        command.args(args);
-
         // If the `diff` command is being used, we'll want to add the
         // `--no-ext-diff` flag when working on an untrusted repository,
-        // preventing any external diff programs from being invoked.
-        if !self.is_trusted && args.iter().any(|arg| arg.as_ref() == "diff") {
-            command.arg("--no-ext-diff");
+        // preventing any external diff programs from being invoked. It goes
+        // directly after the subcommand: callers end their revisions with `--`,
+        // and anything after that separator is read as a pathspec rather than as
+        // an option.
+        let mut args = args.iter();
+        if let Some(subcommand) = args.next() {
+            let is_diff = subcommand.as_ref() == "diff";
+            command.arg(subcommand);
+            if !self.is_trusted && is_diff {
+                command.arg("--no-ext-diff");
+            }
+            command.args(args);
         }
 
         if let Some(index_file_path) = self.index_file_path.as_ref() {
@@ -3410,6 +3390,7 @@ mod tests {
         let git = GitBinary::new(
             PathBuf::from("git"),
             dir.path().to_path_buf(),
+            dir.path().join(".git"),
             cx.executor(),
             false,
         );
@@ -3423,6 +3404,7 @@ mod tests {
         let git = GitBinary::new(
             PathBuf::from("git"),
             dir.path().to_path_buf(),
+            dir.path().join(".git"),
             cx.executor(),
             false,
         );
@@ -3442,6 +3424,7 @@ mod tests {
         let git = GitBinary::new(
             PathBuf::from("git"),
             dir.path().to_path_buf(),
+            dir.path().join(".git"),
             cx.executor(),
             false,
         );
@@ -3468,6 +3451,7 @@ mod tests {
             let git = GitBinary::new(
                 PathBuf::from("git"),
                 dir.path().to_path_buf(),
+                dir.path().join(".git"),
                 cx.executor(),
                 is_trusted,
             );
@@ -3494,6 +3478,7 @@ mod tests {
         let git = GitBinary::new(
             PathBuf::from("git"),
             dir.path().to_path_buf(),
+            dir.path().join(".git"),
             cx.executor(),
             true,
         );
@@ -3512,6 +3497,7 @@ mod tests {
         let git = GitBinary::new(
             PathBuf::from("git"),
             dir.path().to_path_buf(),
+            dir.path().join(".git"),
             cx.executor(),
             true,
         );
@@ -3523,6 +3509,27 @@ mod tests {
         assert!(
             !output.status.success(),
             "hooksPath should NOT be overridden for trusted repos"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_path_for_index_id_uses_real_git_directory(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let working_directory = PathBuf::from("/code/worktree");
+        let git_directory = PathBuf::from("/code/repo/.git/modules/worktree");
+        let git = GitBinary::new(
+            PathBuf::from("git"),
+            working_directory,
+            git_directory.clone(),
+            cx.executor(),
+            false,
+        );
+
+        let path = git.path_for_index_id(Uuid::nil());
+
+        assert_eq!(
+            path,
+            git_directory.join(format!("index-{}.tmp", Uuid::nil()))
         );
     }
 
@@ -4412,13 +4419,20 @@ mod tests {
         /// Force a Git garbage collection on the repository.
         fn gc(&self) -> BoxFuture<'_, Result<()>> {
             let working_directory = self.working_directory();
+            let git_directory = self.path();
             let git_binary_path = self.any_git_binary_path.clone();
             let executor = self.executor.clone();
             self.executor
                 .spawn(async move {
                     let git_binary_path = git_binary_path.clone();
                     let working_directory = working_directory?;
-                    let git = GitBinary::new(git_binary_path, working_directory, executor, true);
+                    let git = GitBinary::new(
+                        git_binary_path,
+                        working_directory,
+                        git_directory,
+                        executor,
+                        true,
+                    );
                     git.run(&["gc", "--prune"]).await?;
                     Ok(())
                 })

@@ -34,6 +34,7 @@ util.workspace = true
 release_channel.workspace = true
 
 [dev-dependencies]
+async-channel.workspace = true
 async-pipe.workspace = true
 gpui_util.workspace = true
 ctor.workspace = true
