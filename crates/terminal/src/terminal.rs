@@ -402,7 +402,7 @@ impl TerminalBuilder {
             last_mouse_move_time: Instant::now(),
             last_hyperlink_search_position: None,
             mouse_down_hyperlink: None,
-            mouse_down_hyperlink_in_mouse_mode: false,
+            link_press_withheld_from_app: false,
             #[cfg(windows)]
             shell_program: None,
             activation_script: Vec::new(),
@@ -652,7 +652,7 @@ impl TerminalBuilder {
                 last_mouse_move_time: Instant::now(),
                 last_hyperlink_search_position: None,
                 mouse_down_hyperlink: None,
-                mouse_down_hyperlink_in_mouse_mode: false,
+                link_press_withheld_from_app: false,
                 #[cfg(windows)]
                 shell_program,
                 activation_script: activation_script.clone(),
@@ -886,11 +886,11 @@ pub struct Terminal {
     last_mouse_move_time: Instant,
     last_hyperlink_search_position: Option<Point<Pixels>>,
     mouse_down_hyperlink: Option<(String, bool, Match)>,
-    /// Whether the application had mouse reporting on when the pending link press
-    /// was withheld from the PTY. A mismatched release is then swallowed no matter
-    /// how Shift changed between press and release, since the application never
-    /// saw the press.
-    mouse_down_hyperlink_in_mouse_mode: bool,
+    /// Set when a link press is withheld from an application with mouse reporting
+    /// on, and kept until the gesture ends even if the link itself is dropped (e.g.
+    /// by a Shift-drag off it). The application never saw the press, so the rest
+    /// of the gesture must not be reported however Shift changes in between.
+    link_press_withheld_from_app: bool,
     #[cfg(windows)]
     shell_program: Option<String>,
     template: CopyTemplate,
@@ -1830,7 +1830,7 @@ impl Terminal {
             // reports, which would be a press-less (malformed) sequence.
             // `mouse_up` resolves it: release on the same link opens it,
             // otherwise the gesture is dropped.
-            if self.mouse_down_hyperlink.is_none() {
+            if self.mouse_down_hyperlink.is_none() && !self.link_press_withheld_from_app {
                 let (point, side) = grid_point_and_side(
                     position,
                     self.last_content.terminal_bounds,
@@ -1973,7 +1973,7 @@ impl Terminal {
 
         // A new press starts a new gesture; a link press whose release never
         // reached `mouse_up` must not capture it.
-        self.mouse_down_hyperlink = None;
+        self.cancel_hyperlink_press();
 
         if e.button == MouseButton::Left
             && e.modifiers.secondary()
@@ -1989,7 +1989,7 @@ impl Terminal {
             drop(term_lock);
 
             if self.mouse_down_hyperlink.is_some() {
-                self.mouse_down_hyperlink_in_mouse_mode =
+                self.link_press_withheld_from_app =
                     self.last_content.mode.intersects(TermMode::MOUSE_MODE);
                 return;
             }
@@ -2048,12 +2048,14 @@ impl Terminal {
     /// terminal, where `mouse_up` never runs.
     pub fn cancel_hyperlink_press(&mut self) {
         self.mouse_down_hyperlink = None;
+        self.link_press_withheld_from_app = false;
     }
 
     pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &Context<Self>) {
         let setting = TerminalSettings::get_global(cx);
 
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
+        let link_press_withheld_from_app = std::mem::take(&mut self.link_press_withheld_from_app);
         if let Some(mouse_down_hyperlink) = self.mouse_down_hyperlink.take() {
             let point = grid_point(
                 position,
@@ -2080,12 +2082,12 @@ impl Terminal {
                 self.last_mouse = None;
                 return;
             }
+        }
 
-            if self.mouse_down_hyperlink_in_mouse_mode {
-                self.selection_phase = SelectionPhase::Ended;
-                self.last_mouse = None;
-                return;
-            }
+        if link_press_withheld_from_app {
+            self.selection_phase = SelectionPhase::Ended;
+            self.last_mouse = None;
+            return;
         }
 
         if self.mouse_mode(e.modifiers.shift) {
@@ -3554,6 +3556,54 @@ mod tests {
             assert!(
                 pty_writes.is_empty(),
                 "the press was never reported, so its release must not be either: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_link_press_dragged_off_with_shift_is_consumed(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+            let off_link_position = point(px(10.0), px(30.0));
+
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+
+            // Shift routes the drag through the selection path, which drops the
+            // pending link once the pointer leaves it.
+            let mut modifiers = Modifiers::secondary_key();
+            modifiers.shift = true;
+            let region = terminal.last_content.terminal_bounds.bounds;
+            terminal.mouse_drag(
+                &MouseMoveEvent {
+                    position: off_link_position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers,
+                },
+                region,
+                cx,
+            );
+
+            // Shift is released, then the button.
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: off_link_position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::secondary_key(),
+                },
+                cx,
+            );
+            ctrl_mouse_up_at(terminal, off_link_position, cx);
+
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "the press was never reported, so the rest of the gesture must not be either: {pty_writes:?}"
             );
         });
     }
