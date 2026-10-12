@@ -886,8 +886,10 @@ pub struct Terminal {
     last_mouse_move_time: Instant,
     last_hyperlink_search_position: Option<Point<Pixels>>,
     mouse_down_hyperlink: Option<(String, bool, Match)>,
-    /// Whether the pending link press was withheld from the PTY, so a mismatched
-    /// release must be swallowed even if Shift changes the mode by then.
+    /// Whether the application had mouse reporting on when the pending link press
+    /// was withheld from the PTY. A mismatched release is then swallowed no matter
+    /// how Shift changed between press and release, since the application never
+    /// saw the press.
     mouse_down_hyperlink_in_mouse_mode: bool,
     #[cfg(windows)]
     shell_program: Option<String>,
@@ -1653,9 +1655,19 @@ impl Terminal {
             .contains(&window.mouse_position())
             && modifiers.secondary()
         {
-            self.refresh_hovered_word(window);
+            if self.secondary_click_opens_links(modifiers.shift, cx) {
+                self.refresh_hovered_word(window);
+            } else {
+                self.last_content.last_hovered_word = None;
+            }
         }
         cx.notify();
+    }
+
+    /// Whether a Cmd/Ctrl-click opens links instead of being reported to an
+    /// application that has mouse reporting on.
+    fn secondary_click_opens_links(&self, shift: bool, cx: &App) -> bool {
+        TerminalSettings::get_global(cx).open_links_in_mouse_mode || !self.mouse_mode(shift)
     }
 
     ///Paste text into the terminal
@@ -1965,8 +1977,7 @@ impl Terminal {
 
         if e.button == MouseButton::Left
             && e.modifiers.secondary()
-            && (TerminalSettings::get_global(cx).open_links_in_mouse_mode
-                || !self.mouse_mode(e.modifiers.shift))
+            && self.secondary_click_opens_links(e.modifiers.shift, cx)
         {
             let term_lock = self.term.lock();
             self.mouse_down_hyperlink = terminal_hyperlinks::find_from_grid_point(
@@ -1978,7 +1989,8 @@ impl Terminal {
             drop(term_lock);
 
             if self.mouse_down_hyperlink.is_some() {
-                self.mouse_down_hyperlink_in_mouse_mode = self.mouse_mode(e.modifiers.shift);
+                self.mouse_down_hyperlink_in_mouse_mode =
+                    self.last_content.mode.intersects(TermMode::MOUSE_MODE);
                 return;
             }
         }
@@ -3506,6 +3518,42 @@ mod tests {
             assert!(
                 pty_writes.is_empty(),
                 "a captured press must consume the whole gesture, but reports leaked to the PTY: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_shift_bypassed_link_press_released_without_shift_is_consumed(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            let mut modifiers = Modifiers::secondary_key();
+            modifiers.shift = true;
+            terminal.mouse_down(
+                &MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(80.0), px(10.0)),
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: true,
+                },
+                cx,
+            );
+            // Shift is released before the button, away from the link.
+            ctrl_mouse_up_at(terminal, point(px(10.0), px(30.0)), cx);
+
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "the press was never reported, so its release must not be either: {pty_writes:?}"
             );
         });
     }
