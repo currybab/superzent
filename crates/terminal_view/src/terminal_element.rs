@@ -673,7 +673,7 @@ impl TerminalElement {
             let terminal = self.terminal.clone();
             let hitbox = hitbox.clone();
             let focus = focus.clone();
-            let terminal_view = terminal_view;
+            let terminal_view = terminal_view.clone();
             move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
@@ -718,17 +718,27 @@ impl TerminalElement {
             }
         });
 
-        self.interactivity.on_mouse_up(
-            MouseButton::Left,
-            TerminalElement::generic_button_handler(
-                terminal.clone(),
-                focus.clone(),
-                false,
-                move |terminal, e, cx| {
-                    terminal.mouse_up(e, cx);
-                },
-            ),
-        );
+        self.interactivity.on_mouse_up(MouseButton::Left, {
+            let terminal = terminal.clone();
+            let focus = focus.clone();
+            move |e, window, cx| {
+                if !focus.is_focused(window) {
+                    return;
+                }
+
+                // Match the scroll adjustment applied in `mouse_down`, so the release
+                // resolves the same grid point (e.g. for a Cmd/Ctrl-click on a link).
+                let scroll_top = terminal_view.read(cx).scroll_top;
+                terminal.update(cx, |terminal, cx| {
+                    let mut adjusted_event = e.clone();
+                    if scroll_top > Pixels::ZERO {
+                        adjusted_event.position.y += scroll_top;
+                    }
+                    terminal.mouse_up(&adjusted_event, cx);
+                    cx.notify();
+                })
+            }
+        });
         self.interactivity.on_mouse_down(
             MouseButton::Middle,
             TerminalElement::generic_button_handler(
