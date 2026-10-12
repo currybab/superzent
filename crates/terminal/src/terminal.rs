@@ -2056,8 +2056,12 @@ impl Terminal {
         let setting = TerminalSettings::get_global(cx);
 
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
-        let link_press_withheld_from_app = std::mem::take(&mut self.link_press_withheld_from_app);
-        if let Some(mouse_down_hyperlink) = self.mouse_down_hyperlink.take() {
+        // Link presses are left-button only; other buttons released meanwhile
+        // belong to their own gestures.
+        let is_left_release = e.button == MouseButton::Left;
+        let link_press_withheld_from_app =
+            is_left_release && std::mem::take(&mut self.link_press_withheld_from_app);
+        if is_left_release && let Some(mouse_down_hyperlink) = self.mouse_down_hyperlink.take() {
             let point = grid_point(
                 position,
                 self.last_content.terminal_bounds,
@@ -3558,6 +3562,51 @@ mod tests {
                 pty_writes.is_empty(),
                 "the press was never reported, so its release must not be either: {pty_writes:?}"
             );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_other_button_release_does_not_resolve_link_press(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+            let link_position = point(px(80.0), px(10.0));
+
+            ctrl_mouse_down_at(terminal, link_position, cx);
+            terminal.mouse_up(
+                &MouseUpEvent {
+                    button: MouseButton::Right,
+                    position: link_position,
+                    modifiers: Modifiers::secondary_key(),
+                    click_count: 1,
+                },
+                cx,
+            );
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "a right-button release must not open the pending left-button link"
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "the right-button release belongs to the application"
+            );
+
+            ctrl_mouse_up_at(terminal, link_position, cx);
+            assert!(
+                terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "the left-button release should still open the link"
+            );
+            assert!(terminal.take_pty_write_log().is_empty());
         });
     }
 
