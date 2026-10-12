@@ -709,7 +709,8 @@ impl TerminalElement {
             move |e: &MouseUpEvent, phase, window, cx| {
                 // The hitbox-scoped `on_mouse_up` below misses releases outside the
                 // terminal, which would leave a Cmd/Ctrl-click link press pending.
-                if phase == DispatchPhase::Bubble
+                // Run during capture so a handler that stops propagation can't skip it.
+                if phase == DispatchPhase::Capture
                     && e.button == MouseButton::Left
                     && !hitbox.is_hovered(window)
                 {

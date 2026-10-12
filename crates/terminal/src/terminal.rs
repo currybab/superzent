@@ -402,6 +402,7 @@ impl TerminalBuilder {
             last_mouse_move_time: Instant::now(),
             last_hyperlink_search_position: None,
             mouse_down_hyperlink: None,
+            mouse_down_hyperlink_in_mouse_mode: false,
             #[cfg(windows)]
             shell_program: None,
             activation_script: Vec::new(),
@@ -651,6 +652,7 @@ impl TerminalBuilder {
                 last_mouse_move_time: Instant::now(),
                 last_hyperlink_search_position: None,
                 mouse_down_hyperlink: None,
+                mouse_down_hyperlink_in_mouse_mode: false,
                 #[cfg(windows)]
                 shell_program,
                 activation_script: activation_script.clone(),
@@ -884,6 +886,9 @@ pub struct Terminal {
     last_mouse_move_time: Instant,
     last_hyperlink_search_position: Option<Point<Pixels>>,
     mouse_down_hyperlink: Option<(String, bool, Match)>,
+    /// Whether the pending link press was withheld from the PTY, so a mismatched
+    /// release must be swallowed even if Shift changes the mode by then.
+    mouse_down_hyperlink_in_mouse_mode: bool,
     #[cfg(windows)]
     shell_program: Option<String>,
     template: CopyTemplate,
@@ -1973,6 +1978,7 @@ impl Terminal {
             drop(term_lock);
 
             if self.mouse_down_hyperlink.is_some() {
+                self.mouse_down_hyperlink_in_mouse_mode = self.mouse_mode(e.modifiers.shift);
                 return;
             }
         }
@@ -2063,7 +2069,7 @@ impl Terminal {
                 return;
             }
 
-            if self.mouse_mode(e.modifiers.shift) {
+            if self.mouse_down_hyperlink_in_mouse_mode {
                 self.selection_phase = SelectionPhase::Ended;
                 self.last_mouse = None;
                 return;
@@ -3451,6 +3457,50 @@ mod tests {
                     .iter()
                     .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
                 "Should NOT open a link when press and release land on different hyperlinks"
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "a captured press must consume the whole gesture, but reports leaked to the PTY: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_captured_link_press_released_with_shift_on_other_link_is_consumed(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nhttps://example.com/ is another link\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+
+            // Shift turns mouse mode off at release time, but the press was
+            // already withheld from the PTY in mouse mode.
+            let mut modifiers = Modifiers::secondary_key();
+            modifiers.shift = true;
+            terminal.mouse_up(
+                &MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(10.0), px(30.0)),
+                    modifiers,
+                    click_count: 1,
+                },
+                cx,
+            );
+
+            assert!(
+                !terminal.events.iter().any(|event| matches!(
+                    event,
+                    InternalEvent::ProcessHyperlink(_, _) | InternalEvent::FindHyperlink(_, true)
+                )),
+                "a release on a different link must not open it"
             );
             let pty_writes = terminal.take_pty_write_log();
             assert!(
