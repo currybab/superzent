@@ -1831,6 +1831,12 @@ impl Terminal {
                     self.write_to_pty(bytes);
                 }
             }
+
+            // Cmd/Ctrl-click opens links here too, so keep the hover highlight in
+            // sync with the pointer instead of only on modifier changes.
+            if TerminalSettings::get_global(cx).open_links_in_mouse_mode {
+                self.schedule_find_hyperlink(e.modifiers, e.position);
+            }
         } else {
             self.schedule_find_hyperlink(e.modifiers, e.position);
         }
@@ -3569,6 +3575,71 @@ mod tests {
                 pty_writes.len(),
                 2,
                 "expected press and release reports, got {pty_writes:?}"
+            );
+        });
+    }
+
+    fn ctrl_hover_in_mouse_motion_mode(terminal: &mut Terminal, cx: &mut Context<Terminal>) {
+        terminal.last_content.mode = TermMode::MOUSE_MOTION;
+        terminal.take_pty_write_log();
+        terminal.mouse_move(
+            &MouseMoveEvent {
+                position: point(px(80.0), px(10.0)),
+                pressed_button: None,
+                modifiers: Modifiers::secondary_key(),
+            },
+            cx,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_ctrl_hover_in_mouse_mode_finds_hyperlink_and_reports_motion(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            ctrl_hover_in_mouse_motion_mode(terminal, cx);
+
+            assert!(
+                terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::FindHyperlink(_, false))),
+                "ctrl+hover in mouse mode should look up the hovered link"
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "the motion should still be reported to the application"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_ctrl_hover_in_mouse_mode_skips_hyperlink_when_setting_disabled(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        cx.update_global(|store: &mut settings::SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .terminal
+                    .get_or_insert_default()
+                    .open_links_in_mouse_mode = Some(false);
+            });
+        });
+
+        terminal.update(cx, |terminal, cx| {
+            ctrl_hover_in_mouse_motion_mode(terminal, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::FindHyperlink(_, _))),
+                "with the setting disabled, ctrl+hover must not look up links in mouse mode"
             );
         });
     }
