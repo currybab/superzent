@@ -1948,6 +1948,10 @@ impl Terminal {
             self.last_content.display_offset,
         );
 
+        // A new press starts a new gesture; a link press whose release never
+        // reached `mouse_up` must not capture it.
+        self.mouse_down_hyperlink = None;
+
         if e.button == MouseButton::Left
             && e.modifiers.secondary()
             && (TerminalSettings::get_global(cx).open_links_in_mouse_mode
@@ -2014,6 +2018,12 @@ impl Terminal {
                 _ => {}
             }
         }
+    }
+
+    /// Drops a pending Cmd/Ctrl-click on a link whose release happened outside the
+    /// terminal, where `mouse_up` never runs.
+    pub fn cancel_hyperlink_press(&mut self) {
+        self.mouse_down_hyperlink = None;
     }
 
     pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &Context<Self>) {
@@ -3440,6 +3450,68 @@ mod tests {
             assert!(
                 pty_writes.is_empty(),
                 "a captured press must consume the whole gesture, but reports leaked to the PTY: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_link_press_released_outside_terminal_does_not_capture_later_input(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE | TermMode::MOUSE_DRAG;
+            let link_position = point(px(80.0), px(10.0));
+
+            // The release lands outside the terminal, so `mouse_up` never runs.
+            ctrl_mouse_down_at(terminal, link_position, cx);
+            terminal.cancel_hyperlink_press();
+            terminal.take_pty_write_log();
+
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: point(px(10.0), px(10.0)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::none(),
+                },
+                cx,
+            );
+            assert!(
+                !terminal.take_pty_write_log().is_empty(),
+                "motion after the abandoned link press should be reported to the PTY"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_plain_click_after_lost_link_release_in_mouse_mode_is_reported(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            let link_position = point(px(80.0), px(10.0));
+
+            // A link press whose release was never delivered to the terminal.
+            ctrl_mouse_down_at(terminal, link_position, cx);
+            terminal.take_pty_write_log();
+
+            left_mouse_down_at(terminal, link_position, cx);
+            left_mouse_up_at(terminal, link_position, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "a plain click must not open a link left over from an earlier press"
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                2,
+                "both the press and the release of the plain click should be reported"
             );
         });
     }

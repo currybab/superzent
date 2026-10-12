@@ -284,7 +284,7 @@ Common formats recognized:
 
 By default, `Cmd+Click`/`Ctrl+Click` opens links even when the running application has enabled mouse reporting (e.g. vim with `mouse=a`, htop). If you prefer those clicks to be forwarded to the application instead, disable `open_links_in_mouse_mode`; links can then still be opened with `Shift+Cmd+Click` (`Shift+Ctrl+Click`):
 
-```json
+```json [settings]
 {
   "terminal": {
     "open_links_in_mouse_mode": false

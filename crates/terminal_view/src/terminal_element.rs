@@ -3,10 +3,10 @@ use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase,
     Element, ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, HighlightStyle, Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels,
-    Point, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle,
-    UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point, px, relative,
-    size,
+    IntoElement, LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun,
+    TextStyle, UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point,
+    px, relative, size,
 };
 use itertools::Itertools;
 use language::CursorShape;
@@ -699,6 +699,21 @@ impl TerminalElement {
                     terminal.update(cx, |terminal, cx| {
                         terminal.mouse_move(e, cx);
                     })
+                }
+            }
+        });
+
+        window.on_mouse_event({
+            let terminal = terminal.clone();
+            let hitbox = hitbox.clone();
+            move |e: &MouseUpEvent, phase, window, cx| {
+                // The hitbox-scoped `on_mouse_up` below misses releases outside the
+                // terminal, which would leave a Cmd/Ctrl-click link press pending.
+                if phase == DispatchPhase::Bubble
+                    && e.button == MouseButton::Left
+                    && !hitbox.is_hovered(window)
+                {
+                    terminal.update(cx, |terminal, _| terminal.cancel_hyperlink_press());
                 }
             }
         });
