@@ -1659,6 +1659,7 @@ impl Terminal {
                 self.refresh_hovered_word(window);
             } else {
                 self.last_content.last_hovered_word = None;
+                cx.emit(Event::NewNavigationTarget(None));
             }
         }
         cx.notify();
