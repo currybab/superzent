@@ -1830,8 +1830,14 @@ impl Terminal {
             // the whole gesture rather than forward later motion/release
             // reports, which would be a press-less (malformed) sequence.
             // `mouse_up` resolves it: release on the same link opens it,
-            // otherwise the gesture is dropped.
-            if self.mouse_down_hyperlink.is_none() && !self.link_press_withheld_from_app {
+            // otherwise the gesture is dropped. Drags of other buttons are their
+            // own gestures and are still reported.
+            let left_press_withheld =
+                self.mouse_down_hyperlink.is_some() || self.link_press_withheld_from_app;
+            let motion_of_withheld_press = left_press_withheld
+                && e.pressed_button
+                    .is_none_or(|pressed_button| pressed_button == MouseButton::Left);
+            if !motion_of_withheld_press {
                 let (point, side) = grid_point_and_side(
                     position,
                     self.last_content.terminal_bounds,
@@ -3646,6 +3652,48 @@ mod tests {
             assert!(
                 pty_writes.is_empty(),
                 "the withheld left press must not get a release report: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_other_button_drag_is_reported_during_pending_link_press(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+            terminal.take_pty_write_log();
+
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: point(px(10.0), px(30.0)),
+                    pressed_button: Some(MouseButton::Right),
+                    modifiers: Modifiers::none(),
+                },
+                cx,
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "a right-button drag belongs to the application"
+            );
+
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: point(px(20.0), px(30.0)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::secondary_key(),
+                },
+                cx,
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "motion of the withheld left press must stay suppressed: {pty_writes:?}"
             );
         });
     }
