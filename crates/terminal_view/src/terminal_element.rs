@@ -724,6 +724,8 @@ impl TerminalElement {
             let focus = focus.clone();
             move |e, window, cx| {
                 if !focus.is_focused(window) {
+                    // Focus moved away mid-gesture; don't leave a link press pending.
+                    terminal.update(cx, |terminal, _| terminal.cancel_hyperlink_press());
                     return;
                 }
 
