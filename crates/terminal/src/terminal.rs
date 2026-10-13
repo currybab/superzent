@@ -1972,9 +1972,12 @@ impl Terminal {
             self.last_content.display_offset,
         );
 
-        // A new press starts a new gesture; a link press whose release never
-        // reached `mouse_up` must not capture it.
-        self.cancel_hyperlink_press();
+        // A new left press starts a new gesture; a link press whose release never
+        // reached `mouse_up` must not capture it. Other buttons pressed meanwhile
+        // leave the pending left press alone.
+        if e.button == MouseButton::Left {
+            self.cancel_hyperlink_press();
+        }
 
         if e.button == MouseButton::Left
             && e.modifiers.secondary()
@@ -3607,6 +3610,43 @@ mod tests {
                 "the left-button release should still open the link"
             );
             assert!(terminal.take_pty_write_log().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_other_button_press_keeps_pending_link_press(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+            terminal.mouse_down(
+                &MouseDownEvent {
+                    button: MouseButton::Right,
+                    position: point(px(10.0), px(30.0)),
+                    modifiers: Modifiers::none(),
+                    click_count: 1,
+                    first_mouse: false,
+                },
+                cx,
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "the right-button press belongs to the application"
+            );
+
+            ctrl_mouse_up_at(terminal, point(px(10.0), px(30.0)), cx);
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "the withheld left press must not get a release report: {pty_writes:?}"
+            );
         });
     }
 
