@@ -3,10 +3,10 @@ use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase,
     Element, ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, HighlightStyle, Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels,
-    Point, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle,
-    UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point, px, relative,
-    size,
+    IntoElement, LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun,
+    TextStyle, UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point,
+    px, relative, size,
 };
 use itertools::Itertools;
 use language::CursorShape;
@@ -673,7 +673,7 @@ impl TerminalElement {
             let terminal = self.terminal.clone();
             let hitbox = hitbox.clone();
             let focus = focus.clone();
-            let terminal_view = terminal_view;
+            let terminal_view = terminal_view.clone();
             move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
@@ -703,17 +703,45 @@ impl TerminalElement {
             }
         });
 
-        self.interactivity.on_mouse_up(
-            MouseButton::Left,
-            TerminalElement::generic_button_handler(
-                terminal.clone(),
-                focus.clone(),
-                false,
-                move |terminal, e, cx| {
-                    terminal.mouse_up(e, cx);
-                },
-            ),
-        );
+        window.on_mouse_event({
+            let terminal = terminal.clone();
+            let hitbox = hitbox.clone();
+            move |e: &MouseUpEvent, phase, window, cx| {
+                // The hitbox-scoped `on_mouse_up` below misses releases outside the
+                // terminal, which would leave a Cmd/Ctrl-click link press pending.
+                // Run during capture so a handler that stops propagation can't skip it.
+                if phase == DispatchPhase::Capture
+                    && e.button == MouseButton::Left
+                    && !hitbox.is_hovered(window)
+                {
+                    terminal.update(cx, |terminal, _| terminal.cancel_hyperlink_press());
+                }
+            }
+        });
+
+        self.interactivity.on_mouse_up(MouseButton::Left, {
+            let terminal = terminal.clone();
+            let focus = focus.clone();
+            move |e, window, cx| {
+                if !focus.is_focused(window) {
+                    // Focus moved away mid-gesture; don't leave a link press pending.
+                    terminal.update(cx, |terminal, _| terminal.cancel_hyperlink_press());
+                    return;
+                }
+
+                // Match the scroll adjustment applied in `mouse_down`, so the release
+                // resolves the same grid point (e.g. for a Cmd/Ctrl-click on a link).
+                let scroll_top = terminal_view.read(cx).scroll_top;
+                terminal.update(cx, |terminal, cx| {
+                    let mut adjusted_event = e.clone();
+                    if scroll_top > Pixels::ZERO {
+                        adjusted_event.position.y += scroll_top;
+                    }
+                    terminal.mouse_up(&adjusted_event, cx);
+                    cx.notify();
+                })
+            }
+        });
         self.interactivity.on_mouse_down(
             MouseButton::Middle,
             TerminalElement::generic_button_handler(

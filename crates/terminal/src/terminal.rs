@@ -402,6 +402,7 @@ impl TerminalBuilder {
             last_mouse_move_time: Instant::now(),
             last_hyperlink_search_position: None,
             mouse_down_hyperlink: None,
+            link_press_withheld_from_app: false,
             #[cfg(windows)]
             shell_program: None,
             activation_script: Vec::new(),
@@ -422,6 +423,8 @@ impl TerminalBuilder {
             path_style,
             #[cfg(any(test, feature = "test-support"))]
             input_log: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            pty_write_log: Default::default(),
         };
 
         Ok(TerminalBuilder {
@@ -649,6 +652,7 @@ impl TerminalBuilder {
                 last_mouse_move_time: Instant::now(),
                 last_hyperlink_search_position: None,
                 mouse_down_hyperlink: None,
+                link_press_withheld_from_app: false,
                 #[cfg(windows)]
                 shell_program,
                 activation_script: activation_script.clone(),
@@ -669,6 +673,8 @@ impl TerminalBuilder {
                 path_style,
                 #[cfg(any(test, feature = "test-support"))]
                 input_log: Vec::new(),
+                #[cfg(any(test, feature = "test-support"))]
+                pty_write_log: Default::default(),
             };
 
             if !activation_script.is_empty() && no_task {
@@ -880,6 +886,11 @@ pub struct Terminal {
     last_mouse_move_time: Instant,
     last_hyperlink_search_position: Option<Point<Pixels>>,
     mouse_down_hyperlink: Option<(String, bool, Match)>,
+    /// Set when a link press is withheld from an application with mouse reporting
+    /// on, and kept until the gesture ends even if the link itself is dropped (e.g.
+    /// by a Shift-drag off it). The application never saw the press, so the rest
+    /// of the gesture must not be reported however Shift changes in between.
+    link_press_withheld_from_app: bool,
     #[cfg(windows)]
     shell_program: Option<String>,
     template: CopyTemplate,
@@ -891,6 +902,8 @@ pub struct Terminal {
     path_style: PathStyle,
     #[cfg(any(test, feature = "test-support"))]
     input_log: Vec<Vec<u8>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pty_write_log: std::cell::RefCell<Vec<Vec<u8>>>,
 }
 
 struct CopyTemplate {
@@ -1480,8 +1493,10 @@ impl Terminal {
     /// Write the Input payload to the PTY, if applicable.
     /// (This is a no-op for display-only terminals.)
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
+        let input = input.into();
+        #[cfg(any(test, feature = "test-support"))]
+        self.pty_write_log.borrow_mut().push(input.to_vec());
         if let TerminalType::Pty { pty_tx, .. } = &self.terminal_type {
-            let input = input.into();
             if log::log_enabled!(log::Level::Debug) {
                 if let Ok(str) = str::from_utf8(&input) {
                     log::debug!("Writing to PTY: {:?}", str);
@@ -1509,6 +1524,11 @@ impl Terminal {
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_input_log(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.input_log)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_pty_write_log(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(self.pty_write_log.get_mut())
     }
 
     pub fn toggle_vi_mode(&mut self) {
@@ -1635,9 +1655,20 @@ impl Terminal {
             .contains(&window.mouse_position())
             && modifiers.secondary()
         {
-            self.refresh_hovered_word(window);
+            if self.secondary_click_opens_links(modifiers.shift, cx) {
+                self.refresh_hovered_word(window);
+            } else {
+                self.last_content.last_hovered_word = None;
+                cx.emit(Event::NewNavigationTarget(None));
+            }
         }
         cx.notify();
+    }
+
+    /// Whether a Cmd/Ctrl-click opens links instead of being reported to an
+    /// application that has mouse reporting on.
+    fn secondary_click_opens_links(&self, shift: bool, cx: &App) -> bool {
+        TerminalSettings::get_global(cx).open_links_in_mouse_mode || !self.mouse_mode(shift)
     }
 
     ///Paste text into the terminal
@@ -1794,17 +1825,41 @@ impl Terminal {
     pub fn mouse_move(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
         if self.mouse_mode(e.modifiers.shift) {
-            let (point, side) = grid_point_and_side(
-                position,
-                self.last_content.terminal_bounds,
-                self.last_content.display_offset,
-            );
+            // A ctrl/cmd press on a link suppressed its button-press report in
+            // `mouse_down`. Since the app never saw the press, we must swallow
+            // the whole gesture rather than forward later motion/release
+            // reports, which would be a press-less (malformed) sequence.
+            // `mouse_up` resolves it: release on the same link opens it,
+            // otherwise the gesture is dropped. Drags of other buttons are their
+            // own gestures and are still reported.
+            let left_press_withheld =
+                self.mouse_down_hyperlink.is_some() || self.link_press_withheld_from_app;
+            let motion_of_withheld_press = left_press_withheld
+                && e.pressed_button
+                    .is_none_or(|pressed_button| pressed_button == MouseButton::Left);
+            if !motion_of_withheld_press {
+                let (point, side) = grid_point_and_side(
+                    position,
+                    self.last_content.terminal_bounds,
+                    self.last_content.display_offset,
+                );
 
-            if self.mouse_changed(point, side)
-                && let Some(bytes) =
-                    mouse_moved_report(point, e.pressed_button, e.modifiers, self.last_content.mode)
-            {
-                self.write_to_pty(bytes);
+                if self.mouse_changed(point, side)
+                    && let Some(bytes) = mouse_moved_report(
+                        point,
+                        e.pressed_button,
+                        e.modifiers,
+                        self.last_content.mode,
+                    )
+                {
+                    self.write_to_pty(bytes);
+                }
+            }
+
+            // Cmd/Ctrl-click opens links here too, so keep the hover highlight in
+            // sync with the pointer instead of only on modifier changes.
+            if TerminalSettings::get_global(cx).open_links_in_mouse_mode {
+                self.schedule_find_hyperlink(e.modifiers, e.position);
             }
         } else {
             self.schedule_find_hyperlink(e.modifiers, e.position);
@@ -1915,7 +1970,7 @@ impl Terminal {
         Some(scroll_lines.clamp(-3, 3))
     }
 
-    pub fn mouse_down(&mut self, e: &MouseDownEvent, _cx: &mut Context<Self>) {
+    pub fn mouse_down(&mut self, e: &MouseDownEvent, cx: &mut Context<Self>) {
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
         let point = grid_point(
             position,
@@ -1923,9 +1978,16 @@ impl Terminal {
             self.last_content.display_offset,
         );
 
+        // A new left press starts a new gesture; a link press whose release never
+        // reached `mouse_up` must not capture it. Other buttons pressed meanwhile
+        // leave the pending left press alone.
+        if e.button == MouseButton::Left {
+            self.cancel_hyperlink_press();
+        }
+
         if e.button == MouseButton::Left
             && e.modifiers.secondary()
-            && !self.mouse_mode(e.modifiers.shift)
+            && self.secondary_click_opens_links(e.modifiers.shift, cx)
         {
             let term_lock = self.term.lock();
             self.mouse_down_hyperlink = terminal_hyperlinks::find_from_grid_point(
@@ -1937,6 +1999,8 @@ impl Terminal {
             drop(term_lock);
 
             if self.mouse_down_hyperlink.is_some() {
+                self.link_press_withheld_from_app =
+                    self.last_content.mode.intersects(TermMode::MOUSE_MODE);
                 return;
             }
         }
@@ -1980,7 +2044,7 @@ impl Terminal {
                 }
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 MouseButton::Middle => {
-                    if let Some(item) = _cx.read_from_primary() {
+                    if let Some(item) = cx.read_from_primary() {
                         let text = item.text().unwrap_or_default();
                         self.input(text.into_bytes());
                     }
@@ -1990,10 +2054,56 @@ impl Terminal {
         }
     }
 
+    /// Drops a pending Cmd/Ctrl-click on a link whose release happened outside the
+    /// terminal, where `mouse_up` never runs.
+    pub fn cancel_hyperlink_press(&mut self) {
+        self.mouse_down_hyperlink = None;
+        self.link_press_withheld_from_app = false;
+    }
+
     pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &Context<Self>) {
         let setting = TerminalSettings::get_global(cx);
 
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
+        // Link presses are left-button only; other buttons released meanwhile
+        // belong to their own gestures.
+        let is_left_release = e.button == MouseButton::Left;
+        let link_press_withheld_from_app =
+            is_left_release && std::mem::take(&mut self.link_press_withheld_from_app);
+        if is_left_release && let Some(mouse_down_hyperlink) = self.mouse_down_hyperlink.take() {
+            let point = grid_point(
+                position,
+                self.last_content.terminal_bounds,
+                self.last_content.display_offset,
+            );
+
+            let mouse_up_hyperlink = {
+                let term_lock = self.term.lock();
+                terminal_hyperlinks::find_from_grid_point(
+                    &term_lock,
+                    point,
+                    &mut self.hyperlink_regex_searches,
+                    self.path_style,
+                )
+            };
+
+            if mouse_up_hyperlink
+                .is_some_and(|mouse_up_hyperlink| mouse_up_hyperlink == mouse_down_hyperlink)
+            {
+                self.events
+                    .push_back(InternalEvent::ProcessHyperlink(mouse_down_hyperlink, true));
+                self.selection_phase = SelectionPhase::Ended;
+                self.last_mouse = None;
+                return;
+            }
+        }
+
+        if link_press_withheld_from_app {
+            self.selection_phase = SelectionPhase::Ended;
+            self.last_mouse = None;
+            return;
+        }
+
         if self.mouse_mode(e.modifiers.shift) {
             let point = grid_point(
                 position,
@@ -2009,32 +2119,6 @@ impl Terminal {
         } else {
             if e.button == MouseButton::Left && setting.copy_on_select {
                 self.copy(Some(true));
-            }
-
-            if let Some(mouse_down_hyperlink) = self.mouse_down_hyperlink.take() {
-                let point = grid_point(
-                    position,
-                    self.last_content.terminal_bounds,
-                    self.last_content.display_offset,
-                );
-
-                if let Some(mouse_up_hyperlink) = {
-                    let term_lock = self.term.lock();
-                    terminal_hyperlinks::find_from_grid_point(
-                        &term_lock,
-                        point,
-                        &mut self.hyperlink_regex_searches,
-                        self.path_style,
-                    )
-                } {
-                    if mouse_down_hyperlink == mouse_up_hyperlink {
-                        self.events
-                            .push_back(InternalEvent::ProcessHyperlink(mouse_up_hyperlink, true));
-                        self.selection_phase = SelectionPhase::Ended;
-                        self.last_mouse = None;
-                        return;
-                    }
-                }
             }
 
             //Hyperlinks
@@ -2723,6 +2807,7 @@ mod tests {
             );
             terminal.last_content.terminal_bounds = terminal_bounds;
             terminal.events.clear();
+            terminal.take_pty_write_log();
         });
 
         terminal
@@ -2766,6 +2851,35 @@ mod tests {
             button: MouseButton::Left,
             position,
             modifiers: Modifiers::secondary_key(),
+            click_count: 1,
+        };
+        terminal.mouse_up(&mouse_up, cx);
+    }
+
+    fn left_mouse_down_at(
+        terminal: &mut Terminal,
+        position: Point<Pixels>,
+        cx: &mut Context<Terminal>,
+    ) {
+        let mouse_down = MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: true,
+        };
+        terminal.mouse_down(&mouse_down, cx);
+    }
+
+    fn left_mouse_up_at(
+        terminal: &mut Terminal,
+        position: Point<Pixels>,
+        cx: &mut Context<Terminal>,
+    ) {
+        let mouse_up = MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::none(),
             click_count: 1,
         };
         terminal.mouse_up(&mouse_up, cx);
@@ -3309,6 +3423,545 @@ mod tests {
                     .iter()
                     .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, true))),
                 "Should have ProcessHyperlink event when ctrl+clicking on same hyperlink position"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_hyperlink_ctrl_click_same_position_in_mouse_mode(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+
+            let click_position = point(px(80.0), px(10.0));
+            ctrl_mouse_down_at(terminal, click_position, cx);
+            ctrl_mouse_up_at(terminal, click_position, cx);
+
+            assert!(
+                terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, true))),
+                "Should have ProcessHyperlink event when ctrl+clicking on same hyperlink position in mouse mode"
+            );
+            assert!(
+                terminal.take_pty_write_log().is_empty(),
+                "a consumed link click must not be reported to the PTY"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_hyperlink_ctrl_click_mismatch_in_mouse_mode_consumes_gesture(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            let down_position = point(px(80.0), px(10.0));
+            let up_position = point(px(10.0), px(30.0));
+
+            ctrl_mouse_down_at(terminal, down_position, cx);
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: up_position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::secondary_key(),
+                },
+                cx,
+            );
+            ctrl_mouse_up_at(terminal, up_position, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "Should NOT open a link when press and release land on different hyperlinks"
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "a captured press must consume the whole gesture, but reports leaked to the PTY: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_captured_link_press_released_with_shift_on_other_link_is_consumed(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nhttps://example.com/ is another link\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+
+            // Shift turns mouse mode off at release time, but the press was
+            // already withheld from the PTY in mouse mode.
+            let mut modifiers = Modifiers::secondary_key();
+            modifiers.shift = true;
+            terminal.mouse_up(
+                &MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(10.0), px(30.0)),
+                    modifiers,
+                    click_count: 1,
+                },
+                cx,
+            );
+
+            assert!(
+                !terminal.events.iter().any(|event| matches!(
+                    event,
+                    InternalEvent::ProcessHyperlink(_, _) | InternalEvent::FindHyperlink(_, true)
+                )),
+                "a release on a different link must not open it"
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "a captured press must consume the whole gesture, but reports leaked to the PTY: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_shift_bypassed_link_press_released_without_shift_is_consumed(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            let mut modifiers = Modifiers::secondary_key();
+            modifiers.shift = true;
+            terminal.mouse_down(
+                &MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(80.0), px(10.0)),
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: true,
+                },
+                cx,
+            );
+            // Shift is released before the button, away from the link.
+            ctrl_mouse_up_at(terminal, point(px(10.0), px(30.0)), cx);
+
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "the press was never reported, so its release must not be either: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_other_button_release_does_not_resolve_link_press(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+            let link_position = point(px(80.0), px(10.0));
+
+            ctrl_mouse_down_at(terminal, link_position, cx);
+            terminal.mouse_up(
+                &MouseUpEvent {
+                    button: MouseButton::Right,
+                    position: link_position,
+                    modifiers: Modifiers::secondary_key(),
+                    click_count: 1,
+                },
+                cx,
+            );
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "a right-button release must not open the pending left-button link"
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "the right-button release belongs to the application"
+            );
+
+            ctrl_mouse_up_at(terminal, link_position, cx);
+            assert!(
+                terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "the left-button release should still open the link"
+            );
+            assert!(terminal.take_pty_write_log().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_other_button_press_keeps_pending_link_press(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+            terminal.mouse_down(
+                &MouseDownEvent {
+                    button: MouseButton::Right,
+                    position: point(px(10.0), px(30.0)),
+                    modifiers: Modifiers::none(),
+                    click_count: 1,
+                    first_mouse: false,
+                },
+                cx,
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "the right-button press belongs to the application"
+            );
+
+            ctrl_mouse_up_at(terminal, point(px(10.0), px(30.0)), cx);
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "the withheld left press must not get a release report: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_other_button_drag_is_reported_during_pending_link_press(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+            terminal.take_pty_write_log();
+
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: point(px(10.0), px(30.0)),
+                    pressed_button: Some(MouseButton::Right),
+                    modifiers: Modifiers::none(),
+                },
+                cx,
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "a right-button drag belongs to the application"
+            );
+
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: point(px(20.0), px(30.0)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::secondary_key(),
+                },
+                cx,
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "motion of the withheld left press must stay suppressed: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_link_press_dragged_off_with_shift_is_consumed(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(
+            cx,
+            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+            let off_link_position = point(px(10.0), px(30.0));
+
+            ctrl_mouse_down_at(terminal, point(px(80.0), px(10.0)), cx);
+
+            // Shift routes the drag through the selection path, which drops the
+            // pending link once the pointer leaves it.
+            let mut modifiers = Modifiers::secondary_key();
+            modifiers.shift = true;
+            let region = terminal.last_content.terminal_bounds.bounds;
+            terminal.mouse_drag(
+                &MouseMoveEvent {
+                    position: off_link_position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers,
+                },
+                region,
+                cx,
+            );
+
+            // Shift is released, then the button.
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: off_link_position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::secondary_key(),
+                },
+                cx,
+            );
+            ctrl_mouse_up_at(terminal, off_link_position, cx);
+
+            let pty_writes = terminal.take_pty_write_log();
+            assert!(
+                pty_writes.is_empty(),
+                "the press was never reported, so the rest of the gesture must not be either: {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_link_press_released_outside_terminal_does_not_capture_later_input(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE | TermMode::MOUSE_DRAG;
+            let link_position = point(px(80.0), px(10.0));
+
+            // The release lands outside the terminal, so `mouse_up` never runs.
+            ctrl_mouse_down_at(terminal, link_position, cx);
+            terminal.cancel_hyperlink_press();
+            terminal.take_pty_write_log();
+
+            terminal.mouse_move(
+                &MouseMoveEvent {
+                    position: point(px(10.0), px(10.0)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::none(),
+                },
+                cx,
+            );
+            assert!(
+                !terminal.take_pty_write_log().is_empty(),
+                "motion after the abandoned link press should be reported to the PTY"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_plain_click_after_lost_link_release_in_mouse_mode_is_reported(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            let link_position = point(px(80.0), px(10.0));
+
+            // A link press whose release was never delivered to the terminal.
+            ctrl_mouse_down_at(terminal, link_position, cx);
+            terminal.take_pty_write_log();
+
+            left_mouse_down_at(terminal, link_position, cx);
+            left_mouse_up_at(terminal, link_position, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "a plain click must not open a link left over from an earlier press"
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                2,
+                "both the press and the release of the plain click should be reported"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_plain_click_on_hyperlink_in_mouse_mode_is_reported(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            let click_position = point(px(80.0), px(10.0));
+            left_mouse_down_at(terminal, click_position, cx);
+            left_mouse_up_at(terminal, click_position, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "a plain click must not open a link"
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert_eq!(
+                pty_writes.len(),
+                2,
+                "expected press and release reports, got {pty_writes:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_ctrl_click_on_non_hyperlink_in_mouse_mode_is_reported(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+            terminal.take_pty_write_log();
+
+            // Past the end of the line: nothing link-like under the cursor.
+            let click_position = point(px(370.0), px(10.0));
+            ctrl_mouse_down_at(terminal, click_position, cx);
+            ctrl_mouse_up_at(terminal, click_position, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "a secondary click off a link must not open anything"
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert_eq!(
+                pty_writes.len(),
+                2,
+                "expected press and release reports, got {pty_writes:?}"
+            );
+        });
+    }
+
+    fn ctrl_hover_in_mouse_motion_mode(terminal: &mut Terminal, cx: &mut Context<Terminal>) {
+        terminal.last_content.mode = TermMode::MOUSE_MOTION;
+        terminal.take_pty_write_log();
+        terminal.mouse_move(
+            &MouseMoveEvent {
+                position: point(px(80.0), px(10.0)),
+                pressed_button: None,
+                modifiers: Modifiers::secondary_key(),
+            },
+            cx,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_ctrl_hover_in_mouse_mode_finds_hyperlink_and_reports_motion(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        terminal.update(cx, |terminal, cx| {
+            ctrl_hover_in_mouse_motion_mode(terminal, cx);
+
+            assert!(
+                terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::FindHyperlink(_, false))),
+                "ctrl+hover in mouse mode should look up the hovered link"
+            );
+            assert_eq!(
+                terminal.take_pty_write_log().len(),
+                1,
+                "the motion should still be reported to the application"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_ctrl_hover_in_mouse_mode_skips_hyperlink_when_setting_disabled(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        cx.update_global(|store: &mut settings::SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .terminal
+                    .get_or_insert_default()
+                    .open_links_in_mouse_mode = Some(false);
+            });
+        });
+
+        terminal.update(cx, |terminal, cx| {
+            ctrl_hover_in_mouse_motion_mode(terminal, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::FindHyperlink(_, _))),
+                "with the setting disabled, ctrl+hover must not look up links in mouse mode"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_ctrl_click_in_mouse_mode_forwards_when_setting_disabled(cx: &mut TestAppContext) {
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+        cx.update_global(|store: &mut settings::SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .terminal
+                    .get_or_insert_default()
+                    .open_links_in_mouse_mode = Some(false);
+            });
+        });
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = TermMode::MOUSE_MODE;
+
+            let click_position = point(px(80.0), px(10.0));
+            ctrl_mouse_down_at(terminal, click_position, cx);
+            ctrl_mouse_up_at(terminal, click_position, cx);
+
+            assert!(
+                !terminal
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, InternalEvent::ProcessHyperlink(_, _))),
+                "with the setting disabled, ctrl+click must not open links in mouse mode"
+            );
+            let pty_writes = terminal.take_pty_write_log();
+            assert_eq!(
+                pty_writes.len(),
+                2,
+                "expected press and release reports, got {pty_writes:?}"
             );
         });
     }

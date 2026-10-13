@@ -73,6 +73,10 @@ tags:
 - #51244 `4d13f01c89`: MCP refresh on worktree changes recalculates agent tools and breaks 12 agent tests without the rest of the upstream MCP series
 - #61562 `90b1549310`: per-chunk inlay hint replacement; fork cancels the in-flight fetch on refresh, so the upstream race (and its test) can't be reproduced
 
+## Ported after this record
+
+- #60067 `f5c975162c`: Cmd-click opens terminal links while a TUI (e.g. Claude Code) has mouse reporting on. The triage missed it; a user hit it on 2026-10-12. Ported on `port/terminal-mouse-mode-links`.
+
 ## Local changes on top of ported code
 
 These fork-only follow-ups sit on top of upstream code, so expect small conflicts when upstream later touches the same lines:
