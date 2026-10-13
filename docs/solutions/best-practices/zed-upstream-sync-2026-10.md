@@ -72,10 +72,17 @@ tags:
 - #64659 `532532bb80`: out-of-bounds inlay hint filter conflicts in 3 files; fork's inlay hint pipeline differs
 - #51244 `4d13f01c89`: MCP refresh on worktree changes recalculates agent tools and breaks 12 agent tests without the rest of the upstream MCP series
 - #61562 `90b1549310`: per-chunk inlay hint replacement; fork cancels the in-flight fetch on refresh, so the upstream race (and its test) can't be reproduced
+- #52158 `6d09eded79`: middle-click bracketed paste only runs on Linux/FreeBSD
+- #56715 `df37766060` (and its follow-up #61325 `37b9fbf22b`): fixes jitter introduced by #47195, which the fork doesn't have
+- #60960 `3f57e8d17d`: already in the fork as `ea0676ed3c`
 
 ## Ported after this record
 
 - #60067 `f5c975162c`: Cmd-click opens terminal links while a TUI (e.g. Claude Code) has mouse reporting on. The triage missed it; a user hit it on 2026-10-12. Ported on `port/terminal-mouse-mode-links`.
+- On `port/terminal-batch` (2026-10-14):
+  - From the pending list: #52111, #52162, #54565, #59911, #61939, #62891.
+  - #52351 `4c3179f2e2`: fixes the `test_mouse_to_cell_test` flake that #52111 introduces.
+  - Missed by the triage, found by re-sweeping terminal commits: #61036 (3-line fix only), #63097.
 
 ## Local changes on top of ported code
 
@@ -88,12 +95,14 @@ These fork-only follow-ups sit on top of upstream code, so expect small conflict
 
 These apply to the fork but were not ported yet. All were triaged against fork HEAD on 2026-10-10.
 
-- **Terminal and ACP:**
-  - #59911 IME candidate window in TUI apps
-  - #52162 + #54565 truecolor contrast
-  - #46648 stable terminal size when the scrollbar appears
-  - #62891 alt-F5 / ctrl-alt keys
-  - #61939 + #52111 inline terminal clipping
+- **Terminal:**
+  - #46648 stable terminal size when the scrollbar appears. It rewrites `ui/src/components/scrollbar.rs` on top of gpui's `Anchor` API from #47154, which the fork lacks, so it needs a hand port of the shared scrollbar.
+  - #54884 `b41505358f` terminal hyperlinks shown correctly while content changes. Hand port into the fork's inline `Terminal::make_content`, since upstream split out `alacritty.rs` (#57483).
+- **Buffer search:**
+  - #54451 `ce08d965bc` + #56681 `3a8d012d1a` Cmd-E seeds the search query on macOS. Port together; the fork's extra `SearchableItem` impl in `agent_ui/src/text_thread_editor.rs` needs the new signature.
+- **Panels:**
+  - #59439 `94c6647995` zoomed panels closing when focus moves within them. Large hand port, because the fork's agent panel still uses `ActiveView`.
+- **ACP:**
   - #64544 ACP terminal exit status
   - #64708 stale ACP tool output
   - #53216 duplicated ACP prompts
