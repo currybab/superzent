@@ -80,7 +80,7 @@ tags:
 - #56715 `df37766060` (and its follow-up #61325 `37b9fbf22b`): fixes jitter introduced by #47195, which the fork doesn't have
 - #60960 `3f57e8d17d`: already in the fork as `ea0676ed3c`
 - #54224 `1ea6eb4d42`: the scratch-workspace deletion it fixes does happen in the fork, but Superzent never restores path-less workspaces, so the deleted rows were never shown again. The port touches 8 files.
-- #53362 `4a5826ba62`: written against the project-group restore (#53032, #53217), which the fork lacks. The fork's startup path already falls back per workspace.
+- #53362: written against the project-group restore (#53032, #53217), which the fork lacks. The fork's startup path already falls back per workspace.
 - #60477 `99b0ed6b55` (and its follow-up #63213 `279da63882`): the red-X session loss only affects session-based restore, which Superzent's startup doesn't use.
 - #52671 `f83313d0e0` and its replacement #65546 `8231a43e45`: fix tab-switcher selection changing on mouse hover. The fork's picker doesn't select on hover, since #50827 isn't in the fork.
 
