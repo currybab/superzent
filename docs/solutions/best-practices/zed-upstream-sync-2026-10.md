@@ -81,6 +81,7 @@ tags:
 - #60067 `f5c975162c`: Cmd-click opens terminal links while a TUI (e.g. Claude Code) has mouse reporting on. The triage missed it; a user hit it on 2026-10-12. Ported on `port/terminal-mouse-mode-links`.
 - On `port/terminal-batch` (2026-10-14):
   - From the pending list: #52111, #52162, #54565, #59911, #61939, #62891.
+  - #63707 `620efaa5c7`: follow-up to #62891, which otherwise swallows Windows AltGr input as ctrl-alt meta sequences.
   - #52351 `4c3179f2e2`: fixes the `test_mouse_to_cell_test` flake that #52111 introduces.
   - Missed by the triage, found by re-sweeping terminal commits: #61036 (3-line fix only), #63097.
 
