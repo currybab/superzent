@@ -538,6 +538,20 @@ impl TerminalElement {
         )
     }
 
+    /// Whether the application explicitly picked this foreground color and does not
+    /// want it adjusted for contrast: 24-bit true color (`\e[38;2;R;G;Bm`) or a
+    /// specific entry in the 256-color palette (`\e[38;5;Nm`) where N >= 16 (the
+    /// 6x6x6 cube at 16..=231 and the 24-step grayscale ramp at 232..=255).
+    /// Indices 0..=15 still go through contrast adjustment since those map to
+    /// theme-defined ANSI colors that can clash with the theme background.
+    fn is_app_chosen_exact_color(fg: &terminal::alacritty_terminal::vte::ansi::Color) -> bool {
+        matches!(
+            fg,
+            terminal::alacritty_terminal::vte::ansi::Color::Spec(_)
+                | terminal::alacritty_terminal::vte::ansi::Color::Indexed(16..=255)
+        )
+    }
+
     /// Converts the Alacritty cell styles to GPUI text styles and background color.
     fn cell_style(
         indexed: &IndexedCell,
@@ -549,11 +563,11 @@ impl TerminalElement {
         minimum_contrast: f32,
     ) -> TextRun {
         let flags = indexed.cell.flags;
+        let skip_contrast = Self::is_app_chosen_exact_color(&fg);
         let mut fg = convert_color(&fg, colors);
         let bg = convert_color(&bg, colors);
 
-        // Only apply contrast adjustment to non-decorative characters
-        if !Self::is_decorative_character(indexed.c) {
+        if !skip_contrast && !Self::is_decorative_character(indexed.c) {
             fg = ensure_minimum_contrast(fg, bg, minimum_contrast);
         }
 
@@ -859,7 +873,11 @@ impl Element for TerminalElement {
                 let rem_size = window.rem_size();
                 let line_height = f32::from(window.text_style().font_size.to_pixels(rem_size))
                     * TerminalSettings::get_global(cx).line_height.value();
-                px(displayed_lines as f32 * line_height).into()
+                // Round up to a whole device pixel to prevent pixel snapping from rounding down,
+                // which would result in the terminal being one row short after flooring.
+                let scale_factor = window.scale_factor().max(1.);
+                let height = displayed_lines as f32 * line_height;
+                px((height * scale_factor).ceil() / scale_factor).into()
             }
             ContentMode::Scrollable => {
                 if let TerminalMode::Embedded { .. } = &self.mode {
@@ -1281,7 +1299,6 @@ impl Element for TerminalElement {
             };
 
             let terminal_input_handler = TerminalInputHandler {
-                terminal: self.terminal.clone(),
                 terminal_view: self.terminal_view.clone(),
                 cursor_bounds: layout.ime_cursor_bounds.map(|bounds| bounds + origin),
                 workspace: self.workspace.clone(),
@@ -1442,7 +1459,6 @@ impl IntoElement for TerminalElement {
 }
 
 struct TerminalInputHandler {
-    terminal: Entity<Terminal>,
     terminal_view: Entity<TerminalView>,
     workspace: WeakEntity<Workspace>,
     cursor_bounds: Option<Bounds<Pixels>>,
@@ -1453,22 +1469,15 @@ impl InputHandler for TerminalInputHandler {
         &mut self,
         _ignore_disabled_input: bool,
         _: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> Option<UTF16Selection> {
-        if self
-            .terminal
-            .read(cx)
-            .last_content
-            .mode
-            .contains(TermMode::ALT_SCREEN)
-        {
-            None
-        } else {
-            Some(UTF16Selection {
-                range: 0..0,
-                reversed: false,
-            })
-        }
+        // Always return a valid selection for IME positioning,
+        // even in ALT_SCREEN mode (fullscreen TUI apps like opencode, vim, etc.)
+        // The terminal still has a cursor position that should be used for IME candidate window placement.
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
     }
 
     fn marked_text_range(
@@ -1802,6 +1811,55 @@ mod tests {
     }
 
     #[test]
+    fn test_is_app_chosen_exact_color() {
+        use terminal::alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+
+        // Indices 0..=15 are theme-overridable ANSI colors; contrast adjustment must still apply.
+        assert!(!TerminalElement::is_app_chosen_exact_color(
+            &Color::Indexed(0)
+        ));
+        assert!(!TerminalElement::is_app_chosen_exact_color(
+            &Color::Indexed(15)
+        ));
+
+        // Boundary: index 16 is the first entry of the 6x6x6 cube — application-chosen.
+        assert!(TerminalElement::is_app_chosen_exact_color(&Color::Indexed(
+            16
+        )));
+        // Interior of the cube.
+        assert!(TerminalElement::is_app_chosen_exact_color(&Color::Indexed(
+            17
+        )));
+        assert!(TerminalElement::is_app_chosen_exact_color(&Color::Indexed(
+            231
+        )));
+        // Grayscale ramp boundaries.
+        assert!(TerminalElement::is_app_chosen_exact_color(&Color::Indexed(
+            232
+        )));
+        assert!(TerminalElement::is_app_chosen_exact_color(&Color::Indexed(
+            255
+        )));
+
+        // 24-bit true color is always application-chosen.
+        assert!(TerminalElement::is_app_chosen_exact_color(&Color::Spec(
+            Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            }
+        )));
+
+        // Named colors are theme-defined and must go through contrast adjustment.
+        assert!(!TerminalElement::is_app_chosen_exact_color(&Color::Named(
+            NamedColor::Red
+        )));
+        assert!(!TerminalElement::is_app_chosen_exact_color(&Color::Named(
+            NamedColor::Foreground
+        )));
+    }
+
+    #[test]
     fn test_contrast_adjustment_logic() {
         // Test the core contrast adjustment logic without needing full app context
 
@@ -1873,6 +1931,42 @@ mod tests {
             good_contrast, black_fg,
             "Good contrast should not be adjusted"
         );
+    }
+
+    #[test]
+    fn test_true_color_red_blue_not_washed_out_on_dark_bg() {
+        // Red and blue have inherently low perceptual luminance in APCA.
+        // Pure #ff0000 only achieves Lc ~35 against #1e1e1e — below the
+        // default Lc 45 threshold. ensure_minimum_contrast would lighten
+        // them, washing out the color. This is why cell_style skips the
+        // adjustment for Color::Spec (24-bit true color).
+        let dark_bg = gpui::Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.05,
+            a: 1.0,
+        };
+
+        for (name, r, g, b) in [
+            ("red", 225, 80, 80),
+            ("blue", 80, 80, 225),
+            ("pure red", 255, 0, 0),
+        ] {
+            let color = terminal::rgba_color(r, g, b);
+            let contrast = apca_contrast(color, dark_bg).abs();
+            assert!(
+                contrast < 45.0,
+                "{name} should have APCA < 45 on dark bg, got {contrast}",
+            );
+
+            let adjusted = ensure_minimum_contrast(color, dark_bg, 45.0);
+            assert!(
+                adjusted.l > color.l,
+                "{name} would be lightened by contrast adjustment (l: {} -> {})",
+                color.l,
+                adjusted.l,
+            );
+        }
     }
 
     #[test]

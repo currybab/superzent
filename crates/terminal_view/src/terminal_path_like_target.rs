@@ -500,14 +500,14 @@ fn possibly_open_target(
                             active_editor
                                 .downgrade()
                                 .update_in(cx, |editor, window, cx| {
-                                    editor.go_to_singleton_buffer_point(
-                                        language::Point::new(
-                                            row.saturating_sub(1),
-                                            col.saturating_sub(1),
-                                        ),
-                                        window,
-                                        cx,
-                                    )
+                                    if let Some(buffer) = editor.buffer().read(cx).as_singleton() {
+                                        let point =
+                                            buffer.read(cx).snapshot().point_from_external_input(
+                                                row.saturating_sub(1),
+                                                col.saturating_sub(1),
+                                            );
+                                        editor.go_to_singleton_buffer_point(point, window, cx);
+                                    }
                                 })
                                 .log_err();
                         }
@@ -847,6 +847,97 @@ mod tests {
             }
             $($tests);+
         } }
+    }
+
+    #[gpui::test]
+    async fn test_open_target_at_non_ascii_column(app_cx: &mut TestAppContext) {
+        let fs = app_cx.update(AppState::test).fs.as_fake().clone();
+        app_cx.update(|cx| {
+            theme::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "src": { "main.rs": "first\naéøbc\n" } }),
+        )
+        .await;
+        let project: gpui::Entity<Project> =
+            Project::test(fs.clone(), [Path::new(path!("/root"))], app_cx).await;
+        let (multi_workspace, cx) = app_cx
+            .add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let terminal = app_cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .expect("Failed to create display-only terminal")
+            .subscribe(cx)
+        });
+        let (terminal_view, cx) = app_cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal,
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+
+        let maybe_path = "src/main.rs:2:4";
+        let path_like_target = PathLikeTarget {
+            maybe_path: maybe_path.to_string(),
+            terminal_dir: Some(PathBuf::from(path!("/root"))),
+        };
+        terminal_view
+            .update(cx, |_, cx| {
+                possible_hover_target(
+                    &workspace.downgrade(),
+                    HoveredWord {
+                        word: maybe_path.to_string(),
+                        word_match: AlacPoint::default()..=AlacPoint::default(),
+                        id: 0,
+                    },
+                    &path_like_target,
+                    cx,
+                    BackgroundFsChecks::Enabled,
+                )
+            })
+            .await;
+        terminal_view
+            .update_in(cx, |terminal_view, window, cx| {
+                possibly_open_target(
+                    &workspace.downgrade(),
+                    terminal_view,
+                    &path_like_target,
+                    window,
+                    cx,
+                    BackgroundFsChecks::Enabled,
+                )
+            })
+            .await
+            .expect("Failed to possibly open target")
+            .expect("target should open");
+
+        let editor = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_item(cx)
+                .and_then(|item| item.act_as::<Editor>(cx))
+                .expect("active item should be an editor")
+        });
+        let cursor = editor.update_in(cx, |editor, _, cx| {
+            editor
+                .selections
+                .newest::<language::Point>(&editor.display_snapshot(cx))
+                .head()
+        });
+        // Column 4 is the fourth character of `aéøbc` (the `b`), which starts at byte 5.
+        assert_eq!(cursor, language::Point::new(1, 5));
     }
 
     #[gpui::test]
