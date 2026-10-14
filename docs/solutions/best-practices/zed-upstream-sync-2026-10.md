@@ -59,6 +59,10 @@ tags:
 
   Port these tests to the fork's equivalents.
 
+- **Session restore is only a fallback here:** Superzent's startup reopens the workspaces in its own store by path (`restore_superzent_startup_workspace` in `zed/src/main.rs`). Session-based restore (`restorable_workspaces`, `restore_multiworkspace`) runs only when that path fails. Upstream fixes for session bindings, session restore, or scratch (path-less) workspaces rarely change what users see, so trace the Superzent startup path before porting them.
+- **A clean merge-tree can still fail to compile:** #52692 merged cleanly but used `SaveOptions::force_format`. Build every cherry-pick, not only the conflicted ones.
+- **Property tests need more cases to fail:** #52871's `single_pane_navigation` passed without its fix at the default case count. Run it with `PROPTEST_CASES=3000` to confirm it fails without the fix.
+
 ## Skipped or dropped on purpose
 
 - #59087 `346d3605cf`: fork default_branch has include_remote_name variant
@@ -75,6 +79,10 @@ tags:
 - #52158 `6d09eded79`: middle-click bracketed paste only runs on Linux/FreeBSD
 - #56715 `df37766060` (and its follow-up #61325 `37b9fbf22b`): fixes jitter introduced by #47195, which the fork doesn't have
 - #60960 `3f57e8d17d`: already in the fork as `ea0676ed3c`
+- #54224 `1ea6eb4d42`: the scratch-workspace deletion it fixes does happen in the fork, but Superzent never restores path-less workspaces, so the deleted rows were never shown again. The port touches 8 files.
+- #53362 `4a5826ba62`: written against the project-group restore (#53032, #53217), which the fork lacks. The fork's startup path already falls back per workspace.
+- #60477 `99b0ed6b55` (and its follow-up #63213 `279da63882`): the red-X session loss only affects session-based restore, which Superzent's startup doesn't use.
+- #52671 `f83313d0e0` and its replacement #65546 `8231a43e45`: fix tab-switcher selection changing on mouse hover. The fork's picker doesn't select on hover, since #50827 isn't in the fork.
 
 ## Ported after this record
 
@@ -85,6 +93,7 @@ tags:
   - #61079 `5079b33d65`: follow-up to #59911, whose removed `composing` guard otherwise lets Fcitx5 under KWin/Wayland loop on the same cursor rectangle and grow memory without bound.
   - #52351 `4c3179f2e2`: fixes the `test_mouse_to_cell_test` flake that #52111 introduces.
   - Missed by the triage, found by re-sweeping terminal commits: #61036 (3-line fix only), #63097.
+- On `port/workspace-batch` (2026-10-15): #52035, #53552, #53659, #52871, #52692, #58435, #54243. #52035 only matters on the session-restore fallback path, but it is small and its new test fails without the fix.
 
 ## Local changes on top of ported code
 
@@ -109,13 +118,7 @@ These apply to the fork but were not ported yet. All were triaged against fork H
   - #64708 stale ACP tool output
   - #53216 duplicated ACP prompts
   - #58367 tool-call locations outside the project
-- **Workspace data loss and restore:**
-  - #54224 recent-projects cleanup deletes scratch workspaces
-  - #52035 removed workspace resurrected
-  - #53362 one failed workspace aborts window restore
-  - #60477 session lost on red-X quit
-- **Workspace (clean):**
-  - Clean cherry-picks not yet taken: #53659 rules files, #52692 format on first save, #52871, #53552 + #58435 auto-update status, #54243, #52671
+- **Workspace:**
   - #62921 read-only autosave (needs a hand port)
 - **gpui:**
   - #58803 image texture leak
