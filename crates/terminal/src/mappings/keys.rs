@@ -218,7 +218,8 @@ pub fn to_esc_str(
         }
     }
 
-    // Handling alt keys. These work for single ASCII characters.
+    // Named keys such as `f5` are ASCII too, so require a single character or they
+    // would be sent as ESC followed by the key name.
     if (!cfg!(target_os = "macos") || option_as_meta)
         && keystroke.modifiers.alt
         && keystroke.key.is_ascii()
