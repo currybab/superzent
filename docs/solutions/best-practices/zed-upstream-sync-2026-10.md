@@ -82,6 +82,7 @@ tags:
 - On `port/terminal-batch` (2026-10-14):
   - From the pending list: #52111, #52162, #54565, #59911, #61939, #62891.
   - #63707 `620efaa5c7`: follow-up to #62891, which otherwise swallows Windows AltGr input as ctrl-alt meta sequences.
+  - #61079 `5079b33d65`: follow-up to #59911, whose removed `composing` guard otherwise lets Fcitx5 under KWin/Wayland loop on the same cursor rectangle and grow memory without bound.
   - #52351 `4c3179f2e2`: fixes the `test_mouse_to_cell_test` flake that #52111 introduces.
   - Missed by the triage, found by re-sweeping terminal commits: #61036 (3-line fix only), #63097.
 
