@@ -235,8 +235,9 @@ pub fn watch_config_dir(
                             }
                             Some(PathEventKind::Rescan) => {
                                 for file_path in &config_paths {
-                                    let contents = fs.load(file_path).await.unwrap_or_default();
-                                    if tx.unbounded_send(contents).is_err() {
+                                    if let Ok(contents) = fs.load(file_path).await
+                                        && tx.unbounded_send(contents).is_err()
+                                    {
                                         return;
                                     }
                                 }
@@ -247,8 +248,9 @@ pub fn watch_config_dir(
                         && event.path == dir_path
                     {
                         for file_path in &config_paths {
-                            let contents = fs.load(file_path).await.unwrap_or_default();
-                            if tx.unbounded_send(contents).is_err() {
+                            if let Ok(contents) = fs.load(file_path).await
+                                && tx.unbounded_send(contents).is_err()
+                            {
                                 return;
                             }
                         }
