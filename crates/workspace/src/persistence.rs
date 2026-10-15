@@ -4400,19 +4400,19 @@ mod tests {
         let project1 = Project::test(fs.clone(), [dir1.as_path()], cx).await;
         let project2 = Project::test(fs.clone(), [dir2.as_path()], cx).await;
 
-        let ws2_id = DB.next_id().await.unwrap();
+        let workspace2_id = DB.next_id().await.unwrap();
 
         let (multi_workspace, cx) =
             cx.add_window_view(|window, cx| MultiWorkspace::test_new(project1.clone(), window, cx));
 
         // Keep a handle to the second workspace so it outlives its removal,
         // as it does when other parts of the app still reference it.
-        let workspace2 = multi_workspace.update_in(cx, |mw, window, cx| {
+        let workspace2 = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
             let workspace = cx.new(|cx| crate::Workspace::test_new(project2.clone(), window, cx));
-            workspace.update(cx, |ws: &mut crate::Workspace, _cx| {
-                ws.set_database_id(ws2_id)
+            workspace.update(cx, |workspace: &mut crate::Workspace, _cx| {
+                workspace.set_database_id(workspace2_id)
             });
-            mw.activate(workspace.clone(), cx);
+            multi_workspace.activate(workspace.clone(), cx);
             workspace
         });
 
@@ -4427,8 +4427,8 @@ mod tests {
         workspace2.update_in(cx, |workspace, window, cx| {
             workspace.serialize_workspace(window, cx);
         });
-        multi_workspace.update_in(cx, |mw, window, cx| {
-            mw.remove_workspace(1, window, cx);
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.remove_workspace(1, window, cx);
         });
 
         cx.executor()
@@ -4440,10 +4440,10 @@ mod tests {
             .await
             .unwrap()
             .iter()
-            .map(|sw| sw.workspace_id)
+            .map(|location| location.workspace_id)
             .collect();
         assert!(
-            !restored_ids.contains(&ws2_id),
+            !restored_ids.contains(&workspace2_id),
             "A serialization scheduled before removal must not restore the removed workspace. Found: {restored_ids:?}"
         );
     }
