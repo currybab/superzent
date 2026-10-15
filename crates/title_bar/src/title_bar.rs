@@ -391,7 +391,7 @@ impl TitleBar {
             .items_center()
             .justify_between()
             .child(
-                h_flex().w(px(120.)).items_center().child(
+                h_flex().flex_none().min_w(px(120.)).items_center().child(
                     h_flex()
                         .items_center()
                         .gap_1()
@@ -412,10 +412,16 @@ impl TitleBar {
             )
             .child(
                 h_flex()
-                    .w(px(120.))
+                    .flex_none()
+                    .min_w(px(120.))
                     .justify_end()
                     .items_center()
                     .gap_1()
+                    .child(
+                        div()
+                            .on_mouse_down(MouseButton::Left, stop_title_bar_drag)
+                            .child(self.update_version.clone()),
+                    )
                     .child(
                         div()
                             .on_mouse_down(MouseButton::Left, stop_title_bar_drag)
