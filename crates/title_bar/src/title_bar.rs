@@ -389,9 +389,10 @@ impl TitleBar {
             .px_2()
             .gap_2()
             .items_center()
-            .justify_between()
+            // Equal-growth side groups keep the title centered on the window until one
+            // side's controls outgrow half of the leftover width.
             .child(
-                h_flex().flex_none().min_w(px(120.)).items_center().child(
+                h_flex().flex_1().items_center().child(
                     h_flex()
                         .items_center()
                         .gap_1()
@@ -403,17 +404,21 @@ impl TitleBar {
                 ),
             )
             .child(
-                h_flex().flex_1().justify_center().px_4().child(
-                    Label::new(self.superzent_header_title(cx))
-                        .size(LabelSize::Small)
-                        .color(Color::Muted)
-                        .truncate(),
-                ),
+                h_flex()
+                    .flex_initial()
+                    .min_w_0()
+                    .justify_center()
+                    .px_4()
+                    .child(
+                        Label::new(self.superzent_header_title(cx))
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
             )
             .child(
                 h_flex()
-                    .flex_none()
-                    .min_w(px(120.))
+                    .flex_1()
                     .justify_end()
                     .items_center()
                     .gap_1()
