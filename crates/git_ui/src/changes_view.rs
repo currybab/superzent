@@ -877,32 +877,58 @@ impl ChangesView {
         );
         let file = file.clone();
         cx.spawn_in(window, async move |this, cx| match open_diff.await {
-            // Binary files have no text to diff. Opening the file itself shows images
-            // in the image viewer, and other files with the workspace's own message.
-            // That only shows the staged version while the file still matches it.
-            Err(error) if error.downcast_ref::<NotATextFile>().is_some() => {
-                if file.change == FileChange::Deleted {
-                    anyhow::bail!(
-                        "{} isn't a text file, so its deletion can't be shown here.",
-                        file.repo_path.as_unix_str()
-                    );
-                }
-                if kind == ChangesDiffKind::Index && file.has_unstaged_changes() {
-                    anyhow::bail!(
-                        "{} isn't a text file and has changed since it was staged, so its \
-                         staged version can't be shown here.",
-                        file.repo_path.as_unix_str()
-                    );
-                }
-                this.update_in(cx, |this, window, cx| {
-                    this.open_file(&file, options, window, cx)
-                })
-            }
+            Err(error) if error.downcast_ref::<NotATextFile>().is_some() => this
+                .update_in(cx, |this, window, cx| {
+                    this.open_without_diff(&file, kind, options, window, cx)
+                })?,
             result => result,
         })
         .detach_and_prompt_err("Failed to open diff", window, cx, |error, _, _| {
             Some(error.to_string())
         });
+    }
+
+    /// Binary files and symlinks have no text to diff. Opening the file itself shows
+    /// images in the image viewer, and other files with the workspace's own message,
+    /// but that only shows the staged version while the file on disk still is it.
+    fn open_without_diff(
+        &mut self,
+        file: &ChangedFile,
+        kind: ChangesDiffKind,
+        options: OpenChangesDiff,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let path = file.repo_path.as_unix_str();
+        if file.change == FileChange::Deleted {
+            anyhow::bail!("{path} isn't a text file, so its deletion can't be shown here.");
+        }
+        if kind == ChangesDiffKind::Index {
+            // Opening a symlink shows its target, not the link stored in the index.
+            if self.is_symlink(file, cx) {
+                anyhow::bail!("{path} is a symlink, so its staged version can't be shown here.");
+            }
+            if file.has_unstaged_changes() {
+                anyhow::bail!(
+                    "{path} isn't a text file and has changed since it was staged, so its \
+                     staged version can't be shown here."
+                );
+            }
+        }
+        self.open_file(file, options, window, cx);
+        Ok(())
+    }
+
+    fn is_symlink(&self, file: &ChangedFile, cx: &App) -> bool {
+        self.active_repository
+            .as_ref()
+            .and_then(|repository| {
+                repository
+                    .read(cx)
+                    .repo_path_to_project_path(&file.repo_path, cx)
+            })
+            .and_then(|project_path| self.project.read(cx).entry_for_path(&project_path, cx))
+            .is_some_and(|entry| entry.canonical_path.is_some())
     }
 
     fn open_file(
@@ -2408,6 +2434,39 @@ mod tests {
         assert!(cx.has_pending_prompt());
         workspace.read_with(cx, |workspace, cx| {
             assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_staged_symlinks_do_not_open_their_target(cx: &mut TestAppContext) {
+        let (fs, workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({ "target.txt": "target\n" }),
+            &[("target.txt", "target\n")],
+            &[("target.txt", "target\n"), ("link", "target\n")],
+        )
+        .await;
+        let cx = &mut cx;
+        fs.create_symlink(
+            Path::new(path!("/project/link")),
+            std::path::PathBuf::from(path!("/project/target.txt")),
+        )
+        .await
+        .expect("can create the symlink");
+        cx.run_until_parked();
+
+        select_file(&view, ChangesSection::Staged, "link", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        cx.run_until_parked();
+
+        // The fake repository doesn't follow symlinks, so it also reports the link as
+        // deleted from the worktree; the message tells the symlink check apart.
+        let (_, detail) = cx.pending_prompt().expect("an error is shown");
+        assert!(detail.contains("is a symlink"), "{detail}");
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item(cx).is_none());
         });
     }
 
