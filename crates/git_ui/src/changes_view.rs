@@ -20,9 +20,13 @@ use gpui::{
     Stateful, Subscription, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
     uniform_list,
 };
+use language::LineEnding;
 use project::{
     Project, ProjectPath,
-    git_store::{GitStoreEvent, Repository, RepositoryEvent, StatusEntry},
+    git_store::{
+        GitStoreEvent, LocalRepositoryState, Repository, RepositoryEvent, RepositoryState,
+        StatusEntry,
+    },
 };
 use settings::{GitPanelChangesLayout, Settings as _, SettingsStore};
 use std::ops::Range;
@@ -351,6 +355,7 @@ pub(crate) struct ChangesView {
     rows: Vec<ChangesRow>,
     collapsed_sections: HashSet<ChangesSection>,
     selected_row: Option<usize>,
+    stage_anchor: Option<RepoPath>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
@@ -392,6 +397,7 @@ impl ChangesView {
             rows: Vec::new(),
             collapsed_sections: HashSet::default(),
             selected_row: None,
+            stage_anchor: None,
             context_menu: None,
             _subscriptions: subscriptions,
         };
@@ -400,7 +406,11 @@ impl ChangesView {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.active_repository = self.project.read(cx).active_repository(cx);
+        let active_repository = self.project.read(cx).active_repository(cx);
+        if active_repository != self.active_repository {
+            self.stage_anchor = None;
+        }
+        self.active_repository = active_repository;
         self.files = match &self.active_repository {
             Some(repository) => changed_files(repository.read(cx).cached_status()),
             None => Vec::new(),
@@ -581,6 +591,9 @@ impl ChangesView {
 
     fn stage_row(&mut self, row: &ChangesRow, window: &mut Window, cx: &mut Context<Self>) {
         if row.section() != ChangesSection::Staged {
+            if let ChangesRow::File(file) = row {
+                self.stage_anchor = Some(file.repo_path.clone());
+            }
             let files = self.row_files(row);
             self.set_staged(true, files, window, cx);
         }
@@ -588,6 +601,11 @@ impl ChangesView {
 
     fn unstage_row(&mut self, row: &ChangesRow, window: &mut Window, cx: &mut Context<Self>) {
         if row.section() == ChangesSection::Staged {
+            if let ChangesRow::File(file) = row
+                && self.stage_anchor.as_ref() == Some(&file.repo_path)
+            {
+                self.stage_anchor = None;
+            }
             let files = self.row_files(row);
             self.set_staged(false, files, window, cx);
         }
@@ -604,8 +622,31 @@ impl ChangesView {
         }
     }
 
+    /// Stages every file between the last staged file and the selected one. The
+    /// anchor has usually moved to "Staged Changes" by then, so the range is taken by
+    /// path, which is the order a section lists its files in.
     fn stage_range(&mut self, _: &StageRange, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_staged(&ToggleStaged, window, cx);
+        let Some(ChangesRow::File(file)) = self.selected_changes_row().cloned() else {
+            return;
+        };
+        if file.section == ChangesSection::Staged {
+            return;
+        }
+        let Some(anchor) = self.stage_anchor.replace(file.repo_path.clone()) else {
+            self.set_staged(true, vec![file], window, cx);
+            return;
+        };
+        let range = if anchor <= file.repo_path {
+            anchor..=file.repo_path.clone()
+        } else {
+            file.repo_path.clone()..=anchor
+        };
+        let files = self
+            .section_files(file.section)
+            .into_iter()
+            .filter(|section_file| range.contains(&section_file.repo_path))
+            .collect();
+        self.set_staged(true, files, window, cx);
     }
 
     fn stage_selected(&mut self, _: &StageFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -1476,10 +1517,41 @@ async fn restore_from_index(
                  can't be discarded here. Run `git restore {path}` instead."
             )
         })?;
-    buffer.update(cx, |buffer, cx| buffer.set_text(index_text, cx));
+    // The diff's base text has normalized line endings, so the index's are read from
+    // its raw entry. Otherwise the buffer would be saved with the working tree's.
+    let index_line_ending = load_index_line_ending(repository, repo_path, cx).await?;
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_text(index_text, cx);
+        if let Some(line_ending) = index_line_ending {
+            buffer.set_line_ending(line_ending, cx);
+        }
+    });
     project
         .update(cx, |project, cx| project.save_buffer(buffer, cx))
         .await
+}
+
+/// Remote repositories don't expose raw index entries, so those buffers keep their
+/// own line endings.
+async fn load_index_line_ending(
+    repository: &Entity<Repository>,
+    repo_path: &RepoPath,
+    cx: &mut AsyncApp,
+) -> Result<Option<LineEnding>> {
+    let repo_path = repo_path.clone();
+    let index_text = repository
+        .update(cx, |repository, _| {
+            repository.send_job(None, move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.load_index_text(repo_path).await
+                    }
+                    RepositoryState::Remote(_) => None,
+                }
+            })
+        })
+        .await?;
+    Ok(index_text.map(|text| LineEnding::detect(&text)))
 }
 
 impl Focusable for ChangesView {
@@ -2022,6 +2094,72 @@ mod tests {
                 .await
                 .expect("a.txt exists"),
             "two\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_stage_range_stages_files_from_the_last_staged_one(cx: &mut TestAppContext) {
+        let files = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
+        let (_fs, _workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({
+                "a.txt": "changed\n",
+                "b.txt": "changed\n",
+                "c.txt": "changed\n",
+                "d.txt": "changed\n",
+                "e.txt": "changed\n",
+            }),
+            &files.map(|path| (path, "original\n")),
+            &files.map(|path| (path, "original\n")),
+        )
+        .await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "b.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.toggle_staged(&ToggleStaged, window, cx)
+        });
+        cx.run_until_parked();
+        select_file(&view, ChangesSection::Unstaged, "d.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.stage_range(&StageRange, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            view_summary(&view, cx),
+            [
+                "Staged Changes (3)",
+                "  M b.txt",
+                "  M c.txt",
+                "  M d.txt",
+                "Changes (2)",
+                "  M a.txt",
+                "  M e.txt  <== selected",
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_discard_restores_the_index_line_endings(cx: &mut TestAppContext) {
+        let (fs, _workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({ "a.txt": "one\nthree\n" }),
+            &[("a.txt", "one\r\n")],
+            &[("a.txt", "one\r\ntwo\r\n")],
+        )
+        .await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "a.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.discard_selected(&RestoreFile { skip_prompt: true }, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            fs.load(Path::new(path!("/project/a.txt")))
+                .await
+                .expect("a.txt exists"),
+            "one\r\ntwo\r\n"
         );
     }
 
