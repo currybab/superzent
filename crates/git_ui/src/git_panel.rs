@@ -807,13 +807,15 @@ impl GitPanel {
             let mut was_folder_icons = GitPanelSettings::get_global(cx).folder_icons;
             let mut was_diff_stats = GitPanelSettings::get_global(cx).diff_stats;
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
-                sync_changes_view(
+                if sync_changes_view(
                     &mut this.changes_view,
                     &this.project,
                     &this.workspace,
                     window,
                     cx,
-                );
+                ) {
+                    cx.notify();
+                }
                 let settings = GitPanelSettings::get_global(cx);
                 let sort_by_path = settings.sort_by_path;
                 let tree_view = settings.tree_view;

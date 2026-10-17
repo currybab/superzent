@@ -318,20 +318,26 @@ pub(crate) fn changes_layout_enabled(cx: &App) -> bool {
     GitPanelSettings::get_global(cx).changes_layout == GitPanelChangesLayout::Vscode
 }
 
+/// Returns whether the view was created or dropped, in which case the panel has to
+/// re-render: the layout setting may be the only setting that changed.
 pub(crate) fn sync_changes_view(
     changes_view: &mut Option<Entity<ChangesView>>,
     project: &Entity<Project>,
     workspace: &WeakEntity<Workspace>,
     window: &mut Window,
     cx: &mut App,
-) {
+) -> bool {
     match (changes_layout_enabled(cx), changes_view.is_some()) {
         (true, false) => {
             *changes_view =
                 Some(cx.new(|cx| ChangesView::new(project.clone(), workspace.clone(), window, cx)));
+            true
         }
-        (false, true) => *changes_view = None,
-        _ => {}
+        (false, true) => {
+            *changes_view = None;
+            true
+        }
+        (true, true) | (false, false) => false,
     }
 }
 
@@ -2051,6 +2057,42 @@ mod tests {
             view_summary(&view, cx)[..2],
             ["Staged Changes (1)", "  D a.txt"]
         );
+    }
+
+    #[gpui::test]
+    async fn test_sync_changes_view_reports_layout_switches(cx: &mut TestAppContext) {
+        let (_fs, workspace, _view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+        let set_layout = |layout: GitPanelChangesLayout, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                cx.update_global::<SettingsStore, _>(|store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings.git_panel.get_or_insert_default().changes_layout = Some(layout);
+                    })
+                });
+            });
+        };
+        let sync = |changes_view: &mut Option<Entity<ChangesView>>, cx: &mut VisualTestContext| {
+            workspace.update_in(cx, |workspace, window, cx| {
+                let project = workspace.project().clone();
+                let workspace = workspace.weak_handle();
+                sync_changes_view(changes_view, &project, &workspace, window, cx)
+            })
+        };
+
+        let mut changes_view = None;
+        set_layout(GitPanelChangesLayout::Zed, cx);
+        assert!(!sync(&mut changes_view, cx));
+        assert!(changes_view.is_none());
+
+        set_layout(GitPanelChangesLayout::Vscode, cx);
+        assert!(sync(&mut changes_view, cx));
+        assert!(changes_view.is_some());
+        assert!(!sync(&mut changes_view, cx));
+
+        set_layout(GitPanelChangesLayout::Zed, cx);
+        assert!(sync(&mut changes_view, cx));
+        assert!(changes_view.is_none());
     }
 
     #[gpui::test]
