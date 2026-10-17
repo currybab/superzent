@@ -171,14 +171,26 @@ impl ChangedFile {
         }
     }
 
-    /// Discarding a file the index doesn't have (untracked, or a staged deletion that
-    /// was recreated) means deleting it from the working tree.
+    /// Discarding a file the index doesn't have (untracked, intent-to-add, or a staged
+    /// deletion that was recreated) means deleting it from the working tree.
     fn is_missing_from_index(&self) -> bool {
         match self.status {
             FileStatus::Untracked => true,
-            FileStatus::Tracked(tracked) => tracked.index_status == StatusCode::Deleted,
+            FileStatus::Tracked(tracked) => {
+                tracked.index_status == StatusCode::Deleted || self.is_intent_to_add()
+            }
             FileStatus::Unmerged(_) | FileStatus::Ignored => false,
         }
+    }
+
+    /// `git add -N` leaves an empty index entry that HEAD doesn't have.
+    fn is_intent_to_add(&self) -> bool {
+        matches!(
+            self.status,
+            FileStatus::Tracked(tracked)
+                if tracked.index_status == StatusCode::Unmodified
+                    && tracked.worktree_status == StatusCode::Added
+        )
     }
 
     /// Opening a file that is gone from disk would create an empty buffer, which
@@ -746,7 +758,20 @@ impl ChangesView {
             .into_iter()
             .partition(ChangedFile::has_staged_changes);
 
+        // An intent-to-add entry outlives its file as a deletion that `git checkout HEAD`
+        // can't restore, so it is dropped from the index first.
+        let intent_to_add = missing_from_index
+            .iter()
+            .filter(|file| file.is_intent_to_add())
+            .map(|file| file.repo_path.clone())
+            .collect::<Vec<_>>();
+
         let task = cx.spawn(async move |_, cx| {
+            repository
+                .update(cx, |repository, cx| {
+                    repository.unstage_entries(intent_to_add, cx)
+                })
+                .await?;
             for file in missing_from_index {
                 let Some(project_path) = project_path_for(&repository, &file.repo_path, cx) else {
                     continue;
@@ -1765,6 +1790,25 @@ mod tests {
         assert!(unstaged_deletion.is_missing_from_worktree());
         assert!(!recreated.is_missing_from_worktree());
         assert!(!modified.is_missing_from_worktree());
+    }
+
+    #[test]
+    fn discarding_intent_to_add_files_deletes_them() {
+        let file = |status| {
+            changed_files([status_entry("a.txt", status)])
+                .into_iter()
+                .next()
+                .expect("a changed file")
+        };
+        let intent_to_add = file(tracked(StatusCode::Unmodified, StatusCode::Added));
+        let staged_addition = file(tracked(StatusCode::Added, StatusCode::Modified));
+        let unstaged_change = file(tracked(StatusCode::Unmodified, StatusCode::Modified));
+
+        assert!(intent_to_add.is_intent_to_add());
+        assert!(intent_to_add.is_missing_from_index());
+        assert!(!staged_addition.is_intent_to_add());
+        assert!(!staged_addition.is_missing_from_index());
+        assert!(!unstaged_change.is_missing_from_index());
     }
 
     #[test]

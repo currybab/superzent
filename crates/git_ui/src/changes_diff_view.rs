@@ -31,9 +31,7 @@ use workspace::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChangesDiffKind {
-    /// The index on the left, the working tree on the right.
     WorkingTree,
-    /// HEAD on the left, the index on the right.
     Index,
 }
 
