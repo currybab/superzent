@@ -1127,7 +1127,7 @@ impl GitPanel {
         }
     }
 
-    fn forward_focus_to_changes_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn forward_focus_to_changes_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == GitPanelTab::Changes
             && !self.entries.is_empty()
             && let Some(changes_view) = &self.changes_view
