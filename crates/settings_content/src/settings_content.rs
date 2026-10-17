@@ -644,6 +644,11 @@ pub struct GitPanelSettingsContent {
     ///
     /// Default: false
     pub show_count_badge: Option<bool>,
+
+    /// How the changes list in the git panel is laid out.
+    ///
+    /// Default: zed
+    pub changes_layout: Option<GitPanelChangesLayout>,
 }
 
 #[derive(
@@ -665,6 +670,31 @@ pub enum StatusStyle {
     #[default]
     Icon,
     LabelColor,
+}
+
+#[derive(
+    Default,
+    Copy,
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    PartialEq,
+    Eq,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum GitPanelChangesLayout {
+    /// (Beta) "Staged Changes" and "Changes" sections with inline actions.
+    /// Clicking a file opens a diff of just that file.
+    Vscode,
+    /// Conflicts, Tracked and Untracked groups with staging checkboxes.
+    /// Clicking a file opens the project diff.
+    #[default]
+    Zed,
 }
 
 #[with_fallible_options]

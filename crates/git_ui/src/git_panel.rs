@@ -1,4 +1,7 @@
 use crate::askpass_modal::AskPassModal;
+use crate::changes_view::{
+    ChangesView, ToggleChangesLayout, changes_layout_enabled, sync_changes_view,
+};
 use crate::commit_modal::CommitModal;
 use crate::commit_tooltip::{CommitAvatar, CommitTooltip};
 use crate::commit_view::CommitView;
@@ -186,7 +189,8 @@ fn git_panel_context_menu(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ContextMenu> {
-    ContextMenu::build(window, cx, move |context_menu, _, _| {
+    ContextMenu::build(window, cx, move |context_menu, _, cx| {
+        let vscode_layout = changes_layout_enabled(cx);
         context_menu
             .context(focus_handle)
             .action_disabled_when(
@@ -221,16 +225,18 @@ fn git_panel_context_menu(
                 TrashUntrackedFiles.boxed_clone(),
             )
             .separator()
-            .entry(
-                if state.tree_view {
-                    "Flat View"
-                } else {
-                    "Tree View"
-                },
-                Some(Box::new(ToggleTreeView)),
-                move |window, cx| window.dispatch_action(Box::new(ToggleTreeView), cx),
-            )
-            .when(!state.tree_view, |this| {
+            .when(!vscode_layout, |this| {
+                this.entry(
+                    if state.tree_view {
+                        "Flat View"
+                    } else {
+                        "Tree View"
+                    },
+                    Some(Box::new(ToggleTreeView)),
+                    move |window, cx| window.dispatch_action(Box::new(ToggleTreeView), cx),
+                )
+            })
+            .when(!vscode_layout && !state.tree_view, |this| {
                 this.entry(
                     if state.sort_by_path {
                         "Sort by Status"
@@ -241,6 +247,16 @@ fn git_panel_context_menu(
                     move |window, cx| window.dispatch_action(Box::new(ToggleSortByPath), cx),
                 )
             })
+            .when(!vscode_layout, |this| this.separator())
+            .entry(
+                if vscode_layout {
+                    "Switch to Zed Layout"
+                } else {
+                    "Switch to VS Code Layout (Beta)"
+                },
+                Some(Box::new(ToggleChangesLayout)),
+                move |window, cx| window.dispatch_action(Box::new(ToggleChangesLayout), cx),
+            )
     })
 }
 
@@ -251,6 +267,7 @@ const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
 const TREE_INDENT: f32 = 16.0;
 
 pub fn register(workspace: &mut Workspace) {
+    crate::changes_view::register(workspace);
     workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
         if SuperzentStore::try_global(cx).is_some() {
             return;
@@ -702,6 +719,7 @@ pub struct GitPanel {
     _repo_subscriptions: Vec<Subscription>,
 
     _settings_subscription: Subscription,
+    changes_view: Option<Entity<ChangesView>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -789,6 +807,13 @@ impl GitPanel {
             let mut was_folder_icons = GitPanelSettings::get_global(cx).folder_icons;
             let mut was_diff_stats = GitPanelSettings::get_global(cx).diff_stats;
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
+                sync_changes_view(
+                    &mut this.changes_view,
+                    &this.project,
+                    &this.workspace,
+                    window,
+                    cx,
+                );
                 let settings = GitPanelSettings::get_global(cx);
                 let sort_by_path = settings.sort_by_path;
                 let tree_view = settings.tree_view;
@@ -916,7 +941,24 @@ impl GitPanel {
                 history_keyboard_nav: false,
                 _repo_subscriptions: Vec::new(),
                 _settings_subscription,
+                changes_view: None,
             };
+            sync_changes_view(
+                &mut this.changes_view,
+                &this.project,
+                &this.workspace,
+                window,
+                cx,
+            );
+            cx.on_focus(&this.focus_handle, window, |this, window, cx| {
+                if this.active_tab == GitPanelTab::Changes
+                    && !this.entries.is_empty()
+                    && let Some(changes_view) = &this.changes_view
+                {
+                    changes_view.focus_handle(cx).focus(window, cx);
+                }
+            })
+            .detach();
 
             this.schedule_update(window, cx);
             this
@@ -6328,7 +6370,11 @@ impl Render for GitPanel {
                         GitPanelTab::Changes => this
                             .children(self.render_panel_header(window, cx))
                             .map(|this| {
-                                if let Some(repo) = self.active_repository.clone()
+                                if let Some(changes_view) = self.changes_view.clone()
+                                    && has_entries
+                                {
+                                    this.child(changes_view)
+                                } else if let Some(repo) = self.active_repository.clone()
                                     && has_entries
                                 {
                                     this.child(self.render_entries(
