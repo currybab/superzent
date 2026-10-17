@@ -1,5 +1,5 @@
 use crate::{
-    changes_diff_view::{ChangesDiffKind, ChangesDiffView, OpenChangesDiff},
+    changes_diff_view::{ChangesDiffKind, ChangesDiffView, NotATextFile, OpenChangesDiff},
     file_history_view::FileHistoryView,
     git_panel::{
         CollapseSelectedEntry, ExpandSelectedEntry, FirstEntry, LastEntry, NextEntry, PreviousEntry,
@@ -786,7 +786,7 @@ impl ChangesView {
             ChangesSection::Staged => ChangesDiffKind::Index,
             ChangesSection::Merge | ChangesSection::Unstaged => ChangesDiffKind::WorkingTree,
         };
-        ChangesDiffView::open(
+        let open_diff = ChangesDiffView::open(
             self.workspace.clone(),
             repository,
             file.repo_path.clone(),
@@ -794,7 +794,17 @@ impl ChangesView {
             options,
             window,
             cx,
-        )
+        );
+        let file = file.clone();
+        cx.spawn_in(window, async move |this, cx| match open_diff.await {
+            // Binary files have no text to diff. Opening the file itself shows images
+            // in the image viewer, and other files with the workspace's own message.
+            Err(error) if error.downcast_ref::<NotATextFile>().is_some() => this
+                .update_in(cx, |this, window, cx| {
+                    this.open_file(&file, options, window, cx)
+                }),
+            result => result,
+        })
         .detach_and_prompt_err("Failed to open diff", window, cx, |error, _, _| {
             Some(error.to_string())
         });
@@ -2041,6 +2051,36 @@ mod tests {
             view_summary(&view, cx)[..2],
             ["Staged Changes (1)", "  D a.txt"]
         );
+    }
+
+    #[gpui::test]
+    async fn test_binary_files_open_instead_of_their_diff(cx: &mut TestAppContext) {
+        let (fs, workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({}),
+            &[("image.bin", "\0old")],
+            &[("image.bin", "\0old")],
+        )
+        .await;
+        let cx = &mut cx;
+        fs.insert_file(path!("/project/image.bin"), vec![0, 1, 2, 3])
+            .await;
+        cx.run_until_parked();
+
+        select_file(&view, ChangesSection::Unstaged, "image.bin", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 0);
+            let active_title = workspace
+                .active_item(cx)
+                .expect("the file itself is opened")
+                .tab_content_text(0, cx);
+            assert_eq!(active_title, "image.bin");
+        });
     }
 
     #[gpui::test]

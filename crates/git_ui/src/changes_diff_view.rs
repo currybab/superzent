@@ -43,6 +43,17 @@ impl ChangesDiffKind {
     }
 }
 
+/// Attached to the error when the file can't be loaded into a text buffer (e.g. it
+/// is binary), so callers can fall back to opening the file itself.
+#[derive(Debug)]
+pub(crate) struct NotATextFile;
+
+impl std::fmt::Display for NotATextFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the file can't be opened as text")
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OpenChangesDiff {
     pub preview: bool,
@@ -335,7 +346,8 @@ async fn load_diff_source(
         .update(cx, |project, cx| {
             project.open_buffer(project_path.clone(), cx)
         })
-        .await?;
+        .await
+        .context(NotATextFile)?;
     let unstaged_diff = project
         .update(cx, |project, cx| {
             project.open_unstaged_diff(buffer.clone(), cx)
