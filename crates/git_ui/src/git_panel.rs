@@ -807,6 +807,11 @@ impl GitPanel {
             let mut was_folder_icons = GitPanelSettings::get_global(cx).folder_icons;
             let mut was_diff_stats = GitPanelSettings::get_global(cx).diff_stats;
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
+                let list_focused = this.focus_handle.is_focused(window)
+                    || this
+                        .changes_view
+                        .as_ref()
+                        .is_some_and(|view| view.focus_handle(cx).contains_focused(window, cx));
                 if sync_changes_view(
                     &mut this.changes_view,
                     &this.project,
@@ -814,6 +819,12 @@ impl GitPanel {
                     window,
                     cx,
                 ) {
+                    // Focus is only forwarded when the panel gains it, so carry it over to
+                    // the list that replaced the focused one.
+                    if list_focused {
+                        this.focus_handle.focus(window, cx);
+                        this.forward_focus_to_changes_view(window, cx);
+                    }
                     cx.notify();
                 }
                 let settings = GitPanelSettings::get_global(cx);
@@ -952,14 +963,11 @@ impl GitPanel {
                 window,
                 cx,
             );
-            cx.on_focus(&this.focus_handle, window, |this, window, cx| {
-                if this.active_tab == GitPanelTab::Changes
-                    && !this.entries.is_empty()
-                    && let Some(changes_view) = &this.changes_view
-                {
-                    changes_view.focus_handle(cx).focus(window, cx);
-                }
-            })
+            cx.on_focus(
+                &this.focus_handle,
+                window,
+                Self::forward_focus_to_changes_view,
+            )
             .detach();
 
             this.schedule_update(window, cx);
@@ -1116,6 +1124,15 @@ impl GitPanel {
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus_handle.contains_focused(window, cx) {
             cx.emit(Event::Focus);
+        }
+    }
+
+    fn forward_focus_to_changes_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_tab == GitPanelTab::Changes
+            && !self.entries.is_empty()
+            && let Some(changes_view) = &self.changes_view
+        {
+            changes_view.focus_handle(cx).focus(window, cx);
         }
     }
 
@@ -7226,6 +7243,77 @@ mod tests {
             parents: SmallVec::new(),
             ref_names: Vec::new(),
         })
+    }
+
+    #[gpui::test]
+    async fn test_switching_changes_layout_keeps_list_focus(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/root/project"),
+            json!({
+                ".git": {},
+                "a.txt": "changed",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/root/project/.git")),
+            &[("a.txt", "original".into())],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/root/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        let handle = cx.update_window_entity(&panel, |panel, _, _| {
+            std::mem::replace(&mut panel.update_visible_entries_task, Task::ready(()))
+        });
+        cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
+        handle.await;
+
+        let set_layout = |layout: settings::GitPanelChangesLayout, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                SettingsStore::update_global(cx, |store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings.git_panel.get_or_insert_default().changes_layout = Some(layout);
+                    })
+                });
+            });
+            cx.run_until_parked();
+        };
+
+        // Focus only sticks to handles that are rendered, so the panel has to be open.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.focus_panel::<GitPanel>(window, cx);
+        });
+        cx.run_until_parked();
+        panel.update_in(cx, |panel, window, _| {
+            assert!(panel.changes_view.is_none());
+            assert!(panel.focus_handle.is_focused(window));
+        });
+
+        set_layout(settings::GitPanelChangesLayout::Vscode, cx);
+        panel.update_in(cx, |panel, window, cx| {
+            let changes_view = panel
+                .changes_view
+                .as_ref()
+                .expect("the VS Code list exists");
+            assert!(changes_view.focus_handle(cx).is_focused(window));
+        });
+
+        set_layout(settings::GitPanelChangesLayout::Zed, cx);
+        panel.update_in(cx, |panel, window, _| {
+            assert!(panel.changes_view.is_none());
+            assert!(panel.focus_handle.is_focused(window));
+        });
     }
 
     #[gpui::test]
