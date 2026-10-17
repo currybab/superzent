@@ -113,27 +113,21 @@ impl ChangesDiffView {
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<()>> {
-        let existing = workspace
-            .update(cx, |workspace, cx| {
-                workspace
-                    .items_of_type::<Self>(cx)
-                    .find(|view| view.read(cx).is_showing(&repository, &repo_path, kind))
-            })
-            .ok()
-            .flatten();
-        if let Some(existing) = existing {
-            return match workspace.update(cx, |workspace, cx| {
-                workspace.activate_item(&existing, true, options.focus, window, cx);
-                if !options.preview {
-                    let item_id = existing.item_id();
-                    workspace.active_pane().update(cx, |pane, _| {
-                        pane.unpreview_item_if_preview(item_id);
-                    });
-                }
-            }) {
-                Ok(()) => Task::ready(Ok(())),
-                Err(error) => Task::ready(Err(error)),
-            };
+        let activated = workspace.update(cx, |workspace, cx| {
+            Self::activate_open_view(
+                workspace,
+                &repository,
+                &repo_path,
+                kind,
+                options,
+                window,
+                cx,
+            )
+        });
+        match activated {
+            Ok(true) => return Task::ready(Ok(())),
+            Ok(false) => {}
+            Err(error) => return Task::ready(Err(error)),
         }
 
         window.spawn(cx, async move |cx| {
@@ -157,6 +151,19 @@ impl ChangesDiffView {
             let language_registry = project.read_with(cx, |project, _| project.languages().clone());
 
             workspace.update_in(cx, |workspace, window, cx| {
+                // Opening the same row again while it loads (e.g. a double-click) must
+                // not add a second tab once both loads finish.
+                if Self::activate_open_view(
+                    workspace,
+                    &repository,
+                    &repo_path,
+                    kind,
+                    options,
+                    window,
+                    cx,
+                ) {
+                    return;
+                }
                 let workspace_entity = cx.entity();
                 let view = cx.new(|cx| {
                     Self::new(
@@ -191,6 +198,31 @@ impl ChangesDiffView {
                 );
             })
         })
+    }
+
+    fn activate_open_view(
+        workspace: &mut Workspace,
+        repository: &Entity<Repository>,
+        repo_path: &RepoPath,
+        kind: ChangesDiffKind,
+        options: OpenChangesDiff,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> bool {
+        let Some(existing) = workspace
+            .items_of_type::<Self>(cx)
+            .find(|view| view.read(cx).is_showing(repository, repo_path, kind))
+        else {
+            return false;
+        };
+        workspace.activate_item(&existing, true, options.focus, window, cx);
+        if !options.preview {
+            let item_id = existing.item_id();
+            workspace.active_pane().update(cx, |pane, _| {
+                pane.unpreview_item_if_preview(item_id);
+            });
+        }
+        true
     }
 
     fn new(

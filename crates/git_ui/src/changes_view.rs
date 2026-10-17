@@ -2119,6 +2119,34 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_opening_a_row_twice_while_loading_adds_one_tab(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "b.txt", cx);
+        // A double-click opens a preview on the first click and pins it on the second.
+        view.update_in(cx, |view, window, cx| {
+            let row = view
+                .selected_changes_row()
+                .cloned()
+                .expect("a row is selected");
+            for preview in [true, false] {
+                let options = OpenChangesDiff {
+                    preview,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 1);
+            assert_eq!(workspace.active_pane().read(cx).preview_item_id(), None);
+        });
+    }
+
+    #[gpui::test]
     async fn test_discard_keeps_staged_changes(cx: &mut TestAppContext) {
         let (fs, _workspace, view, mut cx) = setup(cx).await;
         let cx = &mut cx;
