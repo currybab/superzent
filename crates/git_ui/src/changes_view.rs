@@ -856,6 +856,12 @@ impl ChangesView {
             // in the image viewer, and other files with the workspace's own message.
             // That only shows the staged version while the file still matches it.
             Err(error) if error.downcast_ref::<NotATextFile>().is_some() => {
+                if file.change == FileChange::Deleted {
+                    anyhow::bail!(
+                        "{} isn't a text file, so its deletion can't be shown here.",
+                        file.repo_path.as_unix_str()
+                    );
+                }
                 if kind == ChangesDiffKind::Index && file.has_unstaged_changes() {
                     anyhow::bail!(
                         "{} isn't a text file and has changed since it was staged, so its \
@@ -1251,9 +1257,11 @@ impl ChangesView {
                     .display(self.project.read(cx).path_style(cx))
                     .to_string()
             });
-        let icon = FileIcons::get_icon(file.repo_path.as_std_path(), cx)
-            .map(Icon::from_path)
-            .unwrap_or_else(|| Icon::new(IconName::File));
+        let icon = GitPanelSettings::get_global(cx).file_icons.then(|| {
+            FileIcons::get_icon(file.repo_path.as_std_path(), cx)
+                .map(Icon::from_path)
+                .unwrap_or_else(|| Icon::new(IconName::File))
+        });
         let is_deleted = file.change == FileChange::Deleted;
 
         let open_file = (!file.is_missing_from_worktree()).then(|| {
@@ -1316,7 +1324,9 @@ impl ChangesView {
         self.row_container(("changes-file", index), index, selected, window, cx)
             .pl_5()
             .tooltip(Tooltip::text(tooltip_text))
-            .child(icon.size(IconSize::Small).color(Color::Muted))
+            .when_some(icon, |this, icon| {
+                this.child(icon.size(IconSize::Small).color(Color::Muted))
+            })
             .child(
                 h_flex()
                     .min_w_0()
@@ -2301,6 +2311,31 @@ mod tests {
         assert!(cx.has_pending_prompt());
         workspace.read_with(cx, |workspace, cx| {
             assert!(workspace.active_item(cx).is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_staged_deletions_of_binary_files_are_not_shown_as_empty(cx: &mut TestAppContext) {
+        let (fs, workspace, view, mut cx) =
+            setup_repo(cx, json!({}), &[("image.bin", "binary")], &[]).await;
+        let cx = &mut cx;
+        // The fake repository only stores text, so a binary HEAD blob is simulated by
+        // dropping it without a git event: the status still reports the deletion, but
+        // the committed text can't be loaded.
+        fs.with_git_state(Path::new(path!("/project/.git")), false, |state| {
+            state.head_contents.clear();
+        })
+        .expect("repository exists");
+
+        select_file(&view, ChangesSection::Staged, "image.bin", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt());
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 0);
         });
     }
 

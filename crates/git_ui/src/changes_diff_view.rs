@@ -1,7 +1,10 @@
 use anyhow::{Context as _, Result};
 use buffer_diff::{BufferDiff, BufferDiffEvent};
 use editor::{Editor, EditorEvent, EditorSettings, SplittableEditor};
-use git::repository::RepoPath;
+use git::{
+    repository::RepoPath,
+    status::{FileStatus, StatusCode},
+};
 use gpui::{
     AnyElement, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FocusHandle,
     Focusable, IntoElement, Render, Subscription, Task, WeakEntity, Window,
@@ -43,8 +46,8 @@ impl ChangesDiffKind {
     }
 }
 
-/// Attached to the error when the file can't be loaded into a text buffer (e.g. it
-/// is binary), so callers can fall back to opening the file itself.
+/// Attached to the error when the file, or its staged or committed version, isn't
+/// text (e.g. it is binary), so callers can fall back to opening the file itself.
 #[derive(Debug)]
 pub(crate) struct NotATextFile;
 
@@ -144,7 +147,15 @@ impl ChangesDiffView {
                 .with_context(|| {
                     format!("{} is outside of the project", repo_path.as_unix_str())
                 })?;
+            let status = repository
+                .read_with(cx, |repository, _| repository.status_for_path(&repo_path))
+                .map(|entry| entry.status);
             let source = load_diff_source(&project, &project_path, kind, cx).await?;
+            if let Some(status) = status
+                && cx.update(|_, cx| is_missing_base_text(&source, status, cx))?
+            {
+                return Err(anyhow::Error::msg(NotATextFile));
+            }
             let language_registry = project.read_with(cx, |project, _| project.languages().clone());
 
             workspace.update_in(cx, |workspace, window, cx| {
@@ -410,6 +421,27 @@ async fn load_diff_source(
     }
 }
 
+/// A missing base text means the blob is either absent or not text, and only the
+/// file's status tells the two apart. Diffing a binary blob as absent would show an
+/// empty or all-deleted file instead of the change.
+fn is_missing_base_text(source: &DiffSource, status: FileStatus, cx: &App) -> bool {
+    let FileStatus::Tracked(tracked) = status else {
+        return false;
+    };
+    let in_head = tracked.index_status != StatusCode::Added;
+    let in_index = tracked.index_status != StatusCode::Deleted;
+    match source {
+        DiffSource::WorkingTree { unstaged_diff, .. } => {
+            in_index && !unstaged_diff.read(cx).base_text_exists()
+        }
+        DiffSource::Index {
+            index_text,
+            head_text,
+            ..
+        } => in_index && index_text.is_none() || in_head && head_text.is_none(),
+    }
+}
+
 async fn build_index_buffer(
     mut text: String,
     blob: Arc<dyn File>,
@@ -472,7 +504,6 @@ async fn update_diff_against(
     .await;
 }
 
-/// The staged version of a file, which has no backing file on disk.
 struct IndexBlob {
     path: Arc<RelPath>,
     worktree_id: WorktreeId,
