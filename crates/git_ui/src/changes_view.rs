@@ -1449,9 +1449,17 @@ async fn restore_from_index(
             project.open_unstaged_diff(buffer.clone(), cx)
         })
         .await?;
+    // Staged symlinks and non-UTF-8 blobs have no base text, and `Repository` has no
+    // way to check out a raw index entry, so those are left untouched.
     let index_text = unstaged_diff
         .read_with(cx, |diff, cx| diff.base_text_string(cx))
-        .with_context(|| format!("{} is not in the index", repo_path.as_unix_str()))?;
+        .with_context(|| {
+            let path = repo_path.as_unix_str();
+            format!(
+                "The staged version of {path} isn't plain text, so its unstaged changes \
+                 can't be discarded here. Run `git restore {path}` instead."
+            )
+        })?;
     buffer.update(cx, |buffer, cx| buffer.set_text(index_text, cx));
     project
         .update(cx, |project, cx| project.save_buffer(buffer, cx))
