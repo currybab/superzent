@@ -169,6 +169,20 @@ impl ChangedFile {
         }
     }
 
+    /// Opening a file that is gone from disk would create an empty buffer, which
+    /// recreates the file when saved. A staged deletion whose file was recreated
+    /// still exists, so the index status alone isn't enough.
+    fn is_missing_from_worktree(&self) -> bool {
+        match self.status {
+            FileStatus::Tracked(tracked) => match tracked.worktree_status {
+                StatusCode::Deleted => true,
+                StatusCode::Unmodified => tracked.index_status == StatusCode::Deleted,
+                _ => false,
+            },
+            FileStatus::Untracked | FileStatus::Unmerged(_) | FileStatus::Ignored => false,
+        }
+    }
+
     /// Files that only exist in the working tree or in a merge have no diff to show.
     fn opens_as_file(&self) -> bool {
         matches!(self.change, FileChange::Untracked | FileChange::Conflicted)
@@ -304,7 +318,6 @@ pub(crate) fn changes_layout_enabled(cx: &App) -> bool {
     GitPanelSettings::get_global(cx).changes_layout == GitPanelChangesLayout::Vscode
 }
 
-/// Creates or drops the embedded view so it follows the `git_panel.changes_layout` setting.
 pub(crate) fn sync_changes_view(
     changes_view: &mut Option<Entity<ChangesView>>,
     project: &Entity<Project>,
@@ -794,7 +807,7 @@ impl ChangesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if file.change == FileChange::Deleted && file.section == ChangesSection::Unstaged {
+        if file.is_missing_from_worktree() {
             return;
         }
         let Some(project_path) = self.active_repository.as_ref().and_then(|repository| {
@@ -996,7 +1009,11 @@ impl ChangesView {
                         menu.action("Open Changes", menu::Confirm.boxed_clone())
                     };
                     let menu = menu
-                        .action("Open File", menu::SecondaryConfirm.boxed_clone())
+                        .action_disabled_when(
+                            file.is_missing_from_worktree(),
+                            "Open File",
+                            menu::SecondaryConfirm.boxed_clone(),
+                        )
                         .separator();
                     let menu = match file.section {
                         ChangesSection::Staged => menu.action_disabled_when(
@@ -1165,7 +1182,7 @@ impl ChangesView {
             .unwrap_or_else(|| Icon::new(IconName::File));
         let is_deleted = file.change == FileChange::Deleted;
 
-        let open_file = (!(is_deleted && file.section == ChangesSection::Unstaged)).then(|| {
+        let open_file = (!file.is_missing_from_worktree()).then(|| {
             self.row_action_button(
                 ("open-file", index),
                 IconName::FileTextOutlined,
@@ -1606,6 +1623,25 @@ mod tests {
         );
         assert!(files[1].has_staged_changes());
         assert!(!files[5].has_staged_changes());
+    }
+
+    #[test]
+    fn only_files_gone_from_disk_are_missing_from_the_worktree() {
+        let file = |status| {
+            changed_files([status_entry("a.txt", status)])
+                .into_iter()
+                .next()
+                .expect("a changed file")
+        };
+        let staged_deletion = file(tracked(StatusCode::Deleted, StatusCode::Unmodified));
+        let unstaged_deletion = file(tracked(StatusCode::Unmodified, StatusCode::Deleted));
+        let recreated = file(tracked(StatusCode::Deleted, StatusCode::Added));
+        let modified = file(tracked(StatusCode::Modified, StatusCode::Unmodified));
+
+        assert!(staged_deletion.is_missing_from_worktree());
+        assert!(unstaged_deletion.is_missing_from_worktree());
+        assert!(!recreated.is_missing_from_worktree());
+        assert!(!modified.is_missing_from_worktree());
     }
 
     #[test]
