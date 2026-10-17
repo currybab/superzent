@@ -1,5 +1,3 @@
-//! A single-file diff tab opened from the VS Code-style changes list.
-
 use anyhow::{Context as _, Result};
 use buffer_diff::{BufferDiff, BufferDiffEvent};
 use editor::{Editor, EditorEvent, EditorSettings, SplittableEditor};

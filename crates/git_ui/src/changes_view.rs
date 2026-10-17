@@ -1,9 +1,3 @@
-//! A VS Code-style changes list: "Merge Changes", "Staged Changes" and "Changes"
-//! sections, inline actions on hover, and single-file diffs on click.
-//!
-//! It is embedded by `GitPanel` in place of its own entry list, so the panel keeps
-//! owning the header, the commit editor and the remote actions.
-
 use crate::{
     changes_diff_view::{ChangesDiffKind, ChangesDiffView, OpenChangesDiff},
     file_history_view::FileHistoryView,
@@ -163,6 +157,16 @@ impl ChangedFile {
             self.status,
             FileStatus::Tracked(tracked) if tracked.index_status != StatusCode::Unmodified
         )
+    }
+
+    /// Discarding a file the index doesn't have (untracked, or a staged deletion that
+    /// was recreated) means deleting it from the working tree.
+    fn is_missing_from_index(&self) -> bool {
+        match self.status {
+            FileStatus::Untracked => true,
+            FileStatus::Tracked(tracked) => tracked.index_status == StatusCode::Deleted,
+            FileStatus::Unmerged(_) | FileStatus::Ignored => false,
+        }
     }
 
     /// Files that only exist in the working tree or in a merge have no diff to show.
@@ -622,7 +626,7 @@ impl ChangesView {
         let files = self.row_files(row);
         let message = match files.as_slice() {
             [] => return,
-            [file] if file.change == FileChange::Untracked => format!(
+            [file] if file.is_missing_from_index() => format!(
                 "Are you sure you want to delete {}?",
                 display_file_name(&file.repo_path)
             ),
@@ -665,17 +669,17 @@ impl ChangesView {
             return;
         };
         let project = self.project.clone();
-        let (untracked, tracked): (Vec<_>, Vec<_>) = files
+        let (missing_from_index, in_index): (Vec<_>, Vec<_>) = files
             .into_iter()
-            .partition(|file| file.change == FileChange::Untracked);
+            .partition(ChangedFile::is_missing_from_index);
         // `git checkout HEAD` would also throw away the staged half of a partially
         // staged file, so those are reverted to their index contents instead.
-        let (partially_staged, worktree_only): (Vec<_>, Vec<_>) = tracked
+        let (partially_staged, worktree_only): (Vec<_>, Vec<_>) = in_index
             .into_iter()
             .partition(ChangedFile::has_staged_changes);
 
         let task = cx.spawn(async move |_, cx| {
-            for file in untracked {
+            for file in missing_from_index {
                 let Some(project_path) = project_path_for(&repository, &file.repo_path, cx) else {
                     continue;
                 };
@@ -836,14 +840,68 @@ impl ChangesView {
         );
     }
 
-    fn ignore_add_to_gitignore(
+    fn add_to_gitignore(
         &mut self,
         _: &AddToGitignore,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
-        // Swallowed so that it doesn't reach `GitPanel`, which would act on its own
-        // (hidden) selection rather than on the row selected here.
+        let Some(ChangesRow::File(file)) = self.selected_changes_row() else {
+            return;
+        };
+        if file.change != FileChange::Untracked {
+            return;
+        }
+        let Some(repository) = self.active_repository.clone() else {
+            return;
+        };
+        let project = self.project.clone();
+        let ignored_path = file.repo_path.as_unix_str().to_string();
+        let task = cx.spawn(async move |_, cx| {
+            let gitignore_path = repository.read_with(cx, |repository, _| {
+                repository
+                    .snapshot()
+                    .work_directory_abs_path
+                    .join(".gitignore")
+            });
+            let buffer = project
+                .update(cx, |project, cx| {
+                    project.open_local_buffer(gitignore_path, cx)
+                })
+                .await?;
+            let edited = buffer.update(cx, |buffer, cx| {
+                let text = buffer.text();
+                if text.lines().any(|line| line.trim() == ignored_path) {
+                    return false;
+                }
+                let separator = if text.is_empty() || text.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                };
+                let end = text.len();
+                buffer.edit(
+                    [(end..end, format!("{separator}{ignored_path}\n"))],
+                    None,
+                    cx,
+                );
+                true
+            });
+            if edited {
+                project
+                    .update(cx, |project, cx| project.save_buffer(buffer, cx))
+                    .await?;
+            }
+            anyhow::Ok(())
+        });
+        task.detach_and_prompt_err("Failed to add to .gitignore", window, cx, |error, _, _| {
+            Some(error.to_string())
+        });
+    }
+
+    /// Mirrors `GitPanel`, which drops its mutating handlers for read-only projects.
+    fn has_write_access(&self, cx: &App) -> bool {
+        !self.project.read(cx).is_read_only(cx)
     }
 
     fn handle_row_click(
@@ -904,19 +962,32 @@ impl ChangesView {
         };
         self.select_row(index, cx);
         let focus_handle = self.focus_handle.clone();
+        let read_only = !self.has_write_access(cx);
         let context_menu = ContextMenu::build(window, cx, move |menu, _, _| {
             let menu = menu.context(focus_handle);
             match &row {
                 ChangesRow::Header { section, .. } => match section {
-                    ChangesSection::Staged => {
-                        menu.action("Unstage All Changes", UnstageFile.boxed_clone())
-                    }
-                    ChangesSection::Merge => {
-                        menu.action("Stage All Merge Changes", StageFile.boxed_clone())
-                    }
+                    ChangesSection::Staged => menu.action_disabled_when(
+                        read_only,
+                        "Unstage All Changes",
+                        UnstageFile.boxed_clone(),
+                    ),
+                    ChangesSection::Merge => menu.action_disabled_when(
+                        read_only,
+                        "Stage All Merge Changes",
+                        StageFile.boxed_clone(),
+                    ),
                     ChangesSection::Unstaged => menu
-                        .action("Stage All Changes", StageFile.boxed_clone())
-                        .action("Discard All Changes", RestoreFile::default().boxed_clone()),
+                        .action_disabled_when(
+                            read_only,
+                            "Stage All Changes",
+                            StageFile.boxed_clone(),
+                        )
+                        .action_disabled_when(
+                            read_only,
+                            "Discard All Changes",
+                            RestoreFile::default().boxed_clone(),
+                        ),
                 },
                 ChangesRow::File(file) => {
                     let menu = if file.opens_as_file() {
@@ -928,15 +999,34 @@ impl ChangesView {
                         .action("Open File", menu::SecondaryConfirm.boxed_clone())
                         .separator();
                     let menu = match file.section {
-                        ChangesSection::Staged => {
-                            menu.action("Unstage Changes", UnstageFile.boxed_clone())
-                        }
-                        ChangesSection::Merge => {
-                            menu.action("Stage Changes", StageFile.boxed_clone())
-                        }
+                        ChangesSection::Staged => menu.action_disabled_when(
+                            read_only,
+                            "Unstage Changes",
+                            UnstageFile.boxed_clone(),
+                        ),
+                        ChangesSection::Merge => menu.action_disabled_when(
+                            read_only,
+                            "Stage Changes",
+                            StageFile.boxed_clone(),
+                        ),
                         ChangesSection::Unstaged => menu
-                            .action("Stage Changes", StageFile.boxed_clone())
-                            .action("Discard Changes", RestoreFile::default().boxed_clone()),
+                            .action_disabled_when(
+                                read_only,
+                                "Stage Changes",
+                                StageFile.boxed_clone(),
+                            )
+                            .action_disabled_when(
+                                read_only,
+                                "Discard Changes",
+                                RestoreFile::default().boxed_clone(),
+                            )
+                            .when(file.change == FileChange::Untracked, |menu| {
+                                menu.action_disabled_when(
+                                    read_only,
+                                    "Add to .gitignore",
+                                    AddToGitignore.boxed_clone(),
+                                )
+                            }),
                     };
                     menu.separator().action_disabled_when(
                         file.change == FileChange::Untracked,
@@ -1227,6 +1317,7 @@ impl ChangesView {
         IconButton::new(id, icon)
             .icon_size(IconSize::Small)
             .icon_color(Color::Muted)
+            .disabled(action.mutates_repository() && !self.has_write_access(cx))
             .tooltip(Tooltip::text(tooltip))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
@@ -1269,6 +1360,15 @@ enum RowAction {
     Unstage,
     Discard,
     OpenFile,
+}
+
+impl RowAction {
+    fn mutates_repository(self) -> bool {
+        match self {
+            RowAction::Stage | RowAction::Unstage | RowAction::Discard => true,
+            RowAction::OpenFile => false,
+        }
+    }
 }
 
 fn display_file_name(repo_path: &RepoPath) -> String {
@@ -1365,13 +1465,15 @@ impl Render for ChangesView {
             .on_action(cx.listener(Self::expand_selected))
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::open_selected_file))
-            .on_action(cx.listener(Self::toggle_staged))
-            .on_action(cx.listener(Self::stage_range))
-            .on_action(cx.listener(Self::stage_selected))
-            .on_action(cx.listener(Self::unstage_selected))
-            .on_action(cx.listener(Self::discard_selected))
             .on_action(cx.listener(Self::open_file_history))
-            .on_action(cx.listener(Self::ignore_add_to_gitignore))
+            .when(self.has_write_access(cx), |this| {
+                this.on_action(cx.listener(Self::toggle_staged))
+                    .on_action(cx.listener(Self::stage_range))
+                    .on_action(cx.listener(Self::stage_selected))
+                    .on_action(cx.listener(Self::unstage_selected))
+                    .on_action(cx.listener(Self::discard_selected))
+                    .on_action(cx.listener(Self::add_to_gitignore))
+            })
             .flex_1()
             .size_full()
             .overflow_hidden()
@@ -1599,28 +1701,45 @@ mod tests {
         Entity<ChangesView>,
         VisualTestContext,
     ) {
-        init_test(cx);
-        let fs = FakeFs::new(cx.background_executor.clone());
-        fs.insert_tree(
-            path!("/project"),
+        setup_repo(
+            cx,
             json!({
-                ".git": {},
                 "a.txt": "three\n",
                 "b.txt": "b changed\n",
                 "c.txt": "new\n",
             }),
+            &[("a.txt", "one\n"), ("b.txt", "b\n")],
+            &[("a.txt", "two\n"), ("b.txt", "b\n")],
         )
-        .await;
+        .await
+    }
+
+    async fn setup_repo(
+        cx: &mut TestAppContext,
+        worktree: serde_json::Value,
+        head: &[(&str, &str)],
+        index: &[(&str, &str)],
+    ) -> (
+        Arc<FakeFs>,
+        Entity<Workspace>,
+        Entity<ChangesView>,
+        VisualTestContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/project"), worktree).await;
+        fs.create_dir(Path::new(path!("/project/.git")))
+            .await
+            .expect("can create .git");
         let dot_git = Path::new(path!("/project/.git"));
-        fs.set_head_for_repo(
-            dot_git,
-            &[("a.txt", "one\n".into()), ("b.txt", "b\n".into())],
-            "deadbeef",
-        );
-        fs.set_index_for_repo(
-            dot_git,
-            &[("a.txt", "two\n".into()), ("b.txt", "b\n".into())],
-        );
+        fn contents<'a>(files: &[(&'a str, &str)]) -> Vec<(&'a str, String)> {
+            files
+                .iter()
+                .map(|(path, text)| (*path, text.to_string()))
+                .collect()
+        }
+        fs.set_head_for_repo(dot_git, &contents(head), "deadbeef");
+        fs.set_index_for_repo(dot_git, &contents(index));
 
         let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
         let window_handle =
@@ -1843,6 +1962,71 @@ mod tests {
                 .await
                 .expect("a.txt exists"),
             "two\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_discard_recreated_file_keeps_staged_deletion(cx: &mut TestAppContext) {
+        let (fs, _workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({ "a.txt": "recreated\n" }),
+            &[("a.txt", "one\n")],
+            &[],
+        )
+        .await;
+        let cx = &mut cx;
+        assert_eq!(
+            view_summary(&view, cx),
+            [
+                "Staged Changes (1)",
+                "  D a.txt",
+                "Changes (1)",
+                "  A a.txt",
+            ]
+        );
+
+        select_file(&view, ChangesSection::Unstaged, "a.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.discard_selected(&RestoreFile { skip_prompt: true }, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!fs.is_file(Path::new(path!("/project/a.txt"))).await);
+        // The fake repository reports a file missing from both the index and the
+        // working tree as deleted in both, so only the staged deletion is checked.
+        assert_eq!(
+            view_summary(&view, cx)[..2],
+            ["Staged Changes (1)", "  D a.txt"]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_add_to_gitignore_ignores_the_selected_untracked_file(cx: &mut TestAppContext) {
+        let (fs, _workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "c.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.add_to_gitignore(&AddToGitignore, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            fs.load(Path::new(path!("/project/.gitignore")))
+                .await
+                .expect(".gitignore exists"),
+            "c.txt\n"
+        );
+
+        // Tracked files can't be ignored this way.
+        select_file(&view, ChangesSection::Unstaged, "b.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.add_to_gitignore(&AddToGitignore, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            fs.load(Path::new(path!("/project/.gitignore")))
+                .await
+                .expect(".gitignore exists"),
+            "c.txt\n"
         );
     }
 }
