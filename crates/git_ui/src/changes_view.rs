@@ -17,7 +17,7 @@ use git::{
 use gpui::{
     Action, AsyncApp, ClickEvent, Corner, DismissEvent, Div, Entity, FocusHandle, Focusable,
     FontWeight, KeyContext, MouseButton, MouseDownEvent, Point, PromptLevel, ScrollStrategy,
-    Stateful, Subscription, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
+    Stateful, Subscription, Task, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
     uniform_list,
 };
 use language::LineEnding;
@@ -376,6 +376,7 @@ pub(crate) struct ChangesView {
     collapsed_sections: HashSet<ChangesSection>,
     selected_row: Option<usize>,
     stage_anchor: Option<RepoPath>,
+    preview_open: Task<Option<()>>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
@@ -418,6 +419,7 @@ impl ChangesView {
             collapsed_sections: HashSet::default(),
             selected_row: None,
             stage_anchor: None,
+            preview_open: Task::ready(None),
             context_menu: None,
             _subscriptions: subscriptions,
         };
@@ -876,21 +878,30 @@ impl ChangesView {
             cx,
         );
         let file = file.clone();
-        cx.spawn_in(window, async move |this, cx| match open_diff.await {
-            Err(error) if error.downcast_ref::<NotATextFile>().is_some() => this
-                .update_in(cx, |this, window, cx| {
-                    this.open_without_diff(&file, kind, options, window, cx)
-                })?,
-            result => result,
-        })
-        .detach_and_prompt_err("Failed to open diff", window, cx, |error, _, _| {
-            Some(error.to_string())
-        });
+        let open = cx
+            .spawn_in(window, async move |this, cx| match open_diff.await {
+                Err(error) if error.downcast_ref::<NotATextFile>().is_some() => this
+                    .update_in(cx, |this, window, cx| {
+                        this.open_without_diff(&file, kind, options, window, cx)
+                    })?,
+                result => result,
+            })
+            .prompt_err("Failed to open diff", window, cx, |error, _, _| {
+                Some(error.to_string())
+            });
+        if options.preview {
+            // Replacing the task cancels the previous preview, so a slow file can't
+            // finish loading after a newer selection and take its preview tab.
+            self.preview_open = open;
+        } else {
+            open.detach();
+        }
     }
 
-    /// Binary files and symlinks have no text to diff. Opening the file itself shows
-    /// images in the image viewer, and other files with the workspace's own message,
-    /// but that only shows the staged version while the file on disk still is it.
+    /// Binary files and symlinks have no text to diff. Opening a binary file itself
+    /// shows images in the image viewer, and other files with the workspace's own
+    /// message, but that only shows the staged version while the file on disk still
+    /// is it.
     fn open_without_diff(
         &mut self,
         file: &ChangedFile,
@@ -900,20 +911,18 @@ impl ChangesView {
         cx: &mut Context<Self>,
     ) -> Result<()> {
         let path = file.repo_path.as_unix_str();
+        // Opening a symlink shows its target, not the link that git tracks.
+        if self.is_symlink(file, cx) {
+            anyhow::bail!("{path} is a symlink, so its changes can't be shown here.");
+        }
         if file.change == FileChange::Deleted {
             anyhow::bail!("{path} isn't a text file, so its deletion can't be shown here.");
         }
-        if kind == ChangesDiffKind::Index {
-            // Opening a symlink shows its target, not the link stored in the index.
-            if self.is_symlink(file, cx) {
-                anyhow::bail!("{path} is a symlink, so its staged version can't be shown here.");
-            }
-            if file.has_unstaged_changes() {
-                anyhow::bail!(
-                    "{path} isn't a text file and has changed since it was staged, so its \
-                     staged version can't be shown here."
-                );
-            }
+        if kind == ChangesDiffKind::Index && file.has_unstaged_changes() {
+            anyhow::bail!(
+                "{path} isn't a text file and has changed since it was staged, so its \
+                 staged version can't be shown here."
+            );
         }
         self.open_file(file, options, window, cx);
         Ok(())
@@ -2145,6 +2154,43 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_newer_previews_win_over_slower_older_ones(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        // A staged diff takes more steps to load than a working tree one, so the
+        // older preview would finish last.
+        view.update_in(cx, |view, window, cx| {
+            for (section, path) in [
+                (ChangesSection::Staged, "a.txt"),
+                (ChangesSection::Unstaged, "b.txt"),
+            ] {
+                let key = RowKey::File(section, RepoPath::new(path).expect("valid repo path"));
+                let row = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .cloned()
+                    .expect("row exists");
+                let options = OpenChangesDiff {
+                    preview: true,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let title = workspace
+                .active_item(cx)
+                .expect("a preview is open")
+                .tab_content_text(0, cx);
+            assert_eq!(title, "b.txt (Working Tree)");
+        });
+    }
+
+    #[gpui::test]
     async fn test_opening_a_row_twice_while_loading_adds_one_tab(cx: &mut TestAppContext) {
         let (_fs, workspace, view, mut cx) = setup(cx).await;
         let cx = &mut cx;
@@ -2438,7 +2484,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_staged_symlinks_do_not_open_their_target(cx: &mut TestAppContext) {
+    async fn test_symlinks_do_not_open_their_target(cx: &mut TestAppContext) {
         let (fs, workspace, view, mut cx) = setup_repo(
             cx,
             json!({ "target.txt": "target\n" }),
@@ -2455,19 +2501,22 @@ mod tests {
         .expect("can create the symlink");
         cx.run_until_parked();
 
-        select_file(&view, ChangesSection::Staged, "link", cx);
-        view.update_in(cx, |view, window, cx| {
-            view.open_selected(&menu::Confirm, window, cx)
-        });
-        cx.run_until_parked();
-
         // The fake repository doesn't follow symlinks, so it also reports the link as
         // deleted from the worktree; the message tells the symlink check apart.
-        let (_, detail) = cx.pending_prompt().expect("an error is shown");
-        assert!(detail.contains("is a symlink"), "{detail}");
-        workspace.read_with(cx, |workspace, cx| {
-            assert!(workspace.active_item(cx).is_none());
-        });
+        for section in [ChangesSection::Staged, ChangesSection::Unstaged] {
+            select_file(&view, section, "link", cx);
+            view.update_in(cx, |view, window, cx| {
+                view.open_selected(&menu::Confirm, window, cx)
+            });
+            cx.run_until_parked();
+
+            let (_, detail) = cx.pending_prompt().expect("an error is shown");
+            assert!(detail.contains("is a symlink"), "{detail}");
+            cx.simulate_prompt_answer("Ok");
+            workspace.read_with(cx, |workspace, cx| {
+                assert!(workspace.active_item(cx).is_none());
+            });
+        }
     }
 
     #[gpui::test]
