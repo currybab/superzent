@@ -163,6 +163,14 @@ impl ChangedFile {
         )
     }
 
+    fn has_unstaged_changes(&self) -> bool {
+        match self.status {
+            FileStatus::Tracked(tracked) => tracked.worktree_status != StatusCode::Unmodified,
+            FileStatus::Untracked | FileStatus::Unmerged(_) => true,
+            FileStatus::Ignored => false,
+        }
+    }
+
     /// Discarding a file the index doesn't have (untracked, or a staged deletion that
     /// was recreated) means deleting it from the working tree.
     fn is_missing_from_index(&self) -> bool {
@@ -846,10 +854,19 @@ impl ChangesView {
         cx.spawn_in(window, async move |this, cx| match open_diff.await {
             // Binary files have no text to diff. Opening the file itself shows images
             // in the image viewer, and other files with the workspace's own message.
-            Err(error) if error.downcast_ref::<NotATextFile>().is_some() => this
-                .update_in(cx, |this, window, cx| {
+            // That only shows the staged version while the file still matches it.
+            Err(error) if error.downcast_ref::<NotATextFile>().is_some() => {
+                if kind == ChangesDiffKind::Index && file.has_unstaged_changes() {
+                    anyhow::bail!(
+                        "{} isn't a text file and has changed since it was staged, so its \
+                         staged version can't be shown here.",
+                        file.repo_path.as_unix_str()
+                    );
+                }
+                this.update_in(cx, |this, window, cx| {
                     this.open_file(&file, options, window, cx)
-                }),
+                })
+            }
             result => result,
         })
         .detach_and_prompt_err("Failed to open diff", window, cx, |error, _, _| {
@@ -1823,8 +1840,6 @@ mod tests {
         });
     }
 
-    /// `a.txt` is partially staged, `b.txt` only has working tree changes and
-    /// `c.txt` is untracked.
     async fn setup(
         cx: &mut TestAppContext,
     ) -> (
@@ -2260,6 +2275,32 @@ mod tests {
                 .expect("the file itself is opened")
                 .tab_content_text(0, cx);
             assert_eq!(active_title, "image.bin");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_changed_staged_binary_files_are_not_opened_from_disk(cx: &mut TestAppContext) {
+        let (fs, workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({}),
+            &[("image.bin", "\0old")],
+            &[("image.bin", "\0staged")],
+        )
+        .await;
+        let cx = &mut cx;
+        fs.insert_file(path!("/project/image.bin"), vec![0, 1, 2, 3])
+            .await;
+        cx.run_until_parked();
+
+        select_file(&view, ChangesSection::Staged, "image.bin", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt());
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item(cx).is_none());
         });
     }
 
