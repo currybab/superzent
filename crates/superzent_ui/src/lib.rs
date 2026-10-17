@@ -6841,6 +6841,12 @@ impl SuperzentRightSidebar {
         match self.tab {
             RightSidebarTab::Changes | RightSidebarTab::History => {
                 self.git_panel.focus_handle(cx).focus(window, cx);
+                // History shares the git panel's focus handle, so coming back from it
+                // doesn't refocus the panel, which is what forwards focus to the
+                // VS Code changes list.
+                self.git_panel.update(cx, |git_panel, cx| {
+                    git_panel.forward_focus_to_changes_view(window, cx)
+                });
             }
             RightSidebarTab::Files => {
                 self.project_panel.focus_handle(cx).focus(window, cx);
