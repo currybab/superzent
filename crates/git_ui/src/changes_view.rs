@@ -207,6 +207,12 @@ impl ChangedFile {
         }
     }
 
+    /// A row's own change can be `Modified` for a file that was never committed, such
+    /// as the unstaged half of a staged addition, so the whole status is checked.
+    fn has_history(&self) -> bool {
+        !self.status.is_created()
+    }
+
     /// Files that only exist in the working tree or in a merge have no diff to show.
     fn opens_as_file(&self) -> bool {
         matches!(self.change, FileChange::Untracked | FileChange::Conflicted)
@@ -694,7 +700,6 @@ impl ChangesView {
         }
     }
 
-    /// Only the "Changes" section can be discarded: staged work is kept, like VS Code.
     fn discard_row(
         &mut self,
         row: &ChangesRow,
@@ -1186,7 +1191,7 @@ impl ChangesView {
                             }),
                     };
                     menu.separator().action_disabled_when(
-                        file.change == FileChange::Untracked,
+                        !file.has_history(),
                         "View File History",
                         FileHistory.boxed_clone(),
                     )
@@ -1851,6 +1856,38 @@ mod tests {
         assert!(!staged_addition.is_intent_to_add());
         assert!(!staged_addition.is_missing_from_index());
         assert!(!unstaged_change.is_missing_from_index());
+    }
+
+    #[test]
+    fn files_that_were_never_committed_have_no_history() {
+        let files = changed_files([
+            status_entry("a.txt", tracked(StatusCode::Added, StatusCode::Modified)),
+            status_entry("b.txt", tracked(StatusCode::Unmodified, StatusCode::Added)),
+            status_entry("c.txt", FileStatus::Untracked),
+            status_entry("d.txt", tracked(StatusCode::Modified, StatusCode::Modified)),
+        ]);
+        let with_history = files
+            .iter()
+            .map(|file| {
+                (
+                    file.repo_path.as_unix_str(),
+                    file.section,
+                    file.has_history(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            with_history,
+            [
+                ("a.txt", ChangesSection::Staged, false),
+                ("d.txt", ChangesSection::Staged, true),
+                ("a.txt", ChangesSection::Unstaged, false),
+                ("b.txt", ChangesSection::Unstaged, false),
+                ("c.txt", ChangesSection::Unstaged, false),
+                ("d.txt", ChangesSection::Unstaged, true),
+            ]
+        );
     }
 
     #[test]
