@@ -985,6 +985,10 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(changes_view) = &self.changes_view {
+            changes_view.update(cx, |changes_view, cx| changes_view.select_path(&path, cx));
+            return;
+        }
         let Some(git_repo) = self.active_repository.as_ref() else {
             return;
         };
@@ -7243,6 +7247,67 @@ mod tests {
             parents: SmallVec::new(),
             ref_names: Vec::new(),
         })
+    }
+
+    #[gpui::test]
+    async fn test_selecting_entries_by_path_moves_the_vscode_list_selection(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/root/project"),
+            json!({
+                ".git": {},
+                "a.txt": "changed",
+                "b.txt": "changed",
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/root/project/.git")),
+            &[("a.txt", "original".into()), ("b.txt", "original".into())],
+        );
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().changes_layout =
+                        Some(settings::GitPanelChangesLayout::Vscode);
+                })
+            });
+        });
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/root/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        cx.executor().run_until_parked();
+        let panel = workspace.update_in(cx, GitPanel::new);
+        cx.run_until_parked();
+
+        let worktree_id =
+            cx.read(|cx| project.read(cx).worktrees(cx).next().unwrap().read(cx).id());
+        let project_path = ProjectPath {
+            worktree_id,
+            path: rel_path("b.txt").into_arc(),
+        };
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_entry_by_path(project_path, window, cx);
+        });
+
+        panel.read_with(cx, |panel, cx| {
+            let changes_view = panel
+                .changes_view
+                .as_ref()
+                .expect("the VS Code list exists");
+            assert_eq!(
+                changes_view.read(cx).selected_path(),
+                Some(&RepoPath::new("b.txt").unwrap())
+            );
+        });
     }
 
     #[gpui::test]

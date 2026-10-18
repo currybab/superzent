@@ -477,6 +477,34 @@ impl ChangesView {
         self.selected_row.and_then(|index| self.rows.get(index))
     }
 
+    pub(crate) fn select_path(&mut self, path: &ProjectPath, cx: &mut Context<Self>) {
+        let Some(repo_path) = self
+            .active_repository
+            .as_ref()
+            .and_then(|repository| repository.read(cx).project_path_to_repo_path(path, cx))
+        else {
+            return;
+        };
+        let is_path =
+            |row: &ChangesRow| matches!(row, ChangesRow::File(file) if file.repo_path == repo_path);
+        // A partially staged file has a row in each section, so the one already
+        // selected is kept.
+        if self.selected_changes_row().is_some_and(is_path) {
+            return;
+        }
+        if let Some(index) = self.rows.iter().position(is_path) {
+            self.select_row(index, cx);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_path(&self) -> Option<&RepoPath> {
+        match self.selected_changes_row()? {
+            ChangesRow::File(file) => Some(&file.repo_path),
+            ChangesRow::Header { .. } => None,
+        }
+    }
+
     fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.rows.len() {
             return;
@@ -2658,6 +2686,47 @@ mod tests {
                 .await
                 .expect("a.txt exists"),
             "two\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_selecting_a_path_from_elsewhere_selects_its_row(cx: &mut TestAppContext) {
+        let (_fs, _workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+        let select_path = |path: &str, cx: &mut VisualTestContext| {
+            view.update(cx, |view, cx| {
+                let repository = view
+                    .active_repository
+                    .clone()
+                    .expect("a repository is active");
+                let repo_path = RepoPath::new(path).expect("valid repo path");
+                let project_path = repository
+                    .read(cx)
+                    .repo_path_to_project_path(&repo_path, cx)
+                    .expect("the path is in the project");
+                view.select_path(&project_path, cx);
+            })
+        };
+
+        select_path("b.txt", cx);
+        assert_eq!(
+            view_summary(&view, cx),
+            [
+                "Staged Changes (1)",
+                "  M a.txt",
+                "Changes (3)",
+                "  M a.txt",
+                "  M b.txt  <== selected",
+                "  U c.txt",
+            ]
+        );
+
+        // A partially staged file has a row in each section, and the selected one stays.
+        select_file(&view, ChangesSection::Unstaged, "a.txt", cx);
+        select_path("a.txt", cx);
+        assert_eq!(
+            view_summary(&view, cx)[3],
+            "  M a.txt  <== selected".to_string()
         );
     }
 
