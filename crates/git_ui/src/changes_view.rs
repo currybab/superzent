@@ -492,6 +492,12 @@ impl ChangesView {
         if self.selected_changes_row().is_some_and(is_path) {
             return;
         }
+        if !self.rows.iter().any(is_path)
+            && let Some(file) = self.files.iter().find(|file| file.repo_path == repo_path)
+        {
+            let section = file.section;
+            self.set_section_collapsed(section, false, cx);
+        }
         if let Some(index) = self.rows.iter().position(is_path) {
             self.select_row(index, cx);
         }
@@ -2727,6 +2733,33 @@ mod tests {
         assert_eq!(
             view_summary(&view, cx)[3],
             "  M a.txt  <== selected".to_string()
+        );
+
+        // A file in a collapsed section is shown by expanding it, while a file that
+        // still has a visible row is selected there.
+        view.update(cx, |view, cx| {
+            view.set_section_collapsed(ChangesSection::Unstaged, true, cx)
+        });
+        select_path("a.txt", cx);
+        assert_eq!(
+            view_summary(&view, cx),
+            [
+                "Staged Changes (1)",
+                "  M a.txt  <== selected",
+                "Changes (3)"
+            ]
+        );
+        select_path("b.txt", cx);
+        assert_eq!(
+            view_summary(&view, cx),
+            [
+                "Staged Changes (1)",
+                "  M a.txt",
+                "Changes (3)",
+                "  M a.txt",
+                "  M b.txt  <== selected",
+                "  U c.txt",
+            ]
         );
     }
 
