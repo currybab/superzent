@@ -31,7 +31,7 @@ use project::{
 use settings::{GitPanelChangesLayout, Settings as _, SettingsStore};
 use std::ops::Range;
 use ui::{ContextMenu, Scrollbars, Tooltip, WithScrollbar, prelude::*};
-use workspace::{Pane, Workspace, notifications::DetachAndPromptErr as _};
+use workspace::{Pane, PreviewTabsSettings, Workspace, notifications::DetachAndPromptErr as _};
 
 const ROW_GROUP: &str = "changes-view-row";
 
@@ -925,6 +925,7 @@ impl ChangesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let options = with_preview_setting(options, cx);
         let file = match row {
             ChangesRow::Header { section, .. } => {
                 self.toggle_section(*section, cx);
@@ -1054,6 +1055,7 @@ impl ChangesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let options = with_preview_setting(options, cx);
         self.latest_open += 1;
         self.preview_open = Task::ready(None);
         let Some(repository) = self.active_repository.clone() else {
@@ -1700,6 +1702,15 @@ fn display_file_name(repo_path: &RepoPath) -> String {
         .to_string()
 }
 
+/// A preview open is cancelled by the next one, but with preview tabs turned off every
+/// open adds a pinned tab, and dropping one would lose a tab the user asked for.
+fn with_preview_setting(options: OpenChangesDiff, cx: &App) -> OpenChangesDiff {
+    OpenChangesDiff {
+        preview: options.preview && PreviewTabsSettings::get_global(cx).enabled,
+        ..options
+    }
+}
+
 fn project_path_for(
     repository: &Entity<Repository>,
     repo_path: &RepoPath,
@@ -1895,7 +1906,7 @@ mod tests {
     use super::*;
     use editor::Editor;
     use git::status::{TrackedStatus, UnmergedStatus, UnmergedStatusCode};
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{TestAppContext, UpdateGlobal as _, VisualTestContext};
     use project::{FakeFs, Fs as _};
     use serde_json::json;
     use settings::SettingsStore;
@@ -2544,6 +2555,50 @@ mod tests {
                 .expect("a diff is open")
                 .tab_content_text(0, cx);
             assert_eq!(active_title, "b.txt (Working Tree)");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_clicks_open_pinned_tabs_when_preview_tabs_are_disabled(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(false);
+                })
+            });
+        });
+
+        view.update_in(cx, |view, window, cx| {
+            for (section, path) in [
+                (ChangesSection::Unstaged, "c.txt"),
+                (ChangesSection::Staged, "a.txt"),
+                (ChangesSection::Unstaged, "b.txt"),
+            ] {
+                let key = RowKey::File(section, RepoPath::new(path).expect("valid repo path"));
+                let row = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .cloned()
+                    .expect("row exists");
+                let options = OpenChangesDiff {
+                    preview: true,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let mut titles = workspace
+                .items(cx)
+                .map(|item| item.tab_content_text(0, cx).to_string())
+                .collect::<Vec<_>>();
+            titles.sort();
+            assert_eq!(titles, ["a.txt (Index)", "b.txt (Working Tree)", "c.txt"]);
         });
     }
 
