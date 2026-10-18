@@ -31,7 +31,7 @@ use project::{
 use settings::{GitPanelChangesLayout, Settings as _, SettingsStore};
 use std::ops::Range;
 use ui::{ContextMenu, Scrollbars, Tooltip, WithScrollbar, prelude::*};
-use workspace::{Workspace, notifications::DetachAndPromptErr as _};
+use workspace::{Pane, Workspace, notifications::DetachAndPromptErr as _};
 
 const ROW_GROUP: &str = "changes-view-row";
 
@@ -233,6 +233,14 @@ enum ChangesRow {
 enum RowKey {
     Header(ChangesSection),
     File(ChangesSection, RepoPath),
+}
+
+/// Opens can finish after the active repository or pane changed, so they keep what
+/// the row was opened against.
+struct OpenRequest {
+    id: usize,
+    repository: Entity<Repository>,
+    pane: Option<WeakEntity<Pane>>,
 }
 
 impl ChangesRow {
@@ -898,7 +906,7 @@ impl ChangesView {
         };
         let open_diff = ChangesDiffView::open(
             self.workspace.clone(),
-            repository,
+            repository.clone(),
             file.repo_path.clone(),
             kind,
             options,
@@ -907,12 +915,19 @@ impl ChangesView {
             cx,
         );
         let file = file.clone();
-        let open_id = self.latest_open;
+        let request = OpenRequest {
+            id: self.latest_open,
+            repository,
+            pane: self
+                .workspace
+                .read_with(cx, |workspace, _| workspace.active_pane().downgrade())
+                .ok(),
+        };
         let open = cx
             .spawn_in(window, async move |this, cx| match open_diff.await {
                 Err(error) if error.downcast_ref::<NotATextFile>().is_some() => {
                     this.update_in(cx, |this, window, cx| {
-                        this.open_without_diff(&file, kind, options, open_id, window, cx)
+                        this.open_without_diff(&file, kind, options, &request, window, cx)
                     })?
                 }
                 result => result,
@@ -939,13 +954,26 @@ impl ChangesView {
         file: &ChangedFile,
         kind: ChangesDiffKind,
         options: OpenChangesDiff,
-        open_id: usize,
+        request: &OpenRequest,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
         let path = file.repo_path.as_unix_str();
+        // The file may have changed while its diff was loading, and opening it is only
+        // right if it still matches the row.
+        let file = request
+            .repository
+            .read(cx)
+            .status_for_path(&file.repo_path)
+            .and_then(|entry| {
+                changed_files([entry])
+                    .into_iter()
+                    .find(|current| current.section == file.section)
+            })
+            .with_context(|| format!("{path} changed while it was being opened."))?;
+        let file = &file;
         // Opening a symlink shows its target, not the link that git tracks.
-        if self.is_symlink(file, cx) {
+        if self.is_symlink(file, &request.repository, cx) {
             anyhow::bail!("{path} is a symlink, so its changes can't be shown here.");
         }
         if file.change == FileChange::Deleted {
@@ -957,18 +985,14 @@ impl ChangesView {
                  staged version can't be shown here."
             );
         }
-        self.open_worktree_file(file, options, open_id, window, cx);
+        self.open_worktree_file(file, options, request, window, cx);
         Ok(())
     }
 
-    fn is_symlink(&self, file: &ChangedFile, cx: &App) -> bool {
-        self.active_repository
-            .as_ref()
-            .and_then(|repository| {
-                repository
-                    .read(cx)
-                    .repo_path_to_project_path(&file.repo_path, cx)
-            })
+    fn is_symlink(&self, file: &ChangedFile, repository: &Entity<Repository>, cx: &App) -> bool {
+        repository
+            .read(cx)
+            .repo_path_to_project_path(&file.repo_path, cx)
             .and_then(|project_path| self.project.read(cx).entry_for_path(&project_path, cx))
             .is_some_and(|entry| entry.canonical_path.is_some())
     }
@@ -982,25 +1006,33 @@ impl ChangesView {
     ) {
         self.latest_open += 1;
         self.preview_open = Task::ready(None);
-        self.open_worktree_file(file, options, self.latest_open, window, cx);
+        let Some(repository) = self.active_repository.clone() else {
+            return;
+        };
+        let request = OpenRequest {
+            id: self.latest_open,
+            repository,
+            pane: None,
+        };
+        self.open_worktree_file(file, options, &request, window, cx);
     }
 
     fn open_worktree_file(
         &mut self,
         file: &ChangedFile,
         options: OpenChangesDiff,
-        open_id: usize,
+        request: &OpenRequest,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if file.is_missing_from_worktree() {
             return;
         }
-        let Some(project_path) = self.active_repository.as_ref().and_then(|repository| {
-            repository
-                .read(cx)
-                .repo_path_to_project_path(&file.repo_path, cx)
-        }) else {
+        let Some(project_path) = request
+            .repository
+            .read(cx)
+            .repo_path_to_project_path(&file.repo_path, cx)
+        else {
             return;
         };
         // The file is only activated once it loads, so a slow one can't take over from
@@ -1008,7 +1040,7 @@ impl ChangesView {
         let Ok(open) = self.workspace.update(cx, |workspace, cx| {
             workspace.open_path_preview(
                 project_path,
-                None,
+                request.pane.clone(),
                 false,
                 options.preview,
                 false,
@@ -1018,6 +1050,7 @@ impl ChangesView {
         }) else {
             return;
         };
+        let open_id = request.id;
         let open = cx
             .spawn_in(window, async move |this, cx| {
                 let item = open.await?;
@@ -2841,6 +2874,134 @@ mod tests {
         workspace.read_with(cx, |workspace, cx| {
             assert!(workspace.active_item(cx).is_none());
         });
+    }
+
+    async fn setup_changed_binary(
+        cx: &mut TestAppContext,
+        index: &str,
+    ) -> (Entity<Workspace>, Entity<ChangesView>, VisualTestContext) {
+        let (fs, workspace, view, cx) = setup_repo(
+            cx,
+            json!({}),
+            &[("image.bin", "\0old")],
+            &[("image.bin", index)],
+        )
+        .await;
+        fs.insert_file(path!("/project/image.bin"), vec![0, 1, 2, 3])
+            .await;
+        cx.run_until_parked();
+        (workspace, view, cx)
+    }
+
+    fn open_request(view: &ChangesView) -> OpenRequest {
+        OpenRequest {
+            id: view.latest_open,
+            repository: view
+                .active_repository
+                .clone()
+                .expect("a repository is active"),
+            pane: None,
+        }
+    }
+
+    #[gpui::test]
+    async fn test_binary_fallbacks_recheck_the_file_status(cx: &mut TestAppContext) {
+        let (_workspace, view, mut cx) = setup_changed_binary(cx, "\0staged").await;
+        let cx = &mut cx;
+        // The row as it was before the file on disk changed after staging.
+        let stale_file = ChangedFile {
+            section: ChangesSection::Staged,
+            repo_path: RepoPath::new("image.bin").expect("valid repo path"),
+            change: FileChange::Modified,
+            status: tracked(StatusCode::Modified, StatusCode::Unmodified),
+            diff_stat: None,
+        };
+
+        let result = view.update_in(cx, |view, window, cx| {
+            let request = open_request(view);
+            let options = OpenChangesDiff {
+                preview: false,
+                focus: false,
+            };
+            view.open_without_diff(
+                &stale_file,
+                ChangesDiffKind::Index,
+                options,
+                &request,
+                window,
+                cx,
+            )
+        });
+
+        let error = result.expect_err("the staged version isn't on disk");
+        assert!(
+            error
+                .to_string()
+                .contains("has changed since it was staged"),
+            "{error}"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_binary_fallbacks_use_the_repository_they_were_opened_in(cx: &mut TestAppContext) {
+        let (workspace, view, mut cx) = setup_changed_binary(cx, "\0old").await;
+        let cx = &mut cx;
+        select_file(&view, ChangesSection::Unstaged, "image.bin", cx);
+
+        view.update_in(cx, |view, window, cx| {
+            let request = open_request(view);
+            let Some(ChangesRow::File(file)) = view.selected_changes_row().cloned() else {
+                panic!("a file is selected");
+            };
+            view.active_repository = None;
+            let options = OpenChangesDiff {
+                preview: false,
+                focus: false,
+            };
+            view.open_without_diff(
+                &file,
+                ChangesDiffKind::WorkingTree,
+                options,
+                &request,
+                window,
+                cx,
+            )
+        })
+        .expect("the file can be opened");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let title = workspace
+                .active_item(cx)
+                .expect("the file is opened")
+                .tab_content_text(0, cx);
+            assert_eq!(title, "image.bin");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_binary_fallbacks_open_in_the_pane_that_was_active_when_clicked(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, view, mut cx) = setup_changed_binary(cx, "\0old").await;
+        let cx = &mut cx;
+        let clicked_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        select_file(&view, ChangesSection::Unstaged, "image.bin", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        let other_pane = workspace.update_in(cx, |workspace, window, cx| {
+            let pane =
+                workspace.split_pane(clicked_pane.clone(), SplitDirection::Right, window, cx);
+            window.focus(&pane.focus_handle(cx), cx);
+            pane
+        });
+        cx.run_until_parked();
+
+        let item_counts =
+            [&clicked_pane, &other_pane].map(|pane| pane.read_with(cx, |pane, _| pane.items_len()));
+        assert_eq!(item_counts, [1, 0]);
     }
 
     #[gpui::test]
