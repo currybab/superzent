@@ -12,7 +12,7 @@ use file_icons::FileIcons;
 use git::{
     AddToGitignore, FileHistory, RestoreFile, StageFile, StageRange, ToggleStaged, UnstageFile,
     repository::RepoPath,
-    status::{FileStatus, StatusCode},
+    status::{DiffStat, FileStatus, StatusCode},
 };
 use gpui::{
     Action, AsyncApp, ClickEvent, Corner, DismissEvent, Div, Entity, FocusHandle, Focusable,
@@ -153,6 +153,7 @@ struct ChangedFile {
     repo_path: RepoPath,
     change: FileChange,
     status: FileStatus,
+    diff_stat: Option<DiffStat>,
 }
 
 impl ChangedFile {
@@ -255,11 +256,20 @@ fn changed_files(statuses: impl IntoIterator<Item = StatusEntry>) -> Vec<Changed
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     for entry in statuses {
+        // The stat compares HEAD with the working tree, which matches neither row of a
+        // partially staged file.
+        let is_partially_staged = matches!(
+            entry.status,
+            FileStatus::Tracked(tracked)
+                if tracked.index_status != StatusCode::Unmodified
+                    && tracked.worktree_status != StatusCode::Unmodified
+        );
         let file = |section, change| ChangedFile {
             section,
             repo_path: entry.repo_path.clone(),
             change,
             status: entry.status,
+            diff_stat: entry.diff_stat.filter(|_| !is_partially_staged),
         };
         match entry.status {
             FileStatus::Ignored => {}
@@ -902,8 +912,7 @@ impl ChangesView {
             .spawn_in(window, async move |this, cx| match open_diff.await {
                 Err(error) if error.downcast_ref::<NotATextFile>().is_some() => {
                     this.update_in(cx, |this, window, cx| {
-                        let activate = this.latest_open == open_id;
-                        this.open_without_diff(&file, kind, options, activate, window, cx)
+                        this.open_without_diff(&file, kind, options, open_id, window, cx)
                     })?
                 }
                 result => result,
@@ -930,7 +939,7 @@ impl ChangesView {
         file: &ChangedFile,
         kind: ChangesDiffKind,
         options: OpenChangesDiff,
-        activate: bool,
+        open_id: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
@@ -948,7 +957,7 @@ impl ChangesView {
                  staged version can't be shown here."
             );
         }
-        self.open_worktree_file(file, options, activate, window, cx);
+        self.open_worktree_file(file, options, open_id, window, cx);
         Ok(())
     }
 
@@ -973,14 +982,14 @@ impl ChangesView {
     ) {
         self.latest_open += 1;
         self.preview_open = Task::ready(None);
-        self.open_worktree_file(file, options, true, window, cx);
+        self.open_worktree_file(file, options, self.latest_open, window, cx);
     }
 
     fn open_worktree_file(
         &mut self,
         file: &ChangedFile,
         options: OpenChangesDiff,
-        activate: bool,
+        open_id: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -994,22 +1003,35 @@ impl ChangesView {
         }) else {
             return;
         };
-        let open = self.workspace.update(cx, |workspace, cx| {
+        // The file is only activated once it loads, so a slow one can't take over from
+        // a newer open.
+        let Ok(open) = self.workspace.update(cx, |workspace, cx| {
             workspace.open_path_preview(
                 project_path,
                 None,
-                options.focus && activate,
+                false,
                 options.preview,
-                activate,
+                false,
                 window,
                 cx,
             )
+        }) else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let item = open.await?;
+            this.update_in(cx, |this, window, cx| {
+                if this.latest_open != open_id {
+                    return Ok(());
+                }
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.activate_item(item.as_ref(), true, options.focus, window, cx);
+                })
+            })?
+        })
+        .detach_and_prompt_err("Failed to open file", window, cx, |error, _, _| {
+            Some(error.to_string())
         });
-        if let Ok(open) = open {
-            open.detach_and_prompt_err("Failed to open file", window, cx, |error, _, _| {
-                Some(error.to_string())
-            });
-        }
     }
 
     fn open_file_history(&mut self, _: &FileHistory, window: &mut Window, cx: &mut Context<Self>) {
@@ -1445,6 +1467,15 @@ impl ChangesView {
                         )
                     }),
             )
+            .when(GitPanelSettings::get_global(cx).diff_stats, |this| {
+                this.when_some(file.diff_stat, |this, stat| {
+                    this.child(ui::DiffStat::new(
+                        ("diff-stat", index),
+                        stat.added as usize,
+                        stat.deleted as usize,
+                    ))
+                })
+            })
             .child(self.row_actions(actions, selected))
             .child(
                 div().w_3().flex_none().child(
@@ -1891,6 +1922,43 @@ mod tests {
     }
 
     #[test]
+    fn diff_stats_are_only_kept_for_files_in_one_section() {
+        let stat = Some(DiffStat {
+            added: 2,
+            deleted: 1,
+        });
+        let with_stat = |path, status| StatusEntry {
+            diff_stat: stat,
+            ..status_entry(path, status)
+        };
+        let files = changed_files([
+            with_stat(
+                "a.txt",
+                tracked(StatusCode::Modified, StatusCode::Unmodified),
+            ),
+            with_stat(
+                "b.txt",
+                tracked(StatusCode::Unmodified, StatusCode::Modified),
+            ),
+            with_stat("c.txt", tracked(StatusCode::Modified, StatusCode::Modified)),
+        ]);
+        let diff_stats = files
+            .iter()
+            .map(|file| (file.repo_path.as_unix_str(), file.section, file.diff_stat))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            diff_stats,
+            [
+                ("a.txt", ChangesSection::Staged, stat),
+                ("c.txt", ChangesSection::Staged, None),
+                ("b.txt", ChangesSection::Unstaged, stat),
+                ("c.txt", ChangesSection::Unstaged, None),
+            ]
+        );
+    }
+
+    #[test]
     fn files_that_were_never_committed_have_no_history() {
         let files = changed_files([
             status_entry("a.txt", tracked(StatusCode::Added, StatusCode::Modified)),
@@ -2334,6 +2402,50 @@ mod tests {
                 .collect::<Vec<_>>();
             titles.sort();
             assert_eq!(titles, ["a.txt (Index)", "b.txt (Working Tree)"]);
+            let active_title = workspace
+                .active_item(cx)
+                .expect("a diff is open")
+                .tab_content_text(0, cx);
+            assert_eq!(active_title, "b.txt (Working Tree)");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_slower_older_file_opens_stay_behind_newer_ones(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+        let open = |section, path: &str, cx: &mut VisualTestContext| {
+            view.update_in(cx, |view, window, cx| {
+                let key = RowKey::File(section, RepoPath::new(path).expect("valid repo path"));
+                let row = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .cloned()
+                    .expect("row exists");
+                let options = OpenChangesDiff {
+                    preview: false,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            });
+        };
+        open(ChangesSection::Unstaged, "b.txt", cx);
+        cx.run_until_parked();
+
+        // Switching back to an open diff is immediate, so the untracked file, which
+        // opens as a file, finishes loading last.
+        open(ChangesSection::Unstaged, "c.txt", cx);
+        open(ChangesSection::Unstaged, "b.txt", cx);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let mut titles = workspace
+                .items(cx)
+                .map(|item| item.tab_content_text(0, cx))
+                .collect::<Vec<_>>();
+            titles.sort();
+            assert_eq!(titles, ["b.txt (Working Tree)", "c.txt"]);
             let active_title = workspace
                 .active_item(cx)
                 .expect("a diff is open")
