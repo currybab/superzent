@@ -1607,7 +1607,14 @@ async fn restore_from_index(
     // The diff's base text has normalized line endings, so the index's are read from
     // its raw entry. Otherwise the buffer would be saved with the working tree's.
     let index_line_ending = load_index_line_ending(repository, repo_path, cx).await?;
+    // Buffers keep a BOM out of their text and write it back on save, so one left in
+    // the index text would be saved twice.
+    let (index_text, index_has_bom) = match index_text.strip_prefix('\u{FEFF}') {
+        Some(text) => (text.to_string(), true),
+        None => (index_text, false),
+    };
     buffer.update(cx, |buffer, cx| {
+        buffer.set_has_bom(index_has_bom);
         buffer.set_text(index_text, cx);
         if let Some(line_ending) = index_line_ending {
             buffer.set_line_ending(line_ending, cx);
@@ -2330,6 +2337,47 @@ mod tests {
                 .expect("a.txt exists"),
             "one\r\ntwo\r\n"
         );
+    }
+
+    #[gpui::test]
+    async fn test_discard_restores_the_index_byte_order_mark(cx: &mut TestAppContext) {
+        let (fs, _workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({
+                "a.txt": "\u{FEFF}one\nthree\n",
+                "b.txt": "one\nthree\n",
+                "c.txt": "\u{FEFF}one\nthree\n",
+            }),
+            &[("a.txt", "one\n"), ("b.txt", "one\n"), ("c.txt", "one\n")],
+            &[
+                ("a.txt", "\u{FEFF}one\ntwo\n"),
+                ("b.txt", "\u{FEFF}one\ntwo\n"),
+                ("c.txt", "one\ntwo\n"),
+            ],
+        )
+        .await;
+        let cx = &mut cx;
+
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            select_file(&view, ChangesSection::Unstaged, name, cx);
+            view.update_in(cx, |view, window, cx| {
+                view.discard_selected(&RestoreFile { skip_prompt: true }, window, cx)
+            });
+            cx.run_until_parked();
+        }
+        for (name, expected) in [
+            ("a.txt", "\u{FEFF}one\ntwo\n"),
+            ("b.txt", "\u{FEFF}one\ntwo\n"),
+            ("c.txt", "one\ntwo\n"),
+        ] {
+            assert_eq!(
+                fs.load(&Path::new(path!("/project")).join(name))
+                    .await
+                    .expect("file exists"),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[gpui::test]
