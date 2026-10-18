@@ -730,6 +730,11 @@ impl ChangesView {
         if row.section() != ChangesSection::Unstaged {
             return;
         }
+        // The rows' paths belong to this repository even if another one becomes active
+        // while the prompt is open.
+        let Some(repository) = self.active_repository.clone() else {
+            return;
+        };
         let files = self.row_files(row);
         let message = match files.as_slice() {
             [] => return,
@@ -747,7 +752,7 @@ impl ChangesView {
             ),
         };
         if skip_prompt {
-            self.discard_files(files, window, cx);
+            self.discard_files(repository, files, window, cx);
             return;
         }
         let prompt = window.prompt(
@@ -761,20 +766,20 @@ impl ChangesView {
             if prompt.await? != 0 {
                 return anyhow::Ok(());
             }
-            this.update_in(cx, |this, window, cx| this.discard_files(files, window, cx))
+            this.update_in(cx, |this, window, cx| {
+                this.discard_files(repository, files, window, cx)
+            })
         })
         .detach_and_log_err(cx);
     }
 
     fn discard_files(
         &mut self,
+        repository: Entity<Repository>,
         files: Vec<ChangedFile>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repository) = self.active_repository.clone() else {
-            return;
-        };
         let project = self.project.clone();
         let (missing_from_index, in_index): (Vec<_>, Vec<_>) = files
             .into_iter()
@@ -2641,6 +2646,25 @@ mod tests {
                 .expect("a.txt exists"),
             "two\n"
         );
+    }
+
+    #[gpui::test]
+    async fn test_confirmed_discards_use_the_repository_they_were_prompted_in(
+        cx: &mut TestAppContext,
+    ) {
+        let (fs, _workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "c.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.discard_selected(&RestoreFile { skip_prompt: false }, window, cx);
+            view.active_repository = None;
+        });
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Discard");
+        cx.run_until_parked();
+
+        assert!(!fs.is_file(Path::new(path!("/project/c.txt"))).await);
     }
 
     #[gpui::test]
