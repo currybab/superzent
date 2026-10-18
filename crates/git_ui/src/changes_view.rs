@@ -1051,12 +1051,14 @@ impl ChangesView {
         else {
             return;
         };
+        // A closed pane would make the open fail, while `None` opens in the active one.
+        let pane = request.pane.clone().filter(|pane| pane.upgrade().is_some());
         // The file is only activated once it loads, so a slow one can't take over from
         // a newer open.
         let Ok(open) = self.workspace.update(cx, |workspace, cx| {
             workspace.open_path_preview(
                 project_path,
-                request.pane.clone(),
+                pane,
                 false,
                 options.preview,
                 false,
@@ -3066,6 +3068,47 @@ mod tests {
         let item_counts =
             [&clicked_pane, &other_pane].map(|pane| pane.read_with(cx, |pane, _| pane.items_len()));
         assert_eq!(item_counts, [1, 0]);
+    }
+
+    #[gpui::test]
+    async fn test_binary_fallbacks_open_in_the_active_pane_if_theirs_closed(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, view, mut cx) = setup_changed_binary(cx, "\0old").await;
+        let cx = &mut cx;
+        select_file(&view, ChangesSection::Unstaged, "image.bin", cx);
+
+        view.update_in(cx, |view, window, cx| {
+            let request = OpenRequest {
+                pane: Some(WeakEntity::new_invalid()),
+                ..open_request(view)
+            };
+            let Some(ChangesRow::File(file)) = view.selected_changes_row().cloned() else {
+                panic!("a file is selected");
+            };
+            let options = OpenChangesDiff {
+                preview: false,
+                focus: false,
+            };
+            view.open_without_diff(
+                &file,
+                ChangesDiffKind::WorkingTree,
+                options,
+                &request,
+                window,
+                cx,
+            )
+        })
+        .expect("the file can be opened");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let title = workspace
+                .active_item(cx)
+                .expect("the file is opened")
+                .tab_content_text(0, cx);
+            assert_eq!(title, "image.bin");
+        });
     }
 
     #[gpui::test]
