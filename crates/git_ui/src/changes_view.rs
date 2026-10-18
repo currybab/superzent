@@ -383,6 +383,7 @@ pub(crate) struct ChangesView {
     selected_row: Option<usize>,
     stage_anchor: Option<RepoPath>,
     preview_open: Task<Option<()>>,
+    latest_open: usize,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
@@ -426,6 +427,7 @@ impl ChangesView {
             selected_row: None,
             stage_anchor: None,
             preview_open: Task::ready(None),
+            latest_open: 0,
             context_menu: None,
             _subscriptions: subscriptions,
         };
@@ -866,6 +868,7 @@ impl ChangesView {
             self.open_file(file, options, window, cx);
             return;
         }
+        self.latest_open += 1;
         let Some(repository) = self.active_repository.clone() else {
             return;
         };
@@ -873,22 +876,36 @@ impl ChangesView {
             ChangesSection::Staged => ChangesDiffKind::Index,
             ChangesSection::Merge | ChangesSection::Unstaged => ChangesDiffKind::WorkingTree,
         };
+        // Pinned opens all finish, but one that loads after a newer open adds its tab
+        // without activating it.
+        let is_superseded = {
+            let this = cx.weak_entity();
+            let open_id = self.latest_open;
+            move |cx: &App| {
+                this.read_with(cx, |this, _| this.latest_open != open_id)
+                    .unwrap_or(true)
+            }
+        };
         let open_diff = ChangesDiffView::open(
             self.workspace.clone(),
             repository,
             file.repo_path.clone(),
             kind,
             options,
+            is_superseded,
             window,
             cx,
         );
         let file = file.clone();
+        let open_id = self.latest_open;
         let open = cx
             .spawn_in(window, async move |this, cx| match open_diff.await {
-                Err(error) if error.downcast_ref::<NotATextFile>().is_some() => this
-                    .update_in(cx, |this, window, cx| {
-                        this.open_without_diff(&file, kind, options, window, cx)
-                    })?,
+                Err(error) if error.downcast_ref::<NotATextFile>().is_some() => {
+                    this.update_in(cx, |this, window, cx| {
+                        let activate = this.latest_open == open_id;
+                        this.open_without_diff(&file, kind, options, activate, window, cx)
+                    })?
+                }
                 result => result,
             })
             .prompt_err("Failed to open diff", window, cx, |error, _, _| {
@@ -913,6 +930,7 @@ impl ChangesView {
         file: &ChangedFile,
         kind: ChangesDiffKind,
         options: OpenChangesDiff,
+        activate: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
@@ -930,7 +948,7 @@ impl ChangesView {
                  staged version can't be shown here."
             );
         }
-        self.open_file(file, options, window, cx);
+        self.open_worktree_file(file, options, activate, window, cx);
         Ok(())
     }
 
@@ -953,6 +971,19 @@ impl ChangesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.latest_open += 1;
+        self.preview_open = Task::ready(None);
+        self.open_worktree_file(file, options, true, window, cx);
+    }
+
+    fn open_worktree_file(
+        &mut self,
+        file: &ChangedFile,
+        options: OpenChangesDiff,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if file.is_missing_from_worktree() {
             return;
         }
@@ -967,9 +998,9 @@ impl ChangesView {
             workspace.open_path_preview(
                 project_path,
                 None,
-                options.focus,
+                options.focus && activate,
                 options.preview,
-                true,
+                activate,
                 window,
                 cx,
             )
@@ -2271,6 +2302,47 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_slower_older_pinned_opens_stay_behind_newer_ones(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        view.update_in(cx, |view, window, cx| {
+            for (section, path) in [
+                (ChangesSection::Staged, "a.txt"),
+                (ChangesSection::Unstaged, "b.txt"),
+            ] {
+                let key = RowKey::File(section, RepoPath::new(path).expect("valid repo path"));
+                let row = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .cloned()
+                    .expect("row exists");
+                let options = OpenChangesDiff {
+                    preview: false,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let mut titles = workspace
+                .items(cx)
+                .map(|item| item.tab_content_text(0, cx))
+                .collect::<Vec<_>>();
+            titles.sort();
+            assert_eq!(titles, ["a.txt (Index)", "b.txt (Working Tree)"]);
+            let active_title = workspace
+                .active_item(cx)
+                .expect("a diff is open")
+                .tab_content_text(0, cx);
+            assert_eq!(active_title, "b.txt (Working Tree)");
+        });
+    }
+
+    #[gpui::test]
     async fn test_diffs_open_in_the_pane_that_was_active_when_clicked(cx: &mut TestAppContext) {
         let (_fs, workspace, view, mut cx) = setup(cx).await;
         let cx = &mut cx;
@@ -2633,6 +2705,51 @@ mod tests {
         cx.run_until_parked();
 
         assert!(cx.has_pending_prompt());
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_binary_blobs_that_are_valid_utf8_are_not_diffed(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup_repo(
+            cx,
+            json!({ "replaced.bin": "new\n", "unstaged.bin": "new\n" }),
+            &[
+                ("deleted.bin", "\0\0old"),
+                ("replaced.bin", "\0\0old"),
+                ("unstaged.bin", "\0\0old"),
+            ],
+            &[("replaced.bin", "new\n"), ("unstaged.bin", "\0\0old")],
+        )
+        .await;
+        let cx = &mut cx;
+        let open = |section, name, cx: &mut VisualTestContext| {
+            select_file(&view, section, name, cx);
+            view.update_in(cx, |view, window, cx| {
+                view.open_selected(&menu::Confirm, window, cx)
+            });
+            cx.run_until_parked();
+        };
+        let active_title = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .map(|item| item.tab_content_text(0, cx).to_string())
+            })
+        };
+
+        open(ChangesSection::Staged, "deleted.bin", cx);
+        let (_, detail) = cx.pending_prompt().expect("an error is shown");
+        assert!(detail.contains("isn't a text file"), "{detail}");
+        cx.simulate_prompt_answer("Ok");
+        assert_eq!(active_title(cx), None);
+
+        open(ChangesSection::Staged, "replaced.bin", cx);
+        assert_eq!(active_title(cx).as_deref(), Some("replaced.bin"));
+
+        open(ChangesSection::Unstaged, "unstaged.bin", cx);
+        assert_eq!(active_title(cx).as_deref(), Some("unstaged.bin"));
         workspace.read_with(cx, |workspace, cx| {
             assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 0);
         });

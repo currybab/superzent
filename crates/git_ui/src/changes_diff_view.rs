@@ -10,8 +10,8 @@ use gpui::{
     Focusable, IntoElement, Render, Subscription, Task, WeakEntity, Window,
 };
 use language::{
-    Buffer, BufferEvent, Capability, DiskState, File, LanguageRegistry, LineEnding, Point,
-    ReplicaId, Rope, TextBuffer,
+    Buffer, BufferEvent, ByteContent, Capability, DiskState, FILE_ANALYSIS_BYTES, File,
+    LanguageRegistry, LineEnding, Point, ReplicaId, Rope, TextBuffer, analyze_byte_content,
 };
 use multi_buffer::{MultiBuffer, PathKey};
 use project::{Project, ProjectPath, WorktreeId, git_store::Repository};
@@ -110,6 +110,7 @@ impl ChangesDiffView {
         repo_path: RepoPath,
         kind: ChangesDiffKind,
         options: OpenChangesDiff,
+        is_superseded: impl Fn(&App) -> bool + 'static,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<()>> {
@@ -120,6 +121,7 @@ impl ChangesDiffView {
                 &repo_path,
                 kind,
                 options,
+                true,
                 window,
                 cx,
             );
@@ -154,6 +156,7 @@ impl ChangesDiffView {
             let language_registry = project.read_with(cx, |project, _| project.languages().clone());
 
             workspace.update_in(cx, |workspace, window, cx| {
+                let activate = !is_superseded(cx);
                 // Opening the same row again while it loads (e.g. a double-click) must
                 // not add a second tab once both loads finish.
                 if Self::activate_open_view(
@@ -162,6 +165,7 @@ impl ChangesDiffView {
                     &repo_path,
                     kind,
                     options,
+                    activate,
                     window,
                     cx,
                 ) {
@@ -192,15 +196,29 @@ impl ChangesDiffView {
                 } else {
                     None
                 };
-                workspace.add_item(
-                    pane,
-                    Box::new(view),
-                    destination_index,
-                    true,
-                    options.focus,
-                    window,
-                    cx,
-                );
+                if activate {
+                    workspace.add_item(
+                        pane,
+                        Box::new(view),
+                        destination_index,
+                        true,
+                        options.focus,
+                        window,
+                        cx,
+                    );
+                } else {
+                    pane.update(cx, |pane, cx| {
+                        pane.add_item_inner(
+                            Box::new(view),
+                            false,
+                            false,
+                            false,
+                            destination_index,
+                            window,
+                            cx,
+                        )
+                    });
+                }
             })
         })
     }
@@ -211,6 +229,7 @@ impl ChangesDiffView {
         repo_path: &RepoPath,
         kind: ChangesDiffKind,
         options: OpenChangesDiff,
+        activate: bool,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> bool {
@@ -220,12 +239,14 @@ impl ChangesDiffView {
         else {
             return false;
         };
-        workspace.activate_item(&existing, true, options.focus, window, cx);
+        if activate {
+            workspace.activate_item(&existing, true, options.focus, window, cx);
+        }
         if !options.preview {
             let item_id = existing.item_id();
-            workspace.active_pane().update(cx, |pane, _| {
-                pane.unpreview_item_if_preview(item_id);
-            });
+            if let Some(pane) = workspace.pane_for(&existing) {
+                pane.update(cx, |pane, _| pane.unpreview_item_if_preview(item_id));
+            }
         }
         true
     }
@@ -456,9 +477,13 @@ async fn load_diff_source(
     }
 }
 
-/// A missing base text means the blob is either absent or not text, and only the
+/// A missing base text means the blob is either absent or not UTF-8, and only the
 /// file's status tells the two apart. Diffing a binary blob as absent would show an
 /// empty or all-deleted file instead of the change.
+///
+/// Blobs are only checked for being UTF-8, so ones that are but still look binary
+/// (by the same heuristic the worktree uses to refuse opening a file) are treated as
+/// missing too, rather than diffed as text.
 fn is_missing_base_text(source: &DiffSource, status: FileStatus, cx: &App) -> bool {
     let FileStatus::Tracked(tracked) = status else {
         return false;
@@ -467,14 +492,28 @@ fn is_missing_base_text(source: &DiffSource, status: FileStatus, cx: &App) -> bo
     let in_index = tracked.index_status != StatusCode::Deleted;
     match source {
         DiffSource::WorkingTree { unstaged_diff, .. } => {
-            in_index && !unstaged_diff.read(cx).base_text_exists()
+            let unstaged_diff = unstaged_diff.read(cx);
+            let index_prefix = unstaged_diff.base_text_exists().then(|| {
+                unstaged_diff
+                    .base_text(cx)
+                    .chars()
+                    .take(FILE_ANALYSIS_BYTES)
+                    .collect::<String>()
+            });
+            in_index && !is_text(index_prefix.as_deref())
         }
         DiffSource::Index {
             index_text,
             head_text,
             ..
-        } => in_index && index_text.is_none() || in_head && head_text.is_none(),
+        } => {
+            in_index && !is_text(index_text.as_deref()) || in_head && !is_text(head_text.as_deref())
+        }
     }
+}
+
+fn is_text(text: Option<&str>) -> bool {
+    text.is_some_and(|text| analyze_byte_content(text.as_bytes()) != ByteContent::Binary)
 }
 
 async fn build_index_buffer(
