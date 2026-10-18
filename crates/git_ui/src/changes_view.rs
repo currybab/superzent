@@ -1018,20 +1018,28 @@ impl ChangesView {
         }) else {
             return;
         };
-        cx.spawn_in(window, async move |this, cx| {
-            let item = open.await?;
-            this.update_in(cx, |this, window, cx| {
-                if this.latest_open != open_id {
-                    return Ok(());
-                }
-                this.workspace.update(cx, |workspace, cx| {
-                    workspace.activate_item(item.as_ref(), true, options.focus, window, cx);
-                })
-            })?
-        })
-        .detach_and_prompt_err("Failed to open file", window, cx, |error, _, _| {
-            Some(error.to_string())
-        });
+        let open = cx
+            .spawn_in(window, async move |this, cx| {
+                let item = open.await?;
+                this.update_in(cx, |this, window, cx| {
+                    if this.latest_open != open_id {
+                        return Ok(());
+                    }
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.activate_item(item.as_ref(), true, options.focus, window, cx);
+                    })
+                })?
+            })
+            .prompt_err("Failed to open file", window, cx, |error, _, _| {
+                Some(error.to_string())
+            });
+        // Opening a preview replaces the pane's current one as soon as it loads, even
+        // without activating it, so a stale one is cancelled instead.
+        if options.preview {
+            self.preview_open = open;
+        } else {
+            open.detach();
+        }
     }
 
     fn open_file_history(&mut self, _: &FileHistory, window: &mut Window, cx: &mut Context<Self>) {
@@ -2451,6 +2459,44 @@ mod tests {
                 .expect("a diff is open")
                 .tab_content_text(0, cx);
             assert_eq!(active_title, "b.txt (Working Tree)");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_slower_older_file_previews_do_not_replace_newer_ones(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+        let preview = |section, path: &str, cx: &mut VisualTestContext| {
+            view.update_in(cx, |view, window, cx| {
+                let key = RowKey::File(section, RepoPath::new(path).expect("valid repo path"));
+                let row = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .cloned()
+                    .expect("row exists");
+                let options = OpenChangesDiff {
+                    preview: true,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            });
+        };
+        preview(ChangesSection::Unstaged, "b.txt", cx);
+        cx.run_until_parked();
+
+        // Switching back to an open diff is immediate, so the untracked file, which
+        // opens as a file, finishes loading last.
+        preview(ChangesSection::Unstaged, "c.txt", cx);
+        preview(ChangesSection::Unstaged, "b.txt", cx);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let titles = workspace
+                .items(cx)
+                .map(|item| item.tab_content_text(0, cx))
+                .collect::<Vec<_>>();
+            assert_eq!(titles, ["b.txt (Working Tree)"]);
         });
     }
 
