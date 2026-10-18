@@ -781,6 +781,17 @@ impl ChangesView {
         cx: &mut Context<Self>,
     ) {
         let project = self.project.clone();
+        // Files can be staged or reverted elsewhere while the prompt is open, and
+        // discarding by their old status would throw away newly staged contents.
+        let files = {
+            let repository = repository.read(cx);
+            files
+                .iter()
+                .filter_map(|file| repository.status_for_path(&file.repo_path))
+                .flat_map(|entry| changed_files([entry]))
+                .filter(|file| file.section == ChangesSection::Unstaged)
+                .collect::<Vec<_>>()
+        };
         let (missing_from_index, in_index): (Vec<_>, Vec<_>) = files
             .into_iter()
             .partition(ChangedFile::is_missing_from_index);
@@ -2665,6 +2676,35 @@ mod tests {
         cx.run_until_parked();
 
         assert!(!fs.is_file(Path::new(path!("/project/c.txt"))).await);
+    }
+
+    #[gpui::test]
+    async fn test_confirmed_discards_keep_changes_staged_while_prompting(cx: &mut TestAppContext) {
+        let (fs, _workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "b.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.discard_selected(&RestoreFile { skip_prompt: false }, window, cx)
+        });
+        cx.run_until_parked();
+        fs.set_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[
+                ("a.txt", "two\n".to_string()),
+                ("b.txt", "b staged\n".to_string()),
+            ],
+        );
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Discard");
+        cx.run_until_parked();
+
+        assert_eq!(
+            fs.load(Path::new(path!("/project/b.txt")))
+                .await
+                .expect("b.txt exists"),
+            "b staged\n"
+        );
     }
 
     #[gpui::test]
