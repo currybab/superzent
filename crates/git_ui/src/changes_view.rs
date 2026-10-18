@@ -894,11 +894,12 @@ impl ChangesView {
             .prompt_err("Failed to open diff", window, cx, |error, _, _| {
                 Some(error.to_string())
             });
+        // Replacing the task cancels the previous preview, so a slow file can't finish
+        // loading after a newer selection and take the active tab.
         if options.preview {
-            // Replacing the task cancels the previous preview, so a slow file can't
-            // finish loading after a newer selection and take its preview tab.
             self.preview_open = open;
         } else {
+            self.preview_open = Task::ready(None);
             open.detach();
         }
     }
@@ -1746,7 +1747,7 @@ mod tests {
     use std::{path::Path, sync::Arc};
     use theme::LoadThemes;
     use util::path;
-    use workspace::MultiWorkspace;
+    use workspace::{MultiWorkspace, SplitDirection};
 
     fn status_entry(path: &str, status: FileStatus) -> StatusEntry {
         StatusEntry {
@@ -2232,6 +2233,75 @@ mod tests {
                 .tab_content_text(0, cx);
             assert_eq!(title, "b.txt (Working Tree)");
         });
+    }
+
+    #[gpui::test]
+    async fn test_pinned_opens_win_over_slower_older_previews(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        view.update_in(cx, |view, window, cx| {
+            for (section, path, preview) in [
+                (ChangesSection::Staged, "a.txt", true),
+                (ChangesSection::Unstaged, "b.txt", false),
+            ] {
+                let key = RowKey::File(section, RepoPath::new(path).expect("valid repo path"));
+                let row = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .cloned()
+                    .expect("row exists");
+                let options = OpenChangesDiff {
+                    preview,
+                    focus: false,
+                };
+                view.open_row(&row, options, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let titles = workspace
+                .items(cx)
+                .map(|item| item.tab_content_text(0, cx))
+                .collect::<Vec<_>>();
+            assert_eq!(titles, ["b.txt (Working Tree)"]);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_diffs_open_in_the_pane_that_was_active_when_clicked(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+        let clicked_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        select_file(&view, ChangesSection::Staged, "a.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            let row = view
+                .selected_changes_row()
+                .cloned()
+                .expect("a row is selected");
+            let options = OpenChangesDiff {
+                preview: true,
+                focus: false,
+            };
+            view.open_row(&row, options, window, cx);
+        });
+        let other_pane = workspace.update_in(cx, |workspace, window, cx| {
+            let pane =
+                workspace.split_pane(clicked_pane.clone(), SplitDirection::Right, window, cx);
+            window.focus(&pane.focus_handle(cx), cx);
+            pane
+        });
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(workspace.active_pane(), &other_pane);
+        });
+        cx.run_until_parked();
+
+        let item_counts =
+            [&clicked_pane, &other_pane].map(|pane| pane.read_with(cx, |pane, _| pane.items_len()));
+        assert_eq!(item_counts, [1, 0]);
     }
 
     #[gpui::test]

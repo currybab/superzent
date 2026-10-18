@@ -114,7 +114,7 @@ impl ChangesDiffView {
         cx: &mut App,
     ) -> Task<Result<()>> {
         let activated = workspace.update(cx, |workspace, cx| {
-            Self::activate_open_view(
+            let activated = Self::activate_open_view(
                 workspace,
                 &repository,
                 &repo_path,
@@ -122,13 +122,16 @@ impl ChangesDiffView {
                 options,
                 window,
                 cx,
-            )
+            );
+            (activated, workspace.active_pane().downgrade())
         });
-        match activated {
-            Ok(true) => return Task::ready(Ok(())),
-            Ok(false) => {}
+        // The diff goes to the pane that was active when it was requested, like
+        // `Workspace::open_path_preview`, even if another one is focused while it loads.
+        let destination_pane = match activated {
+            Ok((true, _)) => return Task::ready(Ok(())),
+            Ok((false, pane)) => pane,
             Err(error) => return Task::ready(Err(error)),
-        }
+        };
 
         window.spawn(cx, async move |cx| {
             let project = workspace.update(cx, |workspace, _| workspace.project().clone())?;
@@ -179,7 +182,9 @@ impl ChangesDiffView {
                     )
                 });
 
-                let pane = workspace.active_pane().clone();
+                let pane = destination_pane
+                    .upgrade()
+                    .unwrap_or_else(|| workspace.active_pane().clone());
                 let destination_index = if options.preview {
                     pane.update(cx, |pane, cx| {
                         pane.replace_preview_item_id(view.item_id(), window, cx)
