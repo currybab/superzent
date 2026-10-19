@@ -937,6 +937,12 @@
     //
     // Default: false
     "show_count_badge": false,
+    // How the changes list is laid out.
+    //   "zed": Conflicts, Tracked and Untracked groups; clicking a file opens the project diff.
+    //   "vscode" (beta): "Staged Changes" and "Changes" sections; clicking a file opens a diff of just that file.
+    //
+    // Default: zed
+    "changes_layout": "zed",
     "scrollbar": {
       // When to show the scrollbar in the git panel.
       //

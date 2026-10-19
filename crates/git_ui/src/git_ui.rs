@@ -29,6 +29,8 @@ use crate::{git_panel::GitPanel, text_diff_view::TextDiffView};
 
 mod askpass_modal;
 pub mod branch_picker;
+mod changes_diff_view;
+mod changes_view;
 mod commit_modal;
 pub mod commit_tooltip;
 pub mod commit_view;

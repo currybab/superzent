@@ -5448,6 +5448,77 @@ mod tests {
         assert!(!left_dock_open(window, cx));
     }
 
+    #[gpui::test]
+    async fn test_superzent_changes_tab_focuses_the_vscode_changes_list(cx: &mut TestAppContext) {
+        let app_state = init_superzent_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().changes_layout =
+                        Some(settings::GitPanelChangesLayout::Vscode);
+                })
+            });
+        });
+        let fs = app_state.fs.as_fake();
+        fs.insert_tree(path!("/root"), json!({ ".git": {}, "a.txt": "changed" }))
+            .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/root/.git")),
+            &[("a.txt", "original".into())],
+        );
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        // The git panel debounces loading its entries.
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let show_tab = |show: fn(&mut Workspace, bool, &mut Window, &mut Context<Workspace>),
+                        cx: &mut TestAppContext| {
+            window
+                .update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        show(workspace, true, window, cx);
+                    })
+                })
+                .unwrap();
+            cx.run_until_parked();
+        };
+        let changes_list_focused = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |multi_workspace, window, cx| {
+                    let git_panel = multi_workspace
+                        .workspace()
+                        .read(cx)
+                        .panel::<git_ui::git_panel::GitPanel>(cx)
+                        .expect("git panel exists")
+                        .focus_handle(cx);
+                    git_panel.contains_focused(window, cx) && !git_panel.is_focused(window)
+                })
+                .unwrap()
+        };
+
+        show_tab(superzent_ui::show_superzent_changes_sidebar, cx);
+        assert!(changes_list_focused(cx));
+
+        // History focuses the git panel itself, so returning to Changes doesn't make
+        // the panel gain focus again.
+        show_tab(superzent_ui::show_superzent_history_sidebar, cx);
+        assert_eq!(right_sidebar_tab(window, cx), "history");
+        show_tab(superzent_ui::show_superzent_changes_sidebar, cx);
+        assert_eq!(right_sidebar_tab(window, cx), "changes");
+        assert!(changes_list_focused(cx));
+    }
+
     #[cfg(target_os = "macos")]
     #[gpui::test]
     async fn test_superzent_changes_cmd_w_closes_center_item_before_sidebar(
