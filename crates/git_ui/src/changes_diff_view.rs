@@ -687,9 +687,11 @@ impl Item for ChangesDiffView {
     }
 
     fn preserve_preview(&self, cx: &App) -> bool {
-        // The index snapshot is rewritten by us, never by the user.
-        self.kind == ChangesDiffKind::Index
-            || self.source.displayed_buffer().read(cx).preserve_preview()
+        let buffer = self.source.displayed_buffer().read(cx);
+        // The index snapshot is rewritten by us, never by the user. A working tree
+        // buffer that is still clean after an edit was reloaded from disk, e.g. by a
+        // discard or an agent changing the file, rather than typed into.
+        self.kind == ChangesDiffKind::Index || buffer.preserve_preview() || !buffer.is_dirty()
     }
 
     fn deactivated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
