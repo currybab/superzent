@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use editor::scroll::Autoscroll;
 use editor::{
-    Editor, EditorEvent, EditorSettings, MultiBufferOffset, SelectionEffects,
+    Editor, EditorEvent, EditorSettings, MAX_TAB_TITLE_LEN, MultiBufferOffset, SelectionEffects,
 };
 use gpui::{
     Action, App, ClipboardItem, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
@@ -26,8 +26,8 @@ use markdown::{
 use project::search::SearchQuery;
 use project::{Project, ProjectPath};
 use settings::{Settings, update_settings_file};
-use theme::{SystemAppearance, Theme, ThemeRegistry};
 use theme::ThemeSettings;
+use theme::{SystemAppearance, Theme, ThemeRegistry};
 use ui::utils::WithRemSize;
 use ui::{
     ContextMenu, LinkPreview, ScrollAxes, Scrollbars, WithScrollbar, prelude::*, right_click_menu,
@@ -36,7 +36,9 @@ use util::{
     ResultExt,
     markdown::{source_position_from_fragment, split_local_url_fragment},
 };
-use workspace::item::{Item, ItemBufferKind, ItemHandle, SaveOptions, SerializableItem};
+use workspace::item::{
+    Item, ItemBufferKind, ItemHandle, SaveOptions, SerializableItem, TabContentParams,
+};
 use workspace::notifications::NotifyResultExt;
 use workspace::searchable::{
     Direction, SearchEvent, SearchOptions, SearchToken, SearchableItem, SearchableItemHandle,
@@ -1395,14 +1397,58 @@ impl Item for MarkdownPreviewView {
         Some(Icon::new(IconName::FileDoc))
     }
 
-    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+    fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
+        let editor = self
+            .active_editor
+            .as_ref()
+            .map(|editor_state| editor_state.editor.read(cx));
+        let max_title_len = MAX_TAB_TITLE_LEN;
+
+        // Like editor tabs, the title is only the file name, since `tab_content_text` can be a
+        // full path for files outside the project. The directories needed to tell apart files
+        // with the same name are shown in the description.
+        let title = match editor {
+            Some(editor) => format!(
+                "Preview {}",
+                util::truncate_and_trailoff(&editor.title(cx), max_title_len)
+            ),
+            None => "Markdown Preview".to_string(),
+        };
+        let description = editor
+            .zip(params.detail)
+            .and_then(|(editor, detail)| editor.tab_description(detail, cx))
+            .map(|description| util::truncate_and_trailoff(&description, max_title_len));
+
+        h_flex()
+            .gap_1()
+            .child(Label::new(title).single_line().color(params.text_color()))
+            .when_some(description, |this, description| {
+                this.child(
+                    Label::new(description)
+                        .single_line()
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
         self.active_editor
             .as_ref()
             .map(|editor_state| {
-                let buffer = editor_state.editor.read(cx).buffer().read(cx);
-                let title = buffer.title(cx);
-                format!("Preview {}", title).into()
+                let title = editor_state.editor.read(cx).tab_content_text(detail, cx);
+                format!("Preview {title}").into()
             })
+            .unwrap_or_else(|| SharedString::from("Markdown Preview"))
+    }
+
+    // Save As writes the source file, so suggest its name rather than the tab text, which can be a
+    // full path for files outside the project.
+    fn suggested_filename(&self, cx: &App) -> SharedString {
+        self.active_editor
+            .as_ref()
+            .map(|editor_state| editor_state.editor.read(cx).suggested_filename(cx))
             .unwrap_or_else(|| SharedString::from("Markdown Preview"))
     }
 
@@ -2048,7 +2094,8 @@ mod tests {
     use util::test::TempTree;
     use workspace::item::{Item, ItemHandle, SerializableItem};
     use workspace::{
-        AppState, ItemId, MultiWorkspace, Pane, SaveIntent, Workspace, WorkspaceId, open_paths,
+        AppState, ItemId, MultiWorkspace, OpenOptions, OpenVisible, Pane, SaveIntent, Workspace,
+        WorkspaceId, open_paths,
     };
 
     use super::{
@@ -2099,6 +2146,101 @@ mod tests {
         assert_eq!(
             preview.read_with(cx, |preview, cx| preview.tab_tooltip_text(cx)),
             source_tooltip
+        );
+    }
+
+    #[gpui::test]
+    async fn preview_tabs_for_files_with_the_same_name_show_their_directory(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, _, multi_workspace) = markdown_workspace(
+            cx,
+            json!({
+                "docs": { "README.md": "# Docs\n" },
+                "guide": { "README.md": "# Guide\n" },
+            }),
+            false,
+        )
+        .await;
+        open_project_file(cx, &project, &multi_workspace, "docs/README.md", None, true).await;
+        let docs_preview = open_preview_for_active_editor(cx, &multi_workspace);
+        open_project_file(
+            cx,
+            &project,
+            &multi_workspace,
+            "guide/README.md",
+            None,
+            true,
+        )
+        .await;
+        open_preview_for_active_editor(cx, &multi_workspace);
+        cx.run_until_parked();
+
+        assert_eq!(
+            docs_preview.read_with(cx, |preview, cx| preview.tab_content_text(0, cx)),
+            "Preview README.md"
+        );
+
+        let mut preview_titles = multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let items = multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .active_pane()
+                    .read(cx)
+                    .items()
+                    .map(|item| item.boxed_clone())
+                    .collect::<Vec<_>>();
+                let details = workspace::tab_details(&items, window, cx);
+                items
+                    .iter()
+                    .zip(details)
+                    .filter(|(item, _)| item.downcast::<MarkdownPreviewView>().is_some())
+                    .map(|(item, detail)| item.tab_content_text(detail, cx).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        preview_titles.sort();
+
+        assert_eq!(
+            preview_titles,
+            [
+                format!("Preview {}", path!("docs/README.md")),
+                format!("Preview {}", path!("guide/README.md")),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn preview_suggests_source_file_name_for_file_outside_the_project(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) = markdown_workspace(cx, json!({}), false).await;
+        let fs = project.read_with(cx, |project, _| project.fs().as_fake());
+        fs.insert_tree(path!("/outside"), json!({ "README.md": "# Readme\n" }))
+            .await;
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.open_abs_path(
+                        PathBuf::from(path!("/outside/README.md")),
+                        OpenOptions {
+                            visible: Some(OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+            .await
+            .unwrap();
+        let preview = open_preview_for_active_editor(cx, &multi_workspace);
+
+        assert_eq!(
+            preview.read_with(cx, |preview, cx| preview.suggested_filename(cx)),
+            "README.md"
         );
     }
 
@@ -2747,7 +2889,9 @@ mod tests {
         let workspace_serialization_tasks = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
-                vec![workspace.update(cx, |workspace, cx| workspace.flush_serialization(window, cx))]
+                vec![workspace.update(cx, |workspace, cx| {
+                    workspace.flush_serialization(window, cx)
+                })]
             })
             .unwrap();
         for task in workspace_serialization_tasks {
@@ -2896,7 +3040,9 @@ mod tests {
         let workspace_serialization_tasks = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
-                vec![workspace.update(cx, |workspace, cx| workspace.flush_serialization(window, cx))]
+                vec![workspace.update(cx, |workspace, cx| {
+                    workspace.flush_serialization(window, cx)
+                })]
             })
             .unwrap();
         for task in workspace_serialization_tasks {
