@@ -1791,6 +1791,9 @@ async fn restore_from_index(
         if let Some(line_ending) = index_line_ending {
             buffer.set_line_ending(line_ending, cx);
         }
+        // A discard isn't the user editing the file, so a preview tab showing it stays
+        // a preview.
+        buffer.refresh_preview();
     });
     project
         .update(cx, |project, cx| project.save_buffer(buffer, cx))
@@ -1912,7 +1915,7 @@ mod tests {
     use settings::SettingsStore;
     use std::{path::Path, sync::Arc};
     use theme::LoadThemes;
-    use util::path;
+    use util::{path, rel_path::rel_path};
     use workspace::{MultiWorkspace, SplitDirection};
 
     fn status_entry(path: &str, status: FileStatus) -> StatusEntry {
@@ -2700,6 +2703,83 @@ mod tests {
             assert_eq!(workspace.items_of_type::<ChangesDiffView>(cx).count(), 1);
             assert_eq!(workspace.active_pane().read(cx).preview_item_id(), None);
         });
+    }
+
+    fn preview_title(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
+        workspace.read_with(cx, |workspace, cx| {
+            let pane = workspace.active_pane().read(cx);
+            let preview_id = pane.preview_item_id()?;
+            pane.items()
+                .find(|item| item.item_id() == preview_id)
+                .map(|item| item.tab_content_text(0, cx).to_string())
+        })
+    }
+
+    #[gpui::test]
+    async fn test_discarding_a_previewed_file_keeps_its_preview_tab(cx: &mut TestAppContext) {
+        let (_fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "a.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            preview_title(&workspace, cx).as_deref(),
+            Some("a.txt (Working Tree)")
+        );
+
+        view.update_in(cx, |view, window, cx| {
+            view.discard_selected(&RestoreFile { skip_prompt: true }, window, cx)
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            preview_title(&workspace, cx).as_deref(),
+            Some("a.txt (Working Tree)")
+        );
+    }
+
+    #[gpui::test]
+    async fn test_files_changing_on_disk_keep_their_preview_tab(cx: &mut TestAppContext) {
+        let (fs, workspace, view, mut cx) = setup(cx).await;
+        let cx = &mut cx;
+
+        select_file(&view, ChangesSection::Unstaged, "b.txt", cx);
+        view.update_in(cx, |view, window, cx| {
+            view.open_selected(&menu::Confirm, window, cx)
+        });
+        cx.run_until_parked();
+        fs.insert_file(path!("/project/b.txt"), b"b changed again\n".to_vec())
+            .await;
+        cx.run_until_parked();
+
+        assert_eq!(
+            preview_title(&workspace, cx).as_deref(),
+            Some("b.txt (Working Tree)")
+        );
+
+        // Typing into the diff still keeps the tab.
+        let buffer = workspace
+            .update(cx, |workspace, cx| {
+                let project = workspace.project().clone();
+                let worktree_id = project
+                    .read(cx)
+                    .worktrees(cx)
+                    .next()
+                    .expect("a worktree")
+                    .read(cx)
+                    .id();
+                project.update(cx, |project, cx| {
+                    project.open_buffer((worktree_id, rel_path("b.txt")), cx)
+                })
+            })
+            .await
+            .expect("b.txt opens");
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "typed ")], None, cx));
+        cx.run_until_parked();
+        assert_eq!(preview_title(&workspace, cx), None);
     }
 
     #[gpui::test]
