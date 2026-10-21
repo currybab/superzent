@@ -16,9 +16,9 @@ use git::{
 };
 use gpui::{
     Action, AsyncApp, ClickEvent, Corner, DismissEvent, Div, Entity, FocusHandle, Focusable,
-    FontWeight, KeyContext, MouseButton, MouseDownEvent, Point, PromptLevel, ScrollStrategy,
-    Stateful, Subscription, Task, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
-    uniform_list,
+    FontWeight, KeyContext, MouseButton, MouseDownEvent, MouseMoveEvent, Point, PromptLevel,
+    ScrollStrategy, ScrollWheelEvent, Stateful, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, actions, anchored, deferred, uniform_list,
 };
 use language::LineEnding;
 use project::{
@@ -31,7 +31,10 @@ use project::{
 use settings::{GitPanelChangesLayout, Settings as _, SettingsStore};
 use std::ops::Range;
 use ui::{ContextMenu, Scrollbars, Tooltip, WithScrollbar, prelude::*};
+
 use workspace::{Pane, PreviewTabsSettings, Workspace, notifications::DetachAndPromptErr as _};
+
+const ROW_HEIGHT: Rems = rems(1.75);
 
 actions!(
     git_panel,
@@ -1574,7 +1577,7 @@ impl ChangesView {
         let focused = self.focus_handle.is_focused(window);
         h_flex()
             .id(id)
-            .h(rems(1.75))
+            .h(ROW_HEIGHT)
             .w_full()
             .pl_2()
             .pr_1()
@@ -1588,9 +1591,6 @@ impl ChangesView {
             .when(selected, |this| this.bg(colors.ghost_element_selected))
             .hover(|style| style.bg(colors.ghost_element_hover))
             .cursor_pointer()
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.set_row_hovered(index, *hovered, cx);
-            }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.handle_row_click(index, event, window, cx);
             }))
@@ -1603,15 +1603,22 @@ impl ChangesView {
             )
     }
 
-    fn set_row_hovered(&mut self, index: usize, hovered: bool, cx: &mut Context<Self>) {
-        if hovered {
-            self.hovered_row = Some(index);
-        } else if self.hovered_row == Some(index) {
-            self.hovered_row = None;
-        } else {
-            return;
+    /// The hovered row is worked out from the pointer position rather than each row's
+    /// `on_hover`, because rows also move under a still pointer when the list scrolls,
+    /// and a row that was scrolled under the pointer never gets to report leaving it.
+    fn hover_row_under_mouse(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let hovered_row = {
+            let scroll_handle = &self.scroll_handle.0.borrow().base_handle;
+            let list_bounds = scroll_handle.bounds();
+            let mouse_position = window.mouse_position();
+            let offset_in_list = mouse_position.y - list_bounds.top() - scroll_handle.offset().y;
+            let index = (offset_in_list / ROW_HEIGHT.to_pixels(window.rem_size())).floor() as usize;
+            (list_bounds.contains(&mouse_position) && index < self.rows.len()).then_some(index)
+        };
+        if hovered_row != self.hovered_row {
+            self.hovered_row = hovered_row;
+            cx.notify();
         }
-        cx.notify();
     }
 
     /// Like VS Code, actions only take up room on the rows they apply to, so other rows
@@ -1852,6 +1859,18 @@ impl Render for ChangesView {
                     .on_action(cx.listener(Self::discard_selected))
                     .on_action(cx.listener(Self::add_to_gitignore))
             })
+            .on_hover(cx.listener(|this, _: &bool, window, cx| {
+                this.hover_row_under_mouse(window, cx);
+            }))
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, cx| {
+                this.hover_row_under_mouse(window, cx);
+            }))
+            .on_scroll_wheel(cx.listener(|_, _: &ScrollWheelEvent, window, cx| {
+                // Deferred so the list has applied the scroll.
+                cx.defer_in(window, |this, window, cx| {
+                    this.hover_row_under_mouse(window, cx)
+                });
+            }))
             .flex_1()
             .size_full()
             .overflow_hidden()
@@ -1905,7 +1924,10 @@ mod tests {
     use super::*;
     use editor::Editor;
     use git::status::{TrackedStatus, UnmergedStatus, UnmergedStatusCode};
-    use gpui::{Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext, point};
+    use gpui::{
+        Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, UpdateGlobal as _,
+        VisualTestContext, point, size,
+    };
     use project::{FakeFs, Fs as _};
     use serde_json::json;
     use settings::SettingsStore;
@@ -2235,36 +2257,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_row_actions_only_show_on_hovered_and_selected_rows(cx: &mut TestAppContext) {
-        let (_fs, _workspace, view, mut cx) = setup(cx).await;
-        let rows_with_actions = |view: &Entity<ChangesView>, cx: &mut VisualTestContext| {
-            view.read_with(cx, |view, _| {
-                (0..view.rows.len())
-                    .filter(|index| view.shows_row_actions(*index))
-                    .collect::<Vec<_>>()
-            })
-        };
-
-        assert_eq!(rows_with_actions(&view, &mut cx), Vec::<usize>::new());
-
-        view.update(&mut cx, |view, cx| view.set_row_hovered(1, true, cx));
-        assert_eq!(rows_with_actions(&view, &mut cx), [1]);
-
-        // Moving between rows can report entering the new row before leaving the old one.
-        view.update(&mut cx, |view, cx| {
-            view.set_row_hovered(2, true, cx);
-            view.set_row_hovered(1, false, cx);
-        });
-        assert_eq!(rows_with_actions(&view, &mut cx), [2]);
-
-        view.update(&mut cx, |view, cx| view.select_row(3, cx));
-        assert_eq!(rows_with_actions(&view, &mut cx), [2, 3]);
-
-        view.update(&mut cx, |view, cx| view.set_row_hovered(2, false, cx));
-        assert_eq!(rows_with_actions(&view, &mut cx), [3]);
-    }
-
-    #[gpui::test]
     async fn test_moving_the_mouse_over_rows_shows_their_actions(cx: &mut TestAppContext) {
         let (_fs, workspace, _view, mut workspace_cx) = setup(cx).await;
         let project = workspace.read_with(&mut workspace_cx, |workspace, _| {
@@ -2276,7 +2268,7 @@ mod tests {
         cx.run_until_parked();
         let (row_height, width) = cx.update(|window, _| {
             (
-                rems(1.75).to_pixels(window.rem_size()),
+                ROW_HEIGHT.to_pixels(window.rem_size()),
                 window.viewport_size().width,
             )
         });
@@ -2295,6 +2287,50 @@ mod tests {
         assert_eq!(hover_row(5, px(40.), cx), [5]);
         // The actions sit at the end of the row, and pointing at them keeps them shown.
         assert_eq!(hover_row(5, width - px(40.), cx), [5]);
+        assert_eq!(hover_row(10, px(40.), cx), Vec::<usize>::new());
+
+        view.update(cx, |view, cx| view.select_row(3, cx));
+        assert_eq!(hover_row(10, px(40.), cx), [3]);
+        assert_eq!(hover_row(5, px(40.), cx), [3, 5]);
+    }
+
+    #[gpui::test]
+    async fn test_scrolling_under_a_still_mouse_moves_the_row_actions(cx: &mut TestAppContext) {
+        let (_fs, workspace, _view, mut workspace_cx) = setup(cx).await;
+        let project = workspace.read_with(&mut workspace_cx, |workspace, _| {
+            workspace.project().clone()
+        });
+        let workspace = workspace.downgrade();
+        let (view, cx) =
+            cx.add_window_view(|window, cx| ChangesView::new(project, workspace, window, cx));
+        let row_height = cx.update(|window, _| ROW_HEIGHT.to_pixels(window.rem_size()));
+        cx.simulate_resize(size(px(400.), row_height * 3.));
+        cx.run_until_parked();
+        let rows_with_actions = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                (0..view.rows.len())
+                    .filter(|index| view.shows_row_actions(*index))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        let position = point(px(40.), row_height * 1.5);
+        cx.simulate_mouse_move(position, None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [1]);
+
+        cx.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.), -row_height * 2.)),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [3]);
+
+        // Leaving right after the scroll, without moving within the new row first.
+        cx.simulate_mouse_move(point(px(500.), position.y), None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), Vec::<usize>::new());
     }
 
     #[gpui::test]
