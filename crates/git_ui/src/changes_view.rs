@@ -1550,15 +1550,18 @@ impl ChangesView {
                         Label::new(file_name)
                             .single_line()
                             .when(is_deleted, Label::strikethrough)
-                            .flex_none(),
+                            .truncate(),
                     )
                     .when_some(parent, |this, parent| {
+                        // A zero flex basis gives the directory only the space the file
+                        // name leaves, so it disappears before the name gets truncated.
                         this.child(
                             Label::new(parent)
                                 .size(LabelSize::Small)
                                 .color(Color::Muted)
                                 .single_line()
-                                .truncate(),
+                                .truncate()
+                                .flex_1(),
                         )
                     }),
             )
