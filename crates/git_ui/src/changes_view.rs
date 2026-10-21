@@ -12,7 +12,7 @@ use file_icons::FileIcons;
 use git::{
     AddToGitignore, FileHistory, RestoreFile, StageFile, StageRange, ToggleStaged, UnstageFile,
     repository::RepoPath,
-    status::{DiffStat, FileStatus, StatusCode},
+    status::{FileStatus, StatusCode},
 };
 use gpui::{
     Action, AsyncApp, ClickEvent, Corner, DismissEvent, Div, Entity, FocusHandle, Focusable,
@@ -32,8 +32,6 @@ use settings::{GitPanelChangesLayout, Settings as _, SettingsStore};
 use std::ops::Range;
 use ui::{ContextMenu, Scrollbars, Tooltip, WithScrollbar, prelude::*};
 use workspace::{Pane, PreviewTabsSettings, Workspace, notifications::DetachAndPromptErr as _};
-
-const ROW_GROUP: &str = "changes-view-row";
 
 actions!(
     git_panel,
@@ -153,7 +151,6 @@ struct ChangedFile {
     repo_path: RepoPath,
     change: FileChange,
     status: FileStatus,
-    diff_stat: Option<DiffStat>,
 }
 
 impl ChangedFile {
@@ -264,20 +261,11 @@ fn changed_files(statuses: impl IntoIterator<Item = StatusEntry>) -> Vec<Changed
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     for entry in statuses {
-        // The stat compares HEAD with the working tree, which matches neither row of a
-        // partially staged file.
-        let is_partially_staged = matches!(
-            entry.status,
-            FileStatus::Tracked(tracked)
-                if tracked.index_status != StatusCode::Unmodified
-                    && tracked.worktree_status != StatusCode::Unmodified
-        );
         let file = |section, change| ChangedFile {
             section,
             repo_path: entry.repo_path.clone(),
             change,
             status: entry.status,
-            diff_stat: entry.diff_stat.filter(|_| !is_partially_staged),
         };
         match entry.status {
             FileStatus::Ignored => {}
@@ -399,6 +387,7 @@ pub(crate) struct ChangesView {
     rows: Vec<ChangesRow>,
     collapsed_sections: HashSet<ChangesSection>,
     selected_row: Option<usize>,
+    hovered_row: Option<usize>,
     stage_anchor: Option<RepoPath>,
     preview_open: Task<Option<()>>,
     latest_open: usize,
@@ -443,6 +432,7 @@ impl ChangesView {
             rows: Vec::new(),
             collapsed_sections: HashSet::default(),
             selected_row: None,
+            hovered_row: None,
             stage_anchor: None,
             preview_open: Task::ready(None),
             latest_open: 0,
@@ -1443,7 +1433,7 @@ impl ChangesView {
                     .single_line(),
             )
             .child(div().flex_1())
-            .child(self.row_actions(actions, selected))
+            .children(self.row_actions(actions, index))
             .child(
                 Label::new(file_count.to_string())
                     .size(LabelSize::XSmall)
@@ -1471,11 +1461,9 @@ impl ChangesView {
                     .display(self.project.read(cx).path_style(cx))
                     .to_string()
             });
-        let icon = GitPanelSettings::get_global(cx).file_icons.then(|| {
-            FileIcons::get_icon(file.repo_path.as_std_path(), cx)
-                .map(Icon::from_path)
-                .unwrap_or_else(|| Icon::new(IconName::File))
-        });
+        let icon = FileIcons::get_icon(file.repo_path.as_std_path(), cx)
+            .map(Icon::from_path)
+            .unwrap_or_else(|| Icon::new(IconName::File));
         let is_deleted = file.change == FileChange::Deleted;
 
         let open_file = (!file.is_missing_from_worktree()).then(|| {
@@ -1538,9 +1526,7 @@ impl ChangesView {
         self.row_container(("changes-file", index), index, selected, window, cx)
             .pl_5()
             .tooltip(Tooltip::text(tooltip_text))
-            .when_some(icon, |this, icon| {
-                this.child(icon.size(IconSize::Small).color(Color::Muted))
-            })
+            .child(icon.size(IconSize::Small).color(Color::Muted))
             .child(
                 h_flex()
                     .min_w_0()
@@ -1565,16 +1551,7 @@ impl ChangesView {
                         )
                     }),
             )
-            .when(GitPanelSettings::get_global(cx).diff_stats, |this| {
-                this.when_some(file.diff_stat, |this, stat| {
-                    this.child(ui::DiffStat::new(
-                        ("diff-stat", index),
-                        stat.added as usize,
-                        stat.deleted as usize,
-                    ))
-                })
-            })
-            .child(self.row_actions(actions, selected))
+            .children(self.row_actions(actions, index))
             .child(
                 div().w_3().flex_none().child(
                     Label::new(file.change.letter())
@@ -1597,7 +1574,6 @@ impl ChangesView {
         let focused = self.focus_handle.is_focused(window);
         h_flex()
             .id(id)
-            .group(ROW_GROUP)
             .h(rems(1.75))
             .w_full()
             .pl_2()
@@ -1612,6 +1588,9 @@ impl ChangesView {
             .when(selected, |this| this.bg(colors.ghost_element_selected))
             .hover(|style| style.bg(colors.ghost_element_hover))
             .cursor_pointer()
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.set_row_hovered(index, *hovered, cx);
+            }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.handle_row_click(index, event, window, cx);
             }))
@@ -1624,12 +1603,26 @@ impl ChangesView {
             )
     }
 
-    fn row_actions(&self, actions: Vec<AnyElement>, selected: bool) -> impl IntoElement {
-        h_flex()
-            .flex_none()
-            .gap_0p5()
-            .when(!selected, |this| this.visible_on_hover(ROW_GROUP))
-            .children(actions)
+    fn set_row_hovered(&mut self, index: usize, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            self.hovered_row = Some(index);
+        } else if self.hovered_row == Some(index) {
+            self.hovered_row = None;
+        } else {
+            return;
+        }
+        cx.notify();
+    }
+
+    /// Like VS Code, actions only take up room on the rows they apply to, so other rows
+    /// have more room for their file names.
+    fn shows_row_actions(&self, index: usize) -> bool {
+        self.selected_row == Some(index) || self.hovered_row == Some(index)
+    }
+
+    fn row_actions(&self, actions: Vec<AnyElement>, index: usize) -> Option<impl IntoElement> {
+        self.shows_row_actions(index)
+            .then(|| h_flex().flex_none().gap_0p5().children(actions))
     }
 
     fn row_action_button(
@@ -1912,7 +1905,7 @@ mod tests {
     use super::*;
     use editor::Editor;
     use git::status::{TrackedStatus, UnmergedStatus, UnmergedStatusCode};
-    use gpui::{TestAppContext, UpdateGlobal as _, VisualTestContext};
+    use gpui::{Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext, point};
     use project::{FakeFs, Fs as _};
     use serde_json::json;
     use settings::SettingsStore;
@@ -2029,43 +2022,6 @@ mod tests {
         assert!(!staged_addition.is_intent_to_add());
         assert!(!staged_addition.is_missing_from_index());
         assert!(!unstaged_change.is_missing_from_index());
-    }
-
-    #[test]
-    fn diff_stats_are_only_kept_for_files_in_one_section() {
-        let stat = Some(DiffStat {
-            added: 2,
-            deleted: 1,
-        });
-        let with_stat = |path, status| StatusEntry {
-            diff_stat: stat,
-            ..status_entry(path, status)
-        };
-        let files = changed_files([
-            with_stat(
-                "a.txt",
-                tracked(StatusCode::Modified, StatusCode::Unmodified),
-            ),
-            with_stat(
-                "b.txt",
-                tracked(StatusCode::Unmodified, StatusCode::Modified),
-            ),
-            with_stat("c.txt", tracked(StatusCode::Modified, StatusCode::Modified)),
-        ]);
-        let diff_stats = files
-            .iter()
-            .map(|file| (file.repo_path.as_unix_str(), file.section, file.diff_stat))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            diff_stats,
-            [
-                ("a.txt", ChangesSection::Staged, stat),
-                ("c.txt", ChangesSection::Staged, None),
-                ("b.txt", ChangesSection::Unstaged, stat),
-                ("c.txt", ChangesSection::Unstaged, None),
-            ]
-        );
     }
 
     #[test]
@@ -2276,6 +2232,69 @@ mod tests {
                 .expect("row exists");
             view.select_row(index, cx);
         });
+    }
+
+    #[gpui::test]
+    async fn test_row_actions_only_show_on_hovered_and_selected_rows(cx: &mut TestAppContext) {
+        let (_fs, _workspace, view, mut cx) = setup(cx).await;
+        let rows_with_actions = |view: &Entity<ChangesView>, cx: &mut VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                (0..view.rows.len())
+                    .filter(|index| view.shows_row_actions(*index))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        assert_eq!(rows_with_actions(&view, &mut cx), Vec::<usize>::new());
+
+        view.update(&mut cx, |view, cx| view.set_row_hovered(1, true, cx));
+        assert_eq!(rows_with_actions(&view, &mut cx), [1]);
+
+        // Moving between rows can report entering the new row before leaving the old one.
+        view.update(&mut cx, |view, cx| {
+            view.set_row_hovered(2, true, cx);
+            view.set_row_hovered(1, false, cx);
+        });
+        assert_eq!(rows_with_actions(&view, &mut cx), [2]);
+
+        view.update(&mut cx, |view, cx| view.select_row(3, cx));
+        assert_eq!(rows_with_actions(&view, &mut cx), [2, 3]);
+
+        view.update(&mut cx, |view, cx| view.set_row_hovered(2, false, cx));
+        assert_eq!(rows_with_actions(&view, &mut cx), [3]);
+    }
+
+    #[gpui::test]
+    async fn test_moving_the_mouse_over_rows_shows_their_actions(cx: &mut TestAppContext) {
+        let (_fs, workspace, _view, mut workspace_cx) = setup(cx).await;
+        let project = workspace.read_with(&mut workspace_cx, |workspace, _| {
+            workspace.project().clone()
+        });
+        let workspace = workspace.downgrade();
+        let (view, cx) =
+            cx.add_window_view(|window, cx| ChangesView::new(project, workspace, window, cx));
+        cx.run_until_parked();
+        let (row_height, width) = cx.update(|window, _| {
+            (
+                rems(1.75).to_pixels(window.rem_size()),
+                window.viewport_size().width,
+            )
+        });
+        let hover_row = |index: usize, x: Pixels, cx: &mut VisualTestContext| {
+            let y = row_height * (index as f32 + 0.5);
+            cx.simulate_mouse_move(point(x, y), None, Modifiers::none());
+            cx.run_until_parked();
+            view.read_with(cx, |view, _| {
+                (0..view.rows.len())
+                    .filter(|index| view.shows_row_actions(*index))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        assert_eq!(hover_row(4, px(40.), cx), [4]);
+        assert_eq!(hover_row(5, px(40.), cx), [5]);
+        // The actions sit at the end of the row, and pointing at them keeps them shown.
+        assert_eq!(hover_row(5, width - px(40.), cx), [5]);
     }
 
     #[gpui::test]
@@ -3220,7 +3239,6 @@ mod tests {
             repo_path: RepoPath::new("image.bin").expect("valid repo path"),
             change: FileChange::Modified,
             status: tracked(StatusCode::Modified, StatusCode::Unmodified),
-            diff_stat: None,
         };
 
         let result = view.update_in(cx, |view, window, cx| {
