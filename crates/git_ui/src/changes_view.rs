@@ -17,8 +17,8 @@ use git::{
 use gpui::{
     Action, AsyncApp, ClickEvent, Corner, DismissEvent, Div, Entity, FocusHandle, Focusable,
     FontWeight, KeyContext, MouseButton, MouseDownEvent, MouseMoveEvent, Point, PromptLevel,
-    ScrollStrategy, ScrollWheelEvent, Stateful, Subscription, Task, UniformListScrollHandle,
-    WeakEntity, actions, anchored, deferred, uniform_list,
+    ScrollStrategy, Stateful, Subscription, Task, UniformListScrollHandle, WeakEntity, actions,
+    anchored, deferred, uniform_list,
 };
 use language::LineEnding;
 use project::{
@@ -1606,15 +1606,17 @@ impl ChangesView {
     /// The hovered row is worked out from the pointer position rather than each row's
     /// `on_hover`, because rows also move under a still pointer when the list scrolls,
     /// and a row that was scrolled under the pointer never gets to report leaving it.
+    fn row_under_mouse(&self, window: &Window) -> Option<usize> {
+        let scroll_handle = &self.scroll_handle.0.borrow().base_handle;
+        let list_bounds = scroll_handle.bounds();
+        let mouse_position = window.mouse_position();
+        let offset_in_list = mouse_position.y - list_bounds.top() - scroll_handle.offset().y;
+        let index = (offset_in_list / ROW_HEIGHT.to_pixels(window.rem_size())).floor() as usize;
+        (list_bounds.contains(&mouse_position) && index < self.rows.len()).then_some(index)
+    }
+
     fn hover_row_under_mouse(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let hovered_row = {
-            let scroll_handle = &self.scroll_handle.0.borrow().base_handle;
-            let list_bounds = scroll_handle.bounds();
-            let mouse_position = window.mouse_position();
-            let offset_in_list = mouse_position.y - list_bounds.top() - scroll_handle.offset().y;
-            let index = (offset_in_list / ROW_HEIGHT.to_pixels(window.rem_size())).floor() as usize;
-            (list_bounds.contains(&mouse_position) && index < self.rows.len()).then_some(index)
-        };
+        let hovered_row = self.row_under_mouse(window);
         if hovered_row != self.hovered_row {
             self.hovered_row = hovered_row;
             cx.notify();
@@ -1865,12 +1867,6 @@ impl Render for ChangesView {
             .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, cx| {
                 this.hover_row_under_mouse(window, cx);
             }))
-            .on_scroll_wheel(cx.listener(|_, _: &ScrollWheelEvent, window, cx| {
-                // Deferred so the list has applied the scroll.
-                cx.defer_in(window, |this, window, cx| {
-                    this.hover_row_under_mouse(window, cx)
-                });
-            }))
             .flex_1()
             .size_full()
             .overflow_hidden()
@@ -1879,6 +1875,10 @@ impl Render for ChangesView {
                     "changes-view-rows",
                     self.rows.len(),
                     cx.processor(move |this, range: Range<usize>, window, cx| {
+                        // The list has applied any scroll by now, whether it came from the
+                        // wheel or from keyboard navigation, so this catches rows that
+                        // moved under a still pointer.
+                        this.hovered_row = this.row_under_mouse(window);
                         range
                             .filter_map(|index| {
                                 let selected = this.selected_row == Some(index);
@@ -2331,6 +2331,15 @@ mod tests {
         cx.simulate_mouse_move(point(px(500.), position.y), None, Modifiers::none());
         cx.run_until_parked();
         assert_eq!(rows_with_actions(cx), Vec::<usize>::new());
+
+        cx.simulate_mouse_move(position, None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [3]);
+
+        // Selecting a row past the bottom scrolls the list without a scroll wheel event.
+        view.update(cx, |view, cx| view.select_row(5, cx));
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [4, 5]);
     }
 
     #[gpui::test]
