@@ -33,6 +33,14 @@ Shortcuts that differ from upstream Zed:
 
 On macOS, the notification shortcuts are registered as global hotkeys while a popup is visible, so they work even when superzent is not the focused app. Without a popup, `Ctrl+Cmd+Enter` cycles through agent terminals needing approval, then review, oldest first.
 
+## VS Code-style Changes (Beta)
+
+The git panel can lay out its changes list the way VS Code does. Pick **Switch to VS Code Layout (Beta)** from the git panel's menu, or set `"git_panel": { "changes_layout": "vscode" }`.
+
+- "Staged Changes" and "Changes" sections, plus "Merge Changes" while there are conflicts
+- Stage, unstage, discard, and open-file actions show up on the hovered or selected row, so other rows keep their full width for file names
+- Clicking a file opens a diff of just that file
+
 ## Status
 
 This repository is in early alpha.
