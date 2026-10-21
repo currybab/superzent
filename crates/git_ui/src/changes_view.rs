@@ -1464,9 +1464,11 @@ impl ChangesView {
                     .display(self.project.read(cx).path_style(cx))
                     .to_string()
             });
-        let icon = FileIcons::get_icon(file.repo_path.as_std_path(), cx)
-            .map(Icon::from_path)
-            .unwrap_or_else(|| Icon::new(IconName::File));
+        let icon = GitPanelSettings::get_global(cx).file_icons.then(|| {
+            FileIcons::get_icon(file.repo_path.as_std_path(), cx)
+                .map(Icon::from_path)
+                .unwrap_or_else(|| Icon::new(IconName::File))
+        });
         let is_deleted = file.change == FileChange::Deleted;
 
         let open_file = (!file.is_missing_from_worktree()).then(|| {
@@ -1529,7 +1531,9 @@ impl ChangesView {
         self.row_container(("changes-file", index), index, selected, window, cx)
             .pl_5()
             .tooltip(Tooltip::text(tooltip_text))
-            .child(icon.size(IconSize::Small).color(Color::Muted))
+            .when_some(icon, |this, icon| {
+                this.child(icon.size(IconSize::Small).color(Color::Muted))
+            })
             .child(
                 h_flex()
                     .min_w_0()
