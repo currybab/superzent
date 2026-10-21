@@ -12,13 +12,13 @@ use file_icons::FileIcons;
 use git::{
     AddToGitignore, FileHistory, RestoreFile, StageFile, StageRange, ToggleStaged, UnstageFile,
     repository::RepoPath,
-    status::{DiffStat, FileStatus, StatusCode},
+    status::{FileStatus, StatusCode},
 };
 use gpui::{
     Action, AsyncApp, ClickEvent, Corner, DismissEvent, Div, Entity, FocusHandle, Focusable,
-    FontWeight, KeyContext, MouseButton, MouseDownEvent, Point, PromptLevel, ScrollStrategy,
-    Stateful, Subscription, Task, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
-    uniform_list,
+    FontWeight, KeyContext, MouseButton, MouseDownEvent, MouseMoveEvent, Point, PromptLevel,
+    ScrollStrategy, Stateful, Subscription, Task, UniformListScrollHandle, WeakEntity, actions,
+    anchored, deferred, uniform_list,
 };
 use language::LineEnding;
 use project::{
@@ -31,9 +31,10 @@ use project::{
 use settings::{GitPanelChangesLayout, Settings as _, SettingsStore};
 use std::ops::Range;
 use ui::{ContextMenu, Scrollbars, Tooltip, WithScrollbar, prelude::*};
+
 use workspace::{Pane, PreviewTabsSettings, Workspace, notifications::DetachAndPromptErr as _};
 
-const ROW_GROUP: &str = "changes-view-row";
+const ROW_HEIGHT: Rems = rems(1.75);
 
 actions!(
     git_panel,
@@ -153,7 +154,6 @@ struct ChangedFile {
     repo_path: RepoPath,
     change: FileChange,
     status: FileStatus,
-    diff_stat: Option<DiffStat>,
 }
 
 impl ChangedFile {
@@ -264,20 +264,11 @@ fn changed_files(statuses: impl IntoIterator<Item = StatusEntry>) -> Vec<Changed
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     for entry in statuses {
-        // The stat compares HEAD with the working tree, which matches neither row of a
-        // partially staged file.
-        let is_partially_staged = matches!(
-            entry.status,
-            FileStatus::Tracked(tracked)
-                if tracked.index_status != StatusCode::Unmodified
-                    && tracked.worktree_status != StatusCode::Unmodified
-        );
         let file = |section, change| ChangedFile {
             section,
             repo_path: entry.repo_path.clone(),
             change,
             status: entry.status,
-            diff_stat: entry.diff_stat.filter(|_| !is_partially_staged),
         };
         match entry.status {
             FileStatus::Ignored => {}
@@ -399,6 +390,7 @@ pub(crate) struct ChangesView {
     rows: Vec<ChangesRow>,
     collapsed_sections: HashSet<ChangesSection>,
     selected_row: Option<usize>,
+    hovered_row: Option<usize>,
     stage_anchor: Option<RepoPath>,
     preview_open: Task<Option<()>>,
     latest_open: usize,
@@ -443,6 +435,7 @@ impl ChangesView {
             rows: Vec::new(),
             collapsed_sections: HashSet::default(),
             selected_row: None,
+            hovered_row: None,
             stage_anchor: None,
             preview_open: Task::ready(None),
             latest_open: 0,
@@ -1443,7 +1436,7 @@ impl ChangesView {
                     .single_line(),
             )
             .child(div().flex_1())
-            .child(self.row_actions(actions, selected))
+            .children(self.row_actions(actions, index))
             .child(
                 Label::new(file_count.to_string())
                     .size(LabelSize::XSmall)
@@ -1550,28 +1543,22 @@ impl ChangesView {
                         Label::new(file_name)
                             .single_line()
                             .when(is_deleted, Label::strikethrough)
-                            .flex_none(),
+                            .truncate(),
                     )
                     .when_some(parent, |this, parent| {
+                        // A zero flex basis gives the directory only the space the file
+                        // name leaves, so it disappears before the name gets truncated.
                         this.child(
                             Label::new(parent)
                                 .size(LabelSize::Small)
                                 .color(Color::Muted)
                                 .single_line()
-                                .truncate(),
+                                .truncate()
+                                .flex_1(),
                         )
                     }),
             )
-            .when(GitPanelSettings::get_global(cx).diff_stats, |this| {
-                this.when_some(file.diff_stat, |this, stat| {
-                    this.child(ui::DiffStat::new(
-                        ("diff-stat", index),
-                        stat.added as usize,
-                        stat.deleted as usize,
-                    ))
-                })
-            })
-            .child(self.row_actions(actions, selected))
+            .children(self.row_actions(actions, index))
             .child(
                 div().w_3().flex_none().child(
                     Label::new(file.change.letter())
@@ -1594,8 +1581,7 @@ impl ChangesView {
         let focused = self.focus_handle.is_focused(window);
         h_flex()
             .id(id)
-            .group(ROW_GROUP)
-            .h(rems(1.75))
+            .h(ROW_HEIGHT)
             .w_full()
             .pl_2()
             .pr_1()
@@ -1621,12 +1607,35 @@ impl ChangesView {
             )
     }
 
-    fn row_actions(&self, actions: Vec<AnyElement>, selected: bool) -> impl IntoElement {
-        h_flex()
-            .flex_none()
-            .gap_0p5()
-            .when(!selected, |this| this.visible_on_hover(ROW_GROUP))
-            .children(actions)
+    /// The hovered row is worked out from the pointer position rather than each row's
+    /// `on_hover`, because rows also move under a still pointer when the list scrolls,
+    /// and a row that was scrolled under the pointer never gets to report leaving it.
+    fn row_under_mouse(&self, window: &Window) -> Option<usize> {
+        let scroll_handle = &self.scroll_handle.0.borrow().base_handle;
+        let list_bounds = scroll_handle.bounds();
+        let mouse_position = window.mouse_position();
+        let offset_in_list = mouse_position.y - list_bounds.top() - scroll_handle.offset().y;
+        let index = (offset_in_list / ROW_HEIGHT.to_pixels(window.rem_size())).floor() as usize;
+        (list_bounds.contains(&mouse_position) && index < self.rows.len()).then_some(index)
+    }
+
+    fn hover_row_under_mouse(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let hovered_row = self.row_under_mouse(window);
+        if hovered_row != self.hovered_row {
+            self.hovered_row = hovered_row;
+            cx.notify();
+        }
+    }
+
+    /// Like VS Code, actions only take up room on the rows they apply to, so other rows
+    /// have more room for their file names.
+    fn shows_row_actions(&self, index: usize) -> bool {
+        self.selected_row == Some(index) || self.hovered_row == Some(index)
+    }
+
+    fn row_actions(&self, actions: Vec<AnyElement>, index: usize) -> Option<impl IntoElement> {
+        self.shows_row_actions(index)
+            .then(|| h_flex().flex_none().gap_0p5().children(actions))
     }
 
     fn row_action_button(
@@ -1856,6 +1865,12 @@ impl Render for ChangesView {
                     .on_action(cx.listener(Self::discard_selected))
                     .on_action(cx.listener(Self::add_to_gitignore))
             })
+            .on_hover(cx.listener(|this, _: &bool, window, cx| {
+                this.hover_row_under_mouse(window, cx);
+            }))
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, cx| {
+                this.hover_row_under_mouse(window, cx);
+            }))
             .flex_1()
             .size_full()
             .overflow_hidden()
@@ -1864,6 +1879,10 @@ impl Render for ChangesView {
                     "changes-view-rows",
                     self.rows.len(),
                     cx.processor(move |this, range: Range<usize>, window, cx| {
+                        // The list has applied any scroll by now, whether it came from the
+                        // wheel or from keyboard navigation, so this catches rows that
+                        // moved under a still pointer.
+                        this.hovered_row = this.row_under_mouse(window);
                         range
                             .filter_map(|index| {
                                 let selected = this.selected_row == Some(index);
@@ -1909,7 +1928,10 @@ mod tests {
     use super::*;
     use editor::Editor;
     use git::status::{TrackedStatus, UnmergedStatus, UnmergedStatusCode};
-    use gpui::{TestAppContext, UpdateGlobal as _, VisualTestContext};
+    use gpui::{
+        Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, UpdateGlobal as _,
+        VisualTestContext, point, size,
+    };
     use project::{FakeFs, Fs as _};
     use serde_json::json;
     use settings::SettingsStore;
@@ -2026,43 +2048,6 @@ mod tests {
         assert!(!staged_addition.is_intent_to_add());
         assert!(!staged_addition.is_missing_from_index());
         assert!(!unstaged_change.is_missing_from_index());
-    }
-
-    #[test]
-    fn diff_stats_are_only_kept_for_files_in_one_section() {
-        let stat = Some(DiffStat {
-            added: 2,
-            deleted: 1,
-        });
-        let with_stat = |path, status| StatusEntry {
-            diff_stat: stat,
-            ..status_entry(path, status)
-        };
-        let files = changed_files([
-            with_stat(
-                "a.txt",
-                tracked(StatusCode::Modified, StatusCode::Unmodified),
-            ),
-            with_stat(
-                "b.txt",
-                tracked(StatusCode::Unmodified, StatusCode::Modified),
-            ),
-            with_stat("c.txt", tracked(StatusCode::Modified, StatusCode::Modified)),
-        ]);
-        let diff_stats = files
-            .iter()
-            .map(|file| (file.repo_path.as_unix_str(), file.section, file.diff_stat))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            diff_stats,
-            [
-                ("a.txt", ChangesSection::Staged, stat),
-                ("c.txt", ChangesSection::Staged, None),
-                ("b.txt", ChangesSection::Unstaged, stat),
-                ("c.txt", ChangesSection::Unstaged, None),
-            ]
-        );
     }
 
     #[test]
@@ -2273,6 +2258,92 @@ mod tests {
                 .expect("row exists");
             view.select_row(index, cx);
         });
+    }
+
+    #[gpui::test]
+    async fn test_moving_the_mouse_over_rows_shows_their_actions(cx: &mut TestAppContext) {
+        let (_fs, workspace, _view, mut workspace_cx) = setup(cx).await;
+        let project = workspace.read_with(&mut workspace_cx, |workspace, _| {
+            workspace.project().clone()
+        });
+        let workspace = workspace.downgrade();
+        let (view, cx) =
+            cx.add_window_view(|window, cx| ChangesView::new(project, workspace, window, cx));
+        cx.run_until_parked();
+        let (row_height, width) = cx.update(|window, _| {
+            (
+                ROW_HEIGHT.to_pixels(window.rem_size()),
+                window.viewport_size().width,
+            )
+        });
+        let hover_row = |index: usize, x: Pixels, cx: &mut VisualTestContext| {
+            let y = row_height * (index as f32 + 0.5);
+            cx.simulate_mouse_move(point(x, y), None, Modifiers::none());
+            cx.run_until_parked();
+            view.read_with(cx, |view, _| {
+                (0..view.rows.len())
+                    .filter(|index| view.shows_row_actions(*index))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        assert_eq!(hover_row(4, px(40.), cx), [4]);
+        assert_eq!(hover_row(5, px(40.), cx), [5]);
+        // The actions sit at the end of the row, and pointing at them keeps them shown.
+        assert_eq!(hover_row(5, width - px(40.), cx), [5]);
+        assert_eq!(hover_row(10, px(40.), cx), Vec::<usize>::new());
+
+        view.update(cx, |view, cx| view.select_row(3, cx));
+        assert_eq!(hover_row(10, px(40.), cx), [3]);
+        assert_eq!(hover_row(5, px(40.), cx), [3, 5]);
+    }
+
+    #[gpui::test]
+    async fn test_scrolling_under_a_still_mouse_moves_the_row_actions(cx: &mut TestAppContext) {
+        let (_fs, workspace, _view, mut workspace_cx) = setup(cx).await;
+        let project = workspace.read_with(&mut workspace_cx, |workspace, _| {
+            workspace.project().clone()
+        });
+        let workspace = workspace.downgrade();
+        let (view, cx) =
+            cx.add_window_view(|window, cx| ChangesView::new(project, workspace, window, cx));
+        let row_height = cx.update(|window, _| ROW_HEIGHT.to_pixels(window.rem_size()));
+        cx.simulate_resize(size(px(400.), row_height * 3.));
+        cx.run_until_parked();
+        let rows_with_actions = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                (0..view.rows.len())
+                    .filter(|index| view.shows_row_actions(*index))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        let position = point(px(40.), row_height * 1.5);
+        cx.simulate_mouse_move(position, None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [1]);
+
+        cx.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.), -row_height * 2.)),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [3]);
+
+        // Leaving right after the scroll, without moving within the new row first.
+        cx.simulate_mouse_move(point(px(500.), position.y), None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), Vec::<usize>::new());
+
+        cx.simulate_mouse_move(position, None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [3]);
+
+        // Selecting a row past the bottom scrolls the list without a scroll wheel event.
+        view.update(cx, |view, cx| view.select_row(5, cx));
+        cx.run_until_parked();
+        assert_eq!(rows_with_actions(cx), [4, 5]);
     }
 
     #[gpui::test]
@@ -3217,7 +3288,6 @@ mod tests {
             repo_path: RepoPath::new("image.bin").expect("valid repo path"),
             change: FileChange::Modified,
             status: tracked(StatusCode::Modified, StatusCode::Unmodified),
-            diff_stat: None,
         };
 
         let result = view.update_in(cx, |view, window, cx| {
