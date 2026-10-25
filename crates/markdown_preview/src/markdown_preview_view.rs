@@ -504,9 +504,20 @@ impl MarkdownPreviewView {
             };
             workspace
                 .update_in(cx, |workspace, window, cx| {
-                    let project = workspace.project().clone();
-                    let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
+                    // Preview the file's editor tab if it has one, so unsaved edits stay with that
+                    // tab. Otherwise the preview gets a hidden editor of its own.
+                    let editor_tab = workspace.items_of_type::<Editor>(cx).find(|editor| {
+                        editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer)
+                    });
+                    let owns_source_editor = editor_tab.is_none();
+                    let editor = editor_tab.unwrap_or_else(|| {
+                        let project = workspace.project().clone();
+                        cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx))
+                    });
                     let preview = Self::create_markdown_view(workspace, editor, window, cx);
+                    preview.update(cx, |preview, _| {
+                        preview.owns_source_editor = owns_source_editor;
+                    });
                     workspace.active_pane().update(cx, |pane, cx| {
                         pane.add_item(Box::new(preview), true, true, None, window, cx);
                     });
@@ -3699,6 +3710,69 @@ mod tests {
                 "save all and close prompts only see the preview, so it must report the edit"
             );
         });
+    }
+
+    #[gpui::test]
+    async fn project_panel_preview_owns_its_source_editor_only_without_an_editor_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({ "alone.md": "- [ ] task\n", "opened.md": "- [ ] task\n" }),
+            false,
+        )
+        .await;
+        let opened_editor =
+            open_project_file(cx, &project, &multi_workspace, "opened.md", None, true)
+                .await
+                .downcast::<Editor>()
+                .unwrap();
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    for path in ["alone.md", "opened.md"] {
+                        let project_path = test_project_path(&project, path, cx);
+                        MarkdownPreviewView::open_for_project_path(
+                            project_path,
+                            workspace,
+                            window,
+                            cx,
+                        );
+                    }
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let previews = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(previews.len(), 2);
+        for preview in previews {
+            let source_editor = preview.read_with(cx, |preview, _| {
+                preview.active_editor.as_ref().unwrap().editor.clone()
+            });
+            source_editor.update(cx, |editor, cx| {
+                editor.edit(
+                    [(
+                        editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
+                        "x",
+                    )],
+                    cx,
+                );
+            });
+            cx.update(|cx| {
+                let reuses_editor_tab = source_editor == opened_editor;
+                assert_eq!(
+                    ItemHandle::is_dirty(&preview, cx),
+                    !reuses_editor_tab,
+                    "only a preview without an editor tab should report unsaved edits"
+                );
+            });
+        }
     }
 
     #[gpui::test]
