@@ -4257,6 +4257,17 @@ impl Workspace {
                 .detach();
         };
 
+        let project = self.project();
+        let path_style = project.read(cx).path_style(cx);
+        let project_is_local = project.read(cx).is_local();
+
+        // Check absolute paths before URLs: a Windows path like `C:/dir/file.rs` also parses as a
+        // URL with the scheme `c`.
+        if path_style.is_absolute(url_or_path) {
+            open_abs_path(self, PathBuf::from(url_or_path), cx);
+            return;
+        }
+
         if let Ok(url) = Url::parse(url_or_path) {
             match url.scheme() {
                 "http" | "https" => cx.open_url(url_or_path),
@@ -4266,17 +4277,6 @@ impl Workspace {
                 },
                 _ => cx.open_url(url_or_path),
             }
-            return;
-        }
-
-        // Not a valid URL - treat as a file path
-        let project = self.project();
-        let path_style = project.read(cx).path_style(cx);
-        let project_is_local = project.read(cx).is_local();
-
-        // If it's an absolute path, open it directly
-        if path_style.is_absolute(url_or_path) {
-            open_abs_path(self, PathBuf::from(url_or_path), cx);
             return;
         }
 
