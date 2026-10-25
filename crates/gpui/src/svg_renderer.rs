@@ -52,10 +52,27 @@ impl SvgRenderer {
                 default_font_resolver(font, db)
             },
         );
+        let default_fallback_resolver = usvg::FontResolver::default_fallback_selector();
+        let fallback_resolver = Box::new(
+            move |character: char,
+                  used_fonts: &[usvg::fontdb::ID],
+                  db: &mut Arc<usvg::fontdb::Database>| {
+                // macOS's LastResort font has a placeholder glyph for every character. usvg
+                // swaps a whole text run to a fallback font that covers all of it, so picking
+                // LastResort for one emoji turns the entire label into boxes.
+                let mut excluded_fonts = used_fonts.to_vec();
+                excluded_fonts.extend(
+                    db.faces()
+                        .filter(|face| face.post_script_name == "LastResort")
+                        .map(|face| face.id),
+                );
+                default_fallback_resolver(character, &excluded_fonts, db)
+            },
+        );
         let options = usvg::Options {
             font_resolver: usvg::FontResolver {
                 select_font: font_resolver,
-                select_fallback: usvg::FontResolver::default_fallback_selector(),
+                select_fallback: fallback_resolver,
             },
             ..Default::default()
         };
@@ -163,5 +180,32 @@ impl SvgRenderer {
         resvg::render(&tree, transform, &mut pixmap.as_mut());
 
         Ok(pixmap)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_font_fallback_never_picks_last_resort() {
+        let renderer = SvgRenderer::new(Arc::new(()));
+        let mut fontdb = Arc::new(usvg::fontdb::Database::new());
+        Arc::make_mut(&mut fontdb).load_system_fonts();
+
+        let base_font = fontdb
+            .query(&usvg::fontdb::Query {
+                families: &[usvg::fontdb::Family::Name("Arial")],
+                ..Default::default()
+            })
+            .expect("Arial ships with macOS");
+
+        let fallback =
+            (renderer.usvg_options.font_resolver.select_fallback)('📐', &[base_font], &mut fontdb);
+        let fallback_name = fallback
+            .and_then(|id| fontdb.face(id))
+            .map(|face| face.post_script_name.clone());
+        assert_ne!(fallback_name.as_deref(), Some("LastResort"));
     }
 }
