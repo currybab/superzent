@@ -1026,6 +1026,9 @@ impl MarkdownPreviewView {
             return;
         };
         let preview_id = cx.entity_id();
+        // The source editor gets a tab of its own below, which takes over its unsaved edits.
+        // Closing the preview without saving reloads it, and that must not discard them.
+        self.owns_source_editor = false;
 
         window.defer(cx, move |window, cx| {
             workspace.update(cx, |workspace, cx| {
@@ -3066,6 +3069,39 @@ mod tests {
 
         assert_editor_is_active_and_focused(cx, &multi_workspace, &editor);
         assert_no_markdown_preview_items(cx, &multi_workspace);
+    }
+
+    #[gpui::test]
+    async fn show_source_keeps_unsaved_edits_from_an_owned_preview(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = cx.update(|cx| {
+            workspace
+                .read(cx)
+                .active_item_as::<MarkdownPreviewView>(cx)
+                .unwrap()
+        });
+        let editor = preview.read_with(cx, |preview, _| {
+            preview.active_editor.as_ref().unwrap().editor.clone()
+        });
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
+        });
+
+        dispatch_close_and_return_to_editor(cx, &multi_workspace, &preview);
+        cx.run_until_parked();
+
+        assert_editor_is_active_and_focused(cx, &multi_workspace, &editor);
+        let text = editor.read_with(cx, |editor, cx| {
+            editor.buffer().read(cx).snapshot(cx).text()
+        });
+        assert_eq!(
+            text, "- [x] task\n",
+            "Show Source must not discard the edit"
+        );
+        cx.update(|cx| assert!(ItemHandle::is_dirty(&editor, cx)));
     }
 
     #[gpui::test]
