@@ -6897,12 +6897,8 @@ mod tests {
                 "the preview heading weight must not leak into editor markdown"
             );
             let agent_style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
-            let agent_h1 = agent_style
-                .heading_level_styles
-                .and_then(|levels| levels.h1)
-                .expect("agent markdown defines an h1 style");
-            assert_eq!(
-                agent_h1.font_weight, None,
+            assert!(
+                agent_style.heading_level_styles.is_none(),
                 "the preview heading weight must not leak into agent markdown"
             );
         });
