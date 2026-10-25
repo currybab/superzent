@@ -4260,7 +4260,10 @@ impl Workspace {
         if let Ok(url) = Url::parse(url_or_path) {
             match url.scheme() {
                 "http" | "https" => cx.open_url(url_or_path),
-                "file" => open_abs_path(self, PathBuf::from(url.path()), cx),
+                "file" => match url.to_file_path() {
+                    Ok(path) => open_abs_path(self, path, cx),
+                    Err(()) => cx.open_url(url_or_path),
+                },
                 _ => cx.open_url(url_or_path),
             }
             return;
@@ -13337,9 +13340,12 @@ mod tests {
         // View
         struct TestPngItemView {
             focus_handle: FocusHandle,
+            project_path: ProjectPath,
         }
         // Model
-        struct TestPngItem {}
+        struct TestPngItem {
+            project_path: ProjectPath,
+        }
 
         impl project::ProjectItem for TestPngItem {
             fn try_open(
@@ -13348,7 +13354,8 @@ mod tests {
                 cx: &mut App,
             ) -> Option<Task<anyhow::Result<Entity<Self>>>> {
                 if path.path.extension().unwrap() == "png" {
-                    Some(cx.spawn(async move |cx| Ok(cx.new(|_| TestPngItem {}))))
+                    let project_path = path.clone();
+                    Some(cx.spawn(async move |cx| Ok(cx.new(|_| TestPngItem { project_path }))))
                 } else {
                     None
                 }
@@ -13359,7 +13366,7 @@ mod tests {
             }
 
             fn project_path(&self, _: &App) -> Option<ProjectPath> {
-                None
+                Some(self.project_path.clone())
             }
 
             fn is_dirty(&self) -> bool {
@@ -13396,7 +13403,7 @@ mod tests {
             fn for_project_item(
                 _project: Entity<Project>,
                 _pane: Option<&Pane>,
-                _item: Entity<Self::Item>,
+                item: Entity<Self::Item>,
                 _: &mut Window,
                 cx: &mut Context<Self>,
             ) -> Self
@@ -13405,6 +13412,7 @@ mod tests {
             {
                 Self {
                     focus_handle: cx.focus_handle(),
+                    project_path: item.read(cx).project_path.clone(),
                 }
             }
         }
@@ -13529,6 +13537,37 @@ mod tests {
                     focus_handle: cx.focus_handle(),
                 }
             }
+        }
+
+        #[gpui::test]
+        async fn test_open_url_or_file_decodes_file_urls(cx: &mut TestAppContext) {
+            init_test(cx);
+            cx.update(register_project_item::<TestPngItemView>);
+
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(util::path!("/root"), json!({ "my image.png": "" }))
+                .await;
+            let project = Project::test(fs, [util::path!("/root").as_ref()], cx).await;
+            let (workspace, cx) =
+                cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+            let file_url = Url::from_file_path(util::path!("/root/my image.png"))
+                .expect("absolute path")
+                .to_string();
+            assert!(file_url.contains("%20"));
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_url_or_file(&file_url, None, window, cx);
+            });
+            cx.run_until_parked();
+
+            let opened_path = workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .and_then(|item| item.downcast::<TestPngItemView>())
+                    .map(|item| item.read(cx).project_path.path.clone())
+            });
+            assert_eq!(opened_path.as_deref(), Some(rel_path("my image.png")));
+            assert_eq!(cx.opened_url(), None);
         }
 
         #[gpui::test]
