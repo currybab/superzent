@@ -114,6 +114,9 @@ These fork-only follow-ups sit on top of upstream code, so expect small conflict
 
 - `git_ui/src/branch_picker.rs` `update_matches`: the query is normalized before the empty and duplicate checks for the new-branch entry (upstream still checks the raw query).
 - `agent_ui/src/message_editor.rs` `confirm_command`: `.log_err()` instead of upstream's `let _ =`.
+- `markdown_preview_view.rs`: previews that own their source editor (automatic previews and restored ones) forward its dirty, conflict and deleted-file state, and `open_preview_url` only percent-decodes local paths. Upstream still reports these previews as clean and decodes every link.
+- `workspace.rs` `open_url_or_file`: `file:` URLs go through `Url::to_file_path()` instead of `Url::path()`.
+- `gpui/src/svg_renderer.rs`: the non-emoji fallback excludes macOS's LastResort font, and `markdown/src/mermaid.rs` drops U+FE0F before rasterizing. Re-apply the U+FE0F step when Mermaid moves to `merman`.
 
 ## Pending for the next sync
 
