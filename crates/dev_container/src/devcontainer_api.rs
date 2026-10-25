@@ -438,13 +438,13 @@ async fn devcontainer_up(
                     String::from_utf8_lossy(&output.stderr)
                 );
 
-                log::error!("{}", &message);
+                log::error!("{}", message);
                 Err(DevContainerError::DevContainerUpFailed(message))
             }
         }
         Err(e) => {
             let message = format!("Error running devcontainer up: {:?}", e);
-            log::error!("{}", &message);
+            log::error!("{}", message);
             Err(DevContainerError::DevContainerUpFailed(message))
         }
     }
@@ -476,13 +476,13 @@ pub(crate) async fn read_devcontainer_configuration(
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 );
-                log::error!("{}", &message);
+                log::error!("{}", message);
                 Err(DevContainerError::DevContainerNotFound)
             }
         }
         Err(e) => {
             let message = format!("Error running devcontainer read-configuration: {:?}", e);
-            log::error!("{}", &message);
+            log::error!("{}", message);
             Err(DevContainerError::DevContainerNotFound)
         }
     }
@@ -534,13 +534,13 @@ pub(crate) async fn apply_dev_container_template(
                     String::from_utf8_lossy(&output.stderr)
                 );
 
-                log::error!("{}", &message);
+                log::error!("{}", message);
                 Err(DevContainerError::DevContainerTemplateApplyFailed(message))
             }
         }
         Err(e) => {
             let message = format!("Error running devcontainer templates apply: {:?}", e);
-            log::error!("{}", &message);
+            log::error!("{}", message);
             Err(DevContainerError::DevContainerTemplateApplyFailed(message))
         }
     }

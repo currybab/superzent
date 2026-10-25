@@ -415,7 +415,6 @@ impl ConfigureContextServerModal {
                     enabled: _,
                     url,
                     headers,
-                    timeout: _,
                     ..
                 } => Some(ConfigurationTarget::ExistingHttp {
                     id: server_id,
@@ -762,7 +761,7 @@ impl ConfigureContextServerModal {
                         )
                         .key_binding(
                             KeyBinding::for_action_in(&menu::Cancel, &focus_handle, cx)
-                                .map(|kb| kb.size(rems_from_px(12.))),
+                                .map(|kb| kb.size(rems_from_px(12_f32))),
                         )
                         .on_click(
                             cx.listener(|this, _event, _window, cx| this.cancel(&menu::Cancel, cx)),
@@ -780,7 +779,7 @@ impl ConfigureContextServerModal {
                         .disabled(is_connecting)
                         .key_binding(
                             KeyBinding::for_action_in(&menu::Confirm, &focus_handle, cx)
-                                .map(|kb| kb.size(rems_from_px(12.))),
+                                .map(|kb| kb.size(rems_from_px(12_f32))),
                         )
                         .on_click(
                             cx.listener(|this, _event, _window, cx| {

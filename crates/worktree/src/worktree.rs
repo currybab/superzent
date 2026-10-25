@@ -2491,13 +2491,7 @@ impl Snapshot {
     pub fn entry_for_path(&self, path: &RelPath) -> Option<&Entry> {
         self.traverse_from_path(true, true, true, path)
             .entry()
-            .and_then(|entry| {
-                if entry.path.as_ref() == path {
-                    Some(entry)
-                } else {
-                    None
-                }
-            })
+            .filter(|&entry| entry.path.as_ref() == path)
     }
 
     /// Resolves a path to an executable using the following heuristics:
@@ -2598,7 +2592,7 @@ impl LocalSnapshot {
                 Err(error) => {
                     log::error!(
                         "error loading .gitignore file {:?} - {:?}",
-                        &entry.path,
+                        entry.path,
                         error
                     );
                 }

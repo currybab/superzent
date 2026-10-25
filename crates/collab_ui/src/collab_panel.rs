@@ -2714,15 +2714,15 @@ impl CollabPanel {
             .child(item)
             .tooltip(move |_, cx| {
                 let text = if !online {
-                    format!(" {} is offline", &github_login)
+                    format!(" {} is offline", github_login)
                 } else if busy {
-                    format!(" {} is on a call", &github_login)
+                    format!(" {} is on a call", github_login)
                 } else {
                     let room = ActiveCall::global(cx).read(cx).room();
                     if room.is_some() {
-                        format!("Invite {} to join call", &github_login)
+                        format!("Invite {} to join call", github_login)
                     } else {
-                        format!("Call {}", &github_login)
+                        format!("Call {}", github_login)
                     }
                 };
                 Tooltip::simple(text, cx)

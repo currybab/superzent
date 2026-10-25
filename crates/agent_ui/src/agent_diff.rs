@@ -764,7 +764,7 @@ fn render_diff_hunk_controls(
                 .disabled(is_created_file)
                 .key_binding(
                     KeyBinding::for_action_in(&Reject, &editor.read(cx).focus_handle(cx), cx)
-                        .map(|kb| kb.size(rems_from_px(12.))),
+                        .map(|kb| kb.size(rems_from_px(12_f32))),
                 )
                 .on_click({
                     let editor = editor.clone();
@@ -787,7 +787,7 @@ fn render_diff_hunk_controls(
             Button::new(("keep", row as u64), "Keep")
                 .key_binding(
                     KeyBinding::for_action_in(&Keep, &editor.read(cx).focus_handle(cx), cx)
-                        .map(|kb| kb.size(rems_from_px(12.))),
+                        .map(|kb| kb.size(rems_from_px(12_f32))),
                 )
                 .on_click({
                     let editor = editor.clone();
@@ -1092,7 +1092,7 @@ impl Render for AgentDiffToolbar {
                                             &editor_focus_handle,
                                             cx,
                                         )
-                                        .map(|kb| kb.size(rems_from_px(12.)))
+                                        .map(|kb| kb.size(rems_from_px(12_f32)))
                                     })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.dispatch_action(&RejectAll, window, cx)
@@ -1106,7 +1106,7 @@ impl Render for AgentDiffToolbar {
                                             &editor_focus_handle,
                                             cx,
                                         )
-                                        .map(|kb| kb.size(rems_from_px(12.)))
+                                        .map(|kb| kb.size(rems_from_px(12_f32)))
                                     })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.dispatch_action(&KeepAll, window, cx)
@@ -1184,7 +1184,7 @@ impl Render for AgentDiffToolbar {
                                 Button::new("reject-all", "Reject All")
                                     .key_binding({
                                         KeyBinding::for_action_in(&RejectAll, &focus_handle, cx)
-                                            .map(|kb| kb.size(rems_from_px(12.)))
+                                            .map(|kb| kb.size(rems_from_px(12_f32)))
                                     })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.dispatch_action(&RejectAll, window, cx)
@@ -1194,7 +1194,7 @@ impl Render for AgentDiffToolbar {
                                 Button::new("keep-all", "Keep All")
                                     .key_binding({
                                         KeyBinding::for_action_in(&KeepAll, &focus_handle, cx)
-                                            .map(|kb| kb.size(rems_from_px(12.)))
+                                            .map(|kb| kb.size(rems_from_px(12_f32)))
                                     })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.dispatch_action(&KeepAll, window, cx)

@@ -4333,7 +4333,7 @@ impl AgentPanel {
                         .label_size(LabelSize::Small)
                         .key_binding(
                             KeyBinding::for_action_in(&OpenSettings, focus_handle, cx)
-                                .map(|kb| kb.size(rems_from_px(12.))),
+                                .map(|kb| kb.size(rems_from_px(12_f32))),
                         )
                         .on_click(|_event, window, cx| {
                             window.dispatch_action(OpenSettings.boxed_clone(), cx)

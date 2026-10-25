@@ -176,6 +176,6 @@ pub fn font_picker(
 
     Picker::uniform_list(delegate, window, cx)
         .show_scrollbar(true)
-        .width(rems_from_px(210.))
+        .width(rems_from_px(210_f32))
         .max_height(Some(rems(18.).into()))
 }

@@ -1843,7 +1843,7 @@ impl PickerDelegate for FileFinderDelegate {
                                                 &focus_handle,
                                                 cx,
                                             )
-                                            .size(rems_from_px(12.)),
+                                            .size(rems_from_px(12_f32)),
                                         ),
                                 )
                                 .menu({
@@ -1879,7 +1879,7 @@ impl PickerDelegate for FileFinderDelegate {
                             Button::new("open-selection", "Open")
                                 .key_binding(
                                     KeyBinding::for_action_in(&menu::Confirm, &focus_handle, cx)
-                                        .map(|kb| kb.size(rems_from_px(12.))),
+                                        .map(|kb| kb.size(rems_from_px(12_f32))),
                                 )
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(menu::Confirm.boxed_clone(), cx)

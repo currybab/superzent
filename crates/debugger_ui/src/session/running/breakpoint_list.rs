@@ -906,7 +906,7 @@ impl LineBreakpoint {
                 )))
                 .w_full()
                 .gap_1()
-                .min_h(rems_from_px(26.))
+                .min_h(rems_from_px(26_f32))
                 .justify_between()
                 .on_click({
                     let weak = weak.clone();
@@ -1036,7 +1036,7 @@ impl DataBreakpoint {
             h_flex()
                 .w_full()
                 .gap_1()
-                .min_h(rems_from_px(26.))
+                .min_h(rems_from_px(26_f32))
                 .justify_between()
                 .child(
                     v_flex()
@@ -1139,7 +1139,7 @@ impl ExceptionBreakpoint {
             h_flex()
                 .w_full()
                 .gap_1()
-                .min_h(rems_from_px(26.))
+                .min_h(rems_from_px(26_f32))
                 .justify_between()
                 .child(
                     v_flex()

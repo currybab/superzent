@@ -1977,7 +1977,7 @@ impl Render for KeymapEditor {
                                             .style(ButtonStyle::Subtle)
                                             .key_binding(
                                                 ui::KeyBinding::for_action_in(&zed_actions::OpenKeymapFile, &focus_handle, cx)
-                                                    .map(|kb| kb.size(rems_from_px(10.))),
+                                                    .map(|kb| kb.size(rems_from_px(10_f32))),
                                             )
                                             .on_click(|_, window, cx| {
                                                 window.dispatch_action(
@@ -1991,7 +1991,7 @@ impl Render for KeymapEditor {
                                             .style(ButtonStyle::Outlined)
                                             .key_binding(
                                                 ui::KeyBinding::for_action_in(&OpenCreateKeybindingModal, &focus_handle, cx)
-                                                    .map(|kb| kb.size(rems_from_px(10.))),
+                                                    .map(|kb| kb.size(rems_from_px(10_f32))),
                                             )
                                             .on_click(|_, window, cx| {
                                                 window.dispatch_action(

@@ -1963,7 +1963,7 @@ impl Language {
                 log::error!(
                     "missing required capture in injections {} TreeSitter query: \
                     content or injection.content",
-                    &self.config.name,
+                    self.config.name,
                 );
             }
         }

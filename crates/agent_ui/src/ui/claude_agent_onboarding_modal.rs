@@ -114,7 +114,7 @@ impl Render for ClaudeCodeOnboardingModal {
 
         let illustration = h_flex()
             .relative()
-            .h(rems_from_px(126.))
+            .h(rems_from_px(126_f32))
             .bg(cx.theme().colors().editor_background)
             .border_b_1()
             .border_color(cx.theme().colors().border_variant)
@@ -124,8 +124,12 @@ impl Render for ClaudeCodeOnboardingModal {
             .overflow_hidden()
             .child(
                 div().absolute().inset_0().w(px(515.)).h(px(126.)).child(
-                    Vector::new(VectorName::AcpGrid, rems_from_px(515.), rems_from_px(126.))
-                        .color(ui::Color::Custom(cx.theme().colors().text.opacity(0.02))),
+                    Vector::new(
+                        VectorName::AcpGrid,
+                        rems_from_px(515_f32),
+                        rems_from_px(126_f32),
+                    )
+                    .color(ui::Color::Custom(cx.theme().colors().text.opacity(0.02))),
                 ),
             )
             .child(div().absolute().inset_0().size_full().bg(linear_gradient(
@@ -149,8 +153,8 @@ impl Render for ClaudeCodeOnboardingModal {
             .child(
                 Vector::new(
                     VectorName::AcpLogoSerif,
-                    rems_from_px(257.),
-                    rems_from_px(47.),
+                    rems_from_px(257_f32),
+                    rems_from_px(47_f32),
                 )
                 .color(ui::Color::Custom(cx.theme().colors().text.opacity(0.8))),
             )

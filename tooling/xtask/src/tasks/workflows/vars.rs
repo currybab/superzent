@@ -142,7 +142,7 @@ impl PathCondition {
                 .add_need(set_by_step.clone())
                 .cond(Expression::new(format!(
                     "needs.{}.outputs.{} == 'true'",
-                    &set_by_step, self.name
+                    set_by_step, self.name
                 ))),
         }
     }

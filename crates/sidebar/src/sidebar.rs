@@ -1658,10 +1658,7 @@ mod tests {
                     };
                     match entry {
                         ListEntry::ProjectHeader {
-                            label,
-                            path_list,
-                            highlight_positions: _,
-                            ..
+                            label, path_list, ..
                         } => {
                             let icon = if sidebar.collapsed_groups.contains(path_list) {
                                 ">"

@@ -682,7 +682,7 @@ fn print_report(
         }
 
         if !example_cumulative_tool_metrics.is_empty() {
-            println!("{}", &example_cumulative_tool_metrics);
+            println!("{}", example_cumulative_tool_metrics);
         }
     }
 

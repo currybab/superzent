@@ -73,7 +73,7 @@ pub async fn count_tokens(
 
     let uri = format!(
         "{api_url}/v1beta/models/{model_id}:countTokens?key={api_key}",
-        model_id = &request.generate_content_request.model.model_id,
+        model_id = request.generate_content_request.model.model_id,
     );
 
     let request = serde_json::to_string(&request)?;

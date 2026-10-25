@@ -167,7 +167,7 @@ impl Component for AnnouncementToast {
     fn preview(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let illustration = h_flex()
             .relative()
-            .h(rems_from_px(126.))
+            .h(rems_from_px(126_f32))
             .bg(cx.theme().colors().editor_background)
             .justify_center()
             .gap_8()
@@ -175,8 +175,12 @@ impl Component for AnnouncementToast {
             .overflow_hidden()
             .child(
                 div().absolute().inset_0().w(px(515.)).h(px(126.)).child(
-                    Vector::new(VectorName::AcpGrid, rems_from_px(515.), rems_from_px(126.))
-                        .color(Color::Custom(cx.theme().colors().text.opacity(0.02))),
+                    Vector::new(
+                        VectorName::AcpGrid,
+                        rems_from_px(515_f32),
+                        rems_from_px(126_f32),
+                    )
+                    .color(Color::Custom(cx.theme().colors().text.opacity(0.02))),
                 ),
             )
             .child(div().absolute().inset_0().size_full().bg(linear_gradient(
@@ -200,8 +204,8 @@ impl Component for AnnouncementToast {
             .child(
                 Vector::new(
                     VectorName::AcpLogoSerif,
-                    rems_from_px(257.),
-                    rems_from_px(47.),
+                    rems_from_px(257_f32),
+                    rems_from_px(47_f32),
                 )
                 .color(Color::Custom(cx.theme().colors().text.opacity(0.8))),
             );

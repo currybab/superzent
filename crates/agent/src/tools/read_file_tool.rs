@@ -146,7 +146,7 @@ impl AgentTool for ReadFileTool {
                     project.absolute_path(&project_path, cx)
                 })
                 .ok_or_else(|| {
-                    anyhow!("Failed to convert {} to absolute path", &input.path)
+                    anyhow!("Failed to convert {} to absolute path", input.path)
                 }).map_err(tool_content_err)?;
 
             // Check settings exclusions synchronously
@@ -155,14 +155,14 @@ impl AgentTool for ReadFileTool {
                 if global_settings.is_path_excluded(&project_path.path) {
                     anyhow::bail!(
                         "Cannot read file because its path matches the global `file_scan_exclusions` setting: {}",
-                        &input.path
+                        input.path
                     );
                 }
 
                 if global_settings.is_path_private(&project_path.path) {
                     anyhow::bail!(
                         "Cannot read file because its path matches the global `private_files` setting: {}",
-                        &input.path
+                        input.path
                     );
                 }
 
@@ -170,14 +170,14 @@ impl AgentTool for ReadFileTool {
                 if worktree_settings.is_path_excluded(&project_path.path) {
                     anyhow::bail!(
                         "Cannot read file because its path matches the worktree `file_scan_exclusions` setting: {}",
-                        &input.path
+                        input.path
                     );
                 }
 
                 if worktree_settings.is_path_private(&project_path.path) {
                     anyhow::bail!(
                         "Cannot read file because its path matches the worktree `private_files` setting: {}",
-                        &input.path
+                        input.path
                     );
                 }
 

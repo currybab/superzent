@@ -534,7 +534,7 @@ impl Render for ConfigurationView {
                                     if env_var_set {
                                         format!("API key set in {env_var_name} environment variable")
                                     } else {
-                                        format!("API key configured for {}", &state.settings.api_url)
+                                        format!("API key configured for {}", state.settings.api_url)
                                     }
                                 ))
                         ),

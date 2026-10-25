@@ -2334,7 +2334,7 @@ impl OutlinePanel {
     ) -> Stateful<Div> {
         let item_id = ElementId::from(SharedString::from(format!(
             "{:?}|{:?}{:?}|{:?}",
-            outline.buffer_id, outline.excerpt_id, outline.outline.range, &outline.outline.text,
+            outline.buffer_id, outline.excerpt_id, outline.outline.range, outline.outline.text,
         )));
 
         let label_element = outline::render_item(
