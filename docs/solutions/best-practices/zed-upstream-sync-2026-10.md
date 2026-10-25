@@ -102,11 +102,18 @@ tags:
   - Agent commits #56427, #57303 and #57376 are ported only for their `markdown` crate side, because later markdown commits build on it.
   - Tests that need gpui test APIs the fork lacks, or behavior from skipped commits, are left out or trimmed.
 - Skipped from that range on purpose:
+
   - #61797 gpui div scrolling (needs `gestures.rs` and the `element/mouse.rs` split), so tables and code blocks scroll without `restrict_scroll_to_axis`.
   - #61773 table auto-sizing (needs taffy 0.13).
   - #63138, #65409, #65398 parse-time highlight caching, its allocation follow-up, and a crash in that cache (needs `language_core`).
   - #60864, #61784 opening links in the preview through `workspace::path_link`, which pulls in the terminal path-link rework (#57303, #52537, #61036, #61257).
-  - #54514 buffer search active match change, #62490 remote images, #64978 code block scrollbar corners (needs the scrollbar rework), #56695 Mermaid UI font (needs agent Mermaid theming).
+  - #54514 buffer search active match change, #62490 remote images, #64978 code block scrollbar corners (needs the scrollbar rework). #56695 Mermaid UI font was ported later with `merman`.
+
+- On `superzent/merman-toolchain` (2026-10-26):
+  - The Rust toolchain moves to 1.98.1 through upstream's bumps #51086, #55104, #62395 and #63010. Files that conflicted kept the fork's version, so a follow-up commit fixes the new lints in fork code, and `crates/eval_cli/Dockerfile` (fork-only) moves to 1.98.1 too.
+  - Mermaid switches to `merman`: #56430 (markdown and gpui side only), #56695, #57644, #58325, #58341, #57967, #58419, #58473, #59140, #59360, #59704, #61260, #62115 (markdown and gpui side only), #62236, #62257, #62931, #63430. #56468 was already in the fork.
+  - The agent panel still doesn't render Mermaid, so the `mermaid_font_family` setting text only mentions the markdown preview.
+  - `Cargo.lock` pins the `merman` crates to upstream's `0.8.0-alpha.5`. A fresh resolve picks `merman-core` 0.8.0, which the alpha API doesn't build against.
 
 ## Local changes on top of ported code
 
@@ -116,7 +123,7 @@ These fork-only follow-ups sit on top of upstream code, so expect small conflict
 - `agent_ui/src/message_editor.rs` `confirm_command`: `.log_err()` instead of upstream's `let _ =`.
 - `markdown_preview_view.rs`: previews that own their source editor (automatic previews and restored ones) forward its dirty, conflict and deleted-file state, and `open_preview_url` only percent-decodes local paths. Upstream still reports these previews as clean and decodes every link.
 - `workspace.rs` `open_url_or_file`: `file:` URLs go through `Url::to_file_path()` instead of `Url::path()`.
-- `gpui/src/svg_renderer.rs`: the non-emoji fallback excludes macOS's LastResort font, and `markdown/src/mermaid.rs` drops U+FE0F before rasterizing. Re-apply the U+FE0F step when Mermaid moves to `merman`.
+- `gpui/src/svg_renderer.rs`: the non-emoji fallback excludes macOS's LastResort font, and `markdown/src/mermaid.rs` drops U+FE0F from the `merman` SVG before parsing it. Emoji that need U+FE0F for color (🕸️, ⚙️, ❤️) render as monochrome glyphs instead of boxes.
 
 ## Pending for the next sync
 
@@ -129,7 +136,6 @@ These apply to the fork but were not ported yet. All were triaged against fork H
   - #54451 `ce08d965bc` + #56681 `3a8d012d1a` Cmd-E seeds the search query on macOS. Port together; the fork's extra `SearchableItem` impl in `agent_ui/src/text_thread_editor.rs` needs the new signature.
 - **Panels:**
   - #59439 `94c6647995` zoomed panels closing when focus moves within them. Large hand port, because the fork's agent panel still uses `ActiveView`.
-- **Markdown preview, next release:** switch Mermaid to `merman` (#57644 and the Mermaid commits after it, including #62115 zoom and #63430 font family). `merman` needs rustc 1.95 or later, so bump the toolchain first.
 - **ACP:**
   - #64544 ACP terminal exit status
   - #64708 stale ACP tool output
