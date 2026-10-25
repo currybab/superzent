@@ -1198,7 +1198,6 @@ impl MarkdownPreviewView {
         cx: &mut App,
     ) {
         let task_marker = if new_checked { "[x]" } else { "[ ]" };
-        let expected_existing_marker = if new_checked { "[ ]" } else { "[x]" };
 
         editor.update(cx, |editor, cx| {
             let Some(marker_range) = Self::source_range_to_anchors(editor, source_range, cx) else {
@@ -1211,7 +1210,15 @@ impl MarkdownPreviewView {
                 .text_for_range(marker_range.clone())
                 .collect();
 
-            debug_assert_eq!(existing_marker, expected_existing_marker);
+            // The renderer treats both `[x]` and `[X]` as checked.
+            debug_assert!(
+                if new_checked {
+                    existing_marker == "[ ]"
+                } else {
+                    existing_marker.eq_ignore_ascii_case("[x]")
+                },
+                "unexpected task marker {existing_marker:?}"
+            );
 
             editor.edit([(marker_range, task_marker)], cx);
         });
@@ -1253,6 +1260,9 @@ fn handle_url_click(
                         .active_editor
                         .as_ref()
                         .map(|state| state.editor.clone());
+                    // An owned source editor isn't rendered, so focusing it would only take
+                    // keyboard input away from the preview.
+                    let move_focus = !view.read(cx).owns_source_editor;
 
                     let source_index =
                         markdown.update(cx, |markdown, cx| markdown.scroll_to_heading(&slug, cx));
@@ -1262,7 +1272,7 @@ fn handle_url_click(
                             MarkdownPreviewView::change_selection_to_source_index(
                                 &editor,
                                 source_index,
-                                true,
+                                move_focus,
                                 window,
                                 cx,
                             );
@@ -1418,14 +1428,14 @@ fn resolve_preview_image(
         .iter()
         .find_map(|prefix| decoded.strip_prefix(*prefix))
     {
+        // A leading slash can mean the workspace root, but fall through to the filesystem path
+        // when no such file exists there.
         if let Some(root) = workspace_directory {
             let absolute_path = root.join(stripped);
             if absolute_path.exists() {
                 return Some(ImageSource::Resource(Resource::Path(Arc::from(
                     absolute_path.as_path(),
                 ))));
-            } else {
-                return None;
             }
         }
     }
@@ -2188,6 +2198,7 @@ mod tests {
     use crate::CloseAndReturnToEditor;
     use crate::markdown_preview_view::ImageSource;
     use crate::markdown_preview_view::Resource;
+    use crate::markdown_preview_view::handle_url_click;
     use crate::markdown_preview_view::resolve_preview_image;
     use buffer_diff::BufferDiff;
     use editor::Editor;
@@ -2406,6 +2417,20 @@ mod tests {
             Some(workspace_directory),
         );
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn resolves_absolute_preview_image_path_outside_the_workspace() {
+        let workspace_tree = TempTree::new(json!({ "docs": {} }));
+        let image_tree = TempTree::new(json!({ "outside.png": "mock data" }));
+        let image_file = image_tree.path().join("outside.png");
+
+        let resolved = resolve_preview_image(
+            image_file.to_str().unwrap(),
+            Some(&workspace_tree.path().join("docs")),
+            Some(workspace_tree.path()),
+        );
+        assert_resolved_preview_image_path(resolved, image_file.as_path());
     }
 
     #[gpui::test]
@@ -3813,6 +3838,68 @@ mod tests {
         });
 
         cx.update(|cx| assert!(ItemHandle::is_dirty(&split, cx)));
+    }
+
+    #[gpui::test]
+    async fn unchecks_uppercase_task_markers(cx: &mut TestAppContext) {
+        let (project, _workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [X] task\n" }), false).await;
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, false, cx)
+        });
+
+        let text = editor.read_with(cx, |editor, cx| {
+            editor.buffer().read(cx).snapshot(cx).text()
+        });
+        assert_eq!(text, "- [ ] task\n");
+    }
+
+    #[gpui::test]
+    async fn heading_links_keep_focus_in_an_owned_preview(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({ "note.md": "[Jump](#section)\n\n# Section\n\nBody\n" }),
+            false,
+        )
+        .await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .next()
+                .expect("the preview replaced the editor")
+        });
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                window.focus(&preview.focus_handle(cx), cx);
+                let workspace = workspace.downgrade();
+                handle_url_click(
+                    "#section".into(),
+                    &preview.downgrade(),
+                    None,
+                    &workspace,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                assert!(
+                    preview.focus_handle(cx).contains_focused(window, cx),
+                    "the hidden source editor must not take focus from the preview"
+                );
+            })
+            .unwrap();
     }
 
     #[gpui::test]
