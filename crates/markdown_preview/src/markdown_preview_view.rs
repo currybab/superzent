@@ -25,7 +25,7 @@ use markdown::{
 };
 use project::search::SearchQuery;
 use project::{Project, ProjectPath};
-use settings::{Settings, update_settings_file};
+use settings::{AutosaveSetting, Settings, update_settings_file};
 use theme::ThemeSettings;
 use theme::{SystemAppearance, Theme, ThemeRegistry};
 use ui::utils::WithRemSize;
@@ -743,6 +743,21 @@ impl MarkdownPreviewView {
         }
     }
 
+    /// Source indices come from the singleton buffer's text, which the preview parses. The editor's
+    /// multibuffer can also show deleted diff hunks, so its offsets don't line up with them.
+    fn source_range_to_anchors(
+        editor: &Editor,
+        source_range: Range<usize>,
+        cx: &App,
+    ) -> Option<Range<editor::Anchor>> {
+        let multibuffer = editor.buffer().read(cx);
+        let buffer = multibuffer.as_singleton()?.read(cx);
+        let snapshot = multibuffer.snapshot(cx);
+        let start = snapshot.as_singleton_anchor(buffer.anchor_before(source_range.start))?;
+        let end = snapshot.as_singleton_anchor(buffer.anchor_after(source_range.end))?;
+        Some(start..end)
+    }
+
     fn sync_preview_to_source_index(
         &mut self,
         source_index: usize,
@@ -772,12 +787,16 @@ impl MarkdownPreviewView {
         cx: &mut App,
     ) {
         editor.update(cx, |editor, cx| {
-            let selection = MultiBufferOffset(source_index)..MultiBufferOffset(source_index);
+            let Some(selection) =
+                Self::source_range_to_anchors(editor, source_index..source_index, cx)
+            else {
+                return;
+            };
             editor.change_selections(
                 SelectionEffects::scroll(Autoscroll::center()),
                 window,
                 cx,
-                |selections| selections.select_ranges(vec![selection]),
+                |selections| selections.select_anchor_ranges(vec![selection]),
             );
             if move_focus {
                 window.focus(&editor.focus_handle(cx), cx);
@@ -1122,17 +1141,43 @@ impl MarkdownPreviewView {
                     false
                 })
                 .on_checkbox_toggle(move |source_range, new_checked, window, cx| {
-                    Self::apply_checkbox_toggle_to_editor(
+                    Self::toggle_checkbox(
+                        view_handle.clone(),
                         &editor_for_checkbox,
                         source_range,
                         new_checked,
+                        window,
                         cx,
                     );
-                    Self::refresh_preview(view_handle.clone(), window, cx);
                 });
         }
 
         markdown_element
+    }
+
+    fn toggle_checkbox(
+        view_handle: WeakEntity<Self>,
+        editor: &Entity<Editor>,
+        source_range: Range<usize>,
+        new_checked: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        Self::apply_checkbox_toggle_to_editor(editor, source_range, new_checked, cx);
+
+        // An owned source editor has no tab, so workspace autosave never sees its edits. A checkbox
+        // toggle is a single discrete change, so save it right away when autosave is on.
+        let owns_source_editor = view_handle
+            .upgrade()
+            .is_some_and(|view| view.read(cx).owns_source_editor);
+        if owns_source_editor
+            && editor.workspace_settings(cx).autosave != AutosaveSetting::Off
+            && let Some(project) = editor.read(cx).project().cloned()
+        {
+            Pane::autosave_item(editor, project, window, cx).detach_and_log_err(cx);
+        }
+
+        Self::refresh_preview(view_handle, window, cx);
     }
 
     fn apply_checkbox_toggle_to_editor(
@@ -1145,24 +1190,19 @@ impl MarkdownPreviewView {
         let expected_existing_marker = if new_checked { "[ ]" } else { "[x]" };
 
         editor.update(cx, |editor, cx| {
+            let Some(marker_range) = Self::source_range_to_anchors(editor, source_range, cx) else {
+                return;
+            };
             let existing_marker: String = editor
                 .buffer()
                 .read(cx)
                 .snapshot(cx)
-                .text_for_range(
-                    MultiBufferOffset(source_range.start)..MultiBufferOffset(source_range.end),
-                )
+                .text_for_range(marker_range.clone())
                 .collect();
 
             debug_assert_eq!(existing_marker, expected_existing_marker);
 
-            editor.edit(
-                [(
-                    MultiBufferOffset(source_range.start)..MultiBufferOffset(source_range.end),
-                    task_marker,
-                )],
-                cx,
-            );
+            editor.edit([(marker_range, task_marker)], cx);
         });
     }
 
@@ -2568,6 +2608,95 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn source_offsets_map_past_expanded_deleted_hunks(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/dir"), json!({ "note.md": "- [ ] a\n- [ ] b\n" }))
+            .await;
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let editor = multi_workspace
+            .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().clone();
+                let editor: Entity<Editor> = workspace
+                    .read(cx)
+                    .active_item(cx)
+                    .and_then(|item| item.act_as::<Editor>(cx))
+                    .unwrap();
+                let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                let diff = cx.new(|cx| {
+                    BufferDiff::new_with_base_text(
+                        "removed line\n- [ ] a\n- [ ] b\n",
+                        &buffer.read(cx).text_snapshot(),
+                        cx,
+                    )
+                });
+                editor
+                    .read(cx)
+                    .buffer()
+                    .clone()
+                    .update(cx, |multibuffer, cx| {
+                        multibuffer.add_diff(diff, cx);
+                        multibuffer.set_all_diff_hunks_expanded(cx);
+                    });
+                editor
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let source = "- [ ] a\n- [ ] b\n";
+        let second_marker = source.rfind("[ ]").unwrap();
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(
+                &editor,
+                second_marker..second_marker + 3,
+                true,
+                cx,
+            );
+        });
+        let buffer_text = editor.read_with(cx, |editor, cx| {
+            editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .unwrap()
+                .read(cx)
+                .text()
+        });
+        assert_eq!(buffer_text, "- [ ] a\n- [x] b\n");
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                MarkdownPreviewView::change_selection_to_source_index(
+                    &editor,
+                    second_marker,
+                    false,
+                    window,
+                    cx,
+                );
+                editor.update(cx, |editor, cx| {
+                    assert_eq!(
+                        MarkdownPreviewView::selected_source_index(editor, cx),
+                        Some(second_marker)
+                    );
+                });
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     async fn force_closing_preview_preserves_source_editor_changes(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         app_state
@@ -3570,6 +3699,51 @@ mod tests {
                 "save all and close prompts only see the preview, so it must report the edit"
             );
         });
+    }
+
+    #[gpui::test]
+    async fn owned_preview_autosaves_checkbox_toggles(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        cx.update(|cx| {
+            set_auto_preview_enabled(cx, true);
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(settings::AutosaveSetting::OnFocusChange);
+                });
+            });
+        });
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .next()
+                .expect("the preview replaced the editor")
+        });
+
+        let editor = preview.read_with(cx, |preview, _| {
+            preview.active_editor.as_ref().unwrap().editor.clone()
+        });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                MarkdownPreviewView::toggle_checkbox(
+                    preview.downgrade(),
+                    &editor,
+                    2..5,
+                    true,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        assert_eq!(
+            fs.load(path!("/project/note.md").as_ref()).await.unwrap(),
+            "- [x] task\n"
+        );
+        cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
     }
 
     #[gpui::test]
