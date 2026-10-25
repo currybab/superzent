@@ -1240,7 +1240,12 @@ fn open_preview_url(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let decoded_path = urlencoding::decode(&url).unwrap_or_else(|_| Cow::Borrowed(&url));
+    // Percent escapes in web and file URLs are part of the URL, so only local paths are decoded.
+    let decoded_path = if url.contains("://") {
+        Cow::Borrowed(url.as_ref())
+    } else {
+        urlencoding::decode(&url).unwrap_or_else(|_| Cow::Borrowed(&url))
+    };
 
     if let Some(row) = fragment
         .as_deref()
@@ -2387,6 +2392,25 @@ mod tests {
             let snapshot = editor.snapshot(window, cx);
             assert_eq!(editor.selections.newest::<Point>(&snapshot).head().row, 1);
         });
+    }
+
+    #[gpui::test]
+    async fn opens_web_links_without_decoding_them(cx: &mut TestAppContext) {
+        init_test(cx);
+        let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let workspace_weak = workspace.downgrade();
+
+        let url = "https://example.com/a%23b?value=a%26b";
+        multi_workspace.update_in(cx, |_, window, cx| {
+            open_preview_url(url.into(), None, None, &workspace_weak, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(cx.opened_url(), Some(url.to_string()));
     }
 
     #[gpui::test]
