@@ -80,6 +80,9 @@ pub struct MarkdownPreviewView {
     /// background parse is in flight. Tracked so matches can be invalidated once it lands.
     markdown_parse_pending: bool,
     nav_history: Option<ItemNavHistory>,
+    /// Whether the source editor exists only for this preview, with no tab of its own: an automatic
+    /// preview closed its tab, or the preview was restored with a fresh editor.
+    owns_source_editor: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +123,7 @@ impl Global for SuppressedAutoPreviews {}
 pub enum MarkdownPreviewEvent {
     SourceEditorChanged,
     SourceFileHandleChanged,
+    SourceDirtyChanged,
 }
 
 impl MarkdownPreviewView {
@@ -175,6 +179,7 @@ impl MarkdownPreviewView {
                 if !replaces_editor {
                     return;
                 }
+                preview.update(cx, |preview, _| preview.owns_source_editor = true);
                 pane.update(cx, |pane, cx| {
                     if replaces_temporary_editor {
                         pane.replace_preview_item_id(preview.entity_id(), window, cx);
@@ -302,6 +307,13 @@ impl MarkdownPreviewView {
         Some((view, index))
     }
 
+    fn owned_source_editor(&self) -> Option<&Entity<Editor>> {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.owns_source_editor)
+            .map(|editor_state| &editor_state.editor)
+    }
+
     fn is_previewing(&self, buffer: &Entity<Buffer>, cx: &App) -> bool {
         self.active_editor.as_ref().is_some_and(|state| {
             state
@@ -409,6 +421,7 @@ impl MarkdownPreviewView {
                 scroll_handle: ScrollHandle::new(),
                 image_cache: RetainAllImageCache::new(cx),
                 base_directory: None,
+                owns_source_editor: false,
                 pending_update_task: None,
                 hovered_url: None,
                 mode,
@@ -541,6 +554,7 @@ impl MarkdownPreviewView {
         }
 
         let had_active_editor = self.active_editor.is_some();
+        self.owns_source_editor = false;
         let subscription = cx.subscribe_in(
             &editor,
             window,
@@ -548,9 +562,15 @@ impl MarkdownPreviewView {
                 match event {
                     EditorEvent::Edited { .. }
                     | EditorEvent::BufferEdited { .. }
-                    | EditorEvent::DirtyChanged
                     | EditorEvent::ExcerptsEdited { .. } => {
                         this.update_markdown_from_active_editor(true, false, window, cx);
+                    }
+                    EditorEvent::DirtyChanged => {
+                        this.update_markdown_from_active_editor(true, false, window, cx);
+                        cx.emit(MarkdownPreviewEvent::SourceDirtyChanged);
+                    }
+                    EditorEvent::Saved => {
+                        cx.emit(MarkdownPreviewEvent::SourceDirtyChanged);
                     }
                     EditorEvent::FileHandleChanged => {
                         this.base_directory =
@@ -1502,6 +1522,25 @@ impl Item for MarkdownPreviewView {
         }
     }
 
+    // When the source editor has no tab of its own, the preview is the only item for the buffer, so
+    // edits made through it, like toggling a task checkbox, must count as unsaved for save all and
+    // close prompts. Reporting the buffer as a project item instead would make panes treat the
+    // preview as a duplicate of the editor.
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.owned_source_editor()
+            .is_some_and(|editor| editor.read(cx).is_dirty(cx))
+    }
+
+    fn has_conflict(&self, cx: &App) -> bool {
+        self.owned_source_editor()
+            .is_some_and(|editor| editor.read(cx).has_conflict(cx))
+    }
+
+    fn has_deleted_file(&self, cx: &App) -> bool {
+        self.owned_source_editor()
+            .is_some_and(|editor| editor.read(cx).has_deleted_file(cx))
+    }
+
     fn can_save(&self, cx: &App) -> bool {
         self.active_editor
             .as_ref()
@@ -1564,6 +1603,9 @@ impl Item for MarkdownPreviewView {
             | MarkdownPreviewEvent::SourceFileHandleChanged => {
                 f(workspace::item::ItemEvent::UpdateTab);
                 f(workspace::item::ItemEvent::UpdateBreadcrumbs);
+            }
+            MarkdownPreviewEvent::SourceDirtyChanged => {
+                f(workspace::item::ItemEvent::UpdateTab);
             }
         }
     }
@@ -1968,7 +2010,16 @@ impl SerializableItem for MarkdownPreviewView {
                 let language_registry = project.read(cx).languages().clone();
                 let editor =
                     cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
-                MarkdownPreviewView::new(mode, editor, workspace, language_registry, window, cx)
+                let preview = MarkdownPreviewView::new(
+                    mode,
+                    editor,
+                    workspace,
+                    language_registry,
+                    window,
+                    cx,
+                );
+                preview.update(cx, |preview, _| preview.owns_source_editor = true);
+                preview
             })
         })
     }
@@ -3454,6 +3505,95 @@ mod tests {
             assert_eq!(
                 workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
                 1
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn replacing_preview_reports_unsaved_source_edits(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            assert_editor_replaced_by_preview(workspace, editor.as_ref(), cx);
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .next()
+                .expect("the preview replaced the editor")
+        });
+
+        cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
+
+        // Toggling a task checkbox in the preview edits the hidden source editor.
+        let source_editor = preview.read_with(cx, |preview, _| {
+            preview.active_editor.as_ref().unwrap().editor.clone()
+        });
+        source_editor.update(cx, |editor, cx| {
+            editor.edit(
+                [(
+                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
+                    "x",
+                )],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert!(
+                ItemHandle::is_dirty(&preview, cx),
+                "save all and close prompts only see the preview, so it must report the edit"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn preview_next_to_its_editor_leaves_unsaved_edits_to_the_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+        let preview = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let preview = MarkdownPreviewView::create_markdown_view(
+                        workspace,
+                        editor.clone(),
+                        window,
+                        cx,
+                    );
+                    workspace.add_item_to_active_pane(
+                        Box::new(preview.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                    preview
+                })
+            })
+            .unwrap();
+        editor.update(cx, |editor, cx| {
+            editor.edit(
+                [(
+                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
+                    "x",
+                )],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert!(ItemHandle::is_dirty(&editor, cx));
+            assert!(
+                !ItemHandle::is_dirty(&preview, cx),
+                "the editor tab owns the unsaved edit, so closing the preview must not prompt"
             );
         });
     }
