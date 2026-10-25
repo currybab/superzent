@@ -2765,7 +2765,10 @@ impl Element for MarkdownElement {
                         builder.table.end_row();
                     }
                     MarkdownTagEnd::TableCell => {
-                        builder.replace_pending_checkbox(self.on_checkbox_toggle.clone());
+                        builder.replace_pending_checkbox(
+                            &parsed_markdown.source,
+                            self.on_checkbox_toggle.clone(),
+                        );
                         builder.pop_div();
                         builder.pop_div();
                         builder.pop_text_style();
@@ -3685,7 +3688,11 @@ impl MarkdownElementBuilder {
         }
     }
 
-    fn replace_pending_checkbox(&mut self, on_toggle: Option<CheckboxToggleCallback>) {
+    fn replace_pending_checkbox(
+        &mut self,
+        source: &str,
+        on_toggle: Option<CheckboxToggleCallback>,
+    ) {
         let text = &self.pending_line.text;
         let trimmed = text.trim();
         if trimmed != "[x]" && trimmed != "[X]" && trimmed != "[ ]" {
@@ -3706,6 +3713,7 @@ impl MarkdownElementBuilder {
         } else {
             ToggleState::Unselected
         };
+        let marker_start = marker_source.start;
         let checkbox = Checkbox::new(
             ElementId::Name(
                 format!(
@@ -3718,7 +3726,12 @@ impl MarkdownElementBuilder {
         )
         .fill();
 
-        let checkbox = if let Some(on_toggle) = on_toggle {
+        // The rendered text can be `[x]` without the source spelling it that way, e.g. with HTML
+        // entities, and editing that source range would corrupt the cell.
+        let source_is_marker = source
+            .get(marker_source.clone())
+            .is_some_and(|marker| matches!(marker, "[x]" | "[X]" | "[ ]"));
+        let checkbox = if let Some(on_toggle) = on_toggle.filter(|_| source_is_marker) {
             checkbox
                 .on_click(move |_state, window, cx| {
                     on_toggle(marker_source.clone(), !checked, window, cx);
@@ -3728,7 +3741,9 @@ impl MarkdownElementBuilder {
             checkbox.visualization_only(true).into_any_element()
         };
 
-        let mut checkbox_container = h_flex().w_full();
+        let mut checkbox_container = h_flex()
+            .w_full()
+            .debug_selector(move || format!("table_checkbox_{marker_start}"));
         checkbox_container = match self.text_style().text_align {
             TextAlign::Left => checkbox_container.justify_start(),
             TextAlign::Center => checkbox_container.justify_center(),
@@ -6296,6 +6311,53 @@ mod tests {
         );
         assert_eq!(checkbox_cells[0].trim(), "[x]");
         assert_eq!(checkbox_cells[1].trim(), "[ ]");
+    }
+
+    #[gpui::test]
+    fn test_table_checkboxes_only_toggle_literal_markers(cx: &mut TestAppContext) {
+        struct CheckboxTableView {
+            markdown: Entity<Markdown>,
+            toggled: Rc<RefCell<Vec<Range<usize>>>>,
+        }
+
+        impl Render for CheckboxTableView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let toggled = self.toggled.clone();
+                div().size_full().child(
+                    MarkdownElement::new(self.markdown.clone(), MarkdownStyle::default())
+                        .on_checkbox_toggle(move |range, _, _, _| {
+                            toggled.borrow_mut().push(range);
+                        }),
+                )
+            }
+        }
+
+        ensure_theme_initialized(cx);
+        let source = "| Entity | Literal |\n|---|---|\n| &#91;x&#93; | [x] |\n";
+        let toggled = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.open_window(size(px(800.), px(600.)), |_, cx| CheckboxTableView {
+            markdown: cx.new(|cx| Markdown::new(source.into(), None, None, cx)),
+            toggled: toggled.clone(),
+        });
+        cx.run_until_parked();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let entity_start = source.find("&#91;").unwrap();
+        let literal_start = source.rfind("[x]").unwrap();
+        for start in [entity_start, literal_start] {
+            let bounds = cx
+                .debug_bounds(&*format!("table_checkbox_{start}").leak())
+                .expect("both cells render a checkbox");
+            // Checkboxes sit at the left edge of their full-width container.
+            let checkbox_center = bounds.origin + point(px(6.), bounds.size.height / 2.);
+            cx.simulate_click(checkbox_center, Modifiers::default());
+        }
+
+        assert_eq!(
+            *toggled.borrow(),
+            vec![literal_start..literal_start + 3],
+            "only the literal [x] may be edited; the entity cell is not a task marker in the source"
+        );
     }
 
     #[test]
