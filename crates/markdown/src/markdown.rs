@@ -4988,7 +4988,7 @@ mod tests {
         assert!(vertical_clipped_position.y > px(80.));
         assert!(vertical_clipped_position.y < px(200.));
 
-        let mut handler = MarkdownInputHandler::new(markdown.clone(), rendered);
+        let mut handler = MarkdownInputHandler::new(markdown, rendered);
         assert_eq!(
             cx.update(|window, cx| handler.character_index_for_point(
                 horizontal_clipped_position,
