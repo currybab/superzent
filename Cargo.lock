@@ -7752,7 +7752,6 @@ dependencies = [
  "sum_tree",
  "taffy",
  "thiserror 2.0.21",
- "tracing",
  "ttf-parser",
  "unicode-segmentation",
  "url",
