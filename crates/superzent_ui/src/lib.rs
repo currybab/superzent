@@ -7152,17 +7152,17 @@ impl Render for SuperzentRightSidebar {
                                 cx,
                             ))
                             .child(self.render_tab_button(
-                                "superzent-right-tab-history",
-                                "History".into(),
-                                Some(IconName::HistoryRerun),
-                                RightSidebarTab::History,
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
                                 "superzent-right-tab-files",
                                 "Files".into(),
                                 Some(IconName::FileTree),
                                 RightSidebarTab::Files,
+                                cx,
+                            ))
+                            .child(self.render_tab_button(
+                                "superzent-right-tab-history",
+                                "History".into(),
+                                Some(IconName::HistoryRerun),
+                                RightSidebarTab::History,
                                 cx,
                             ))
                             .children(external_tabs.into_iter().map(|(panel_id, label, icon)| {
