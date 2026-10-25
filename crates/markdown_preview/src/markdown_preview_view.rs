@@ -2115,10 +2115,15 @@ impl SerializableItem for MarkdownPreviewView {
         &mut self,
         workspace: &mut Workspace,
         item_id: ItemId,
-        _closing: bool,
+        closing: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<()>>> {
+        // Only the path and mode are stored, not the buffer. Serializing would tell the workspace
+        // that unsaved edits in an owned source editor survive closing, so let it prompt instead.
+        if closing && Item::is_dirty(self, cx) {
+            return None;
+        }
         let workspace_id = workspace.database_id()?;
         let editor = self.active_editor.as_ref()?.editor.clone();
         let buffer = editor.read(cx).buffer().read(cx).as_singleton()?;
@@ -3983,6 +3988,50 @@ mod tests {
         });
         assert_eq!(text, "- [ ] task\n");
         cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
+    }
+
+    #[gpui::test]
+    async fn closing_a_dirty_owned_preview_does_not_claim_its_edits_are_serialized(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .next()
+                .expect("the preview replaced the editor")
+        });
+        let editor = preview.read_with(cx, |preview, _| {
+            preview.active_editor.as_ref().unwrap().editor.clone()
+        });
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
+        });
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_random_database_id();
+                    let item_id = preview.entity_id().as_u64();
+                    preview.update(cx, |preview, cx| {
+                        assert!(
+                            preview
+                                .serialize(workspace, item_id, true, window, cx)
+                                .is_none(),
+                            "only the buffer holds the edit, so closing must prompt to save it"
+                        );
+                        assert!(
+                            preview
+                                .serialize(workspace, item_id, false, window, cx)
+                                .is_some()
+                        );
+                    });
+                });
+            })
+            .unwrap();
     }
 
     #[gpui::test]
