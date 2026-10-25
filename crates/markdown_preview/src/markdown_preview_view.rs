@@ -1655,12 +1655,16 @@ impl Item for MarkdownPreviewView {
 
     fn reload(
         &mut self,
-        _project: Entity<Project>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        // The preview is not the owner of the source editor's buffer, so force-closing it should not discard editor changes.
-        Task::ready(Ok(()))
+        // When the source editor has a tab of its own, that tab owns the edits, so force-closing
+        // the preview must not discard them. An owned source editor has no other item to do it.
+        match self.owned_source_editor().cloned() {
+            Some(editor) => editor.update(cx, |editor, cx| editor.reload(project, window, cx)),
+            None => Task::ready(Ok(())),
+        }
     }
 
     fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(workspace::item::ItemEvent)) {
@@ -3900,6 +3904,49 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    async fn reloading_an_owned_preview_discards_source_edits(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .next()
+                .expect("the preview replaced the editor")
+        });
+        let source_editor = preview.read_with(cx, |preview, _| {
+            preview.active_editor.as_ref().unwrap().editor.clone()
+        });
+        source_editor.update(cx, |editor, cx| {
+            editor.edit(
+                [(
+                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
+                    "x",
+                )],
+                cx,
+            );
+        });
+        cx.update(|cx| assert!(ItemHandle::is_dirty(&preview, cx)));
+
+        let reload = multi_workspace
+            .update(cx, |_, window, cx| {
+                preview.update(cx, |preview, cx| {
+                    preview.reload(project.clone(), window, cx)
+                })
+            })
+            .unwrap();
+        reload.await.unwrap();
+        cx.run_until_parked();
+
+        let text = source_editor.read_with(cx, |editor, cx| {
+            editor.buffer().read(cx).snapshot(cx).text()
+        });
+        assert_eq!(text, "- [ ] task\n");
+        cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
     }
 
     #[gpui::test]
