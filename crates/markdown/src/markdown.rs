@@ -451,7 +451,7 @@ pub struct Markdown {
     fallback_code_block_language: Option<LanguageName>,
     options: MarkdownOptions,
     mermaid_state: MermaidState,
-    _mermaid_theme_subscription: Option<Subscription>,
+    _mermaid_subscriptions: Vec<Subscription>,
     /// Per-diagram view state (current tab, zoom, scroll position, and pending
     /// debounced re-raster) keyed by source offset. Distinct from
     /// [`MermaidState`], which caches the rendered diagrams themselves keyed by
@@ -624,14 +624,24 @@ impl Markdown {
     ) -> Self {
         let focus_handle = cx.focus_handle();
 
-        let theme_subscription = if options.render_mermaid_diagrams {
-            Some(
+        let mermaid_subscriptions = if options.render_mermaid_diagrams {
+            let mut mermaid_font_family = Self::mermaid_font_family(cx);
+            vec![
                 cx.observe_global::<theme::GlobalTheme>(|this: &mut Self, cx| {
                     this.invalidate_mermaid_cache(cx);
                 }),
-            )
+                // The theme global is only reloaded when the theme itself changes, so font
+                // setting changes have to be picked up separately.
+                cx.observe_global::<settings::SettingsStore>(move |this: &mut Self, cx| {
+                    let new_mermaid_font_family = Self::mermaid_font_family(cx);
+                    if new_mermaid_font_family != mermaid_font_family {
+                        mermaid_font_family = new_mermaid_font_family;
+                        this.invalidate_mermaid_cache(cx);
+                    }
+                }),
+            ]
         } else {
-            None
+            Vec::new()
         };
         let mut this = Self {
             source,
@@ -649,7 +659,7 @@ impl Markdown {
             fallback_code_block_language,
             options,
             mermaid_state: MermaidState::default(),
-            _mermaid_theme_subscription: theme_subscription,
+            _mermaid_subscriptions: mermaid_subscriptions,
             mermaid_views: HashMap::default(),
             copied_code_blocks: HashSet::default(),
             wrapped_code_blocks: HashSet::default(),
@@ -699,6 +709,11 @@ impl Markdown {
     fn retain_code_block_scroll_handles(&mut self, ids: &HashSet<usize>) {
         self.code_block_scroll_handles
             .retain(|id, _| ids.contains(id));
+    }
+
+    fn mermaid_font_family(cx: &App) -> Option<SharedString> {
+        cx.has_global::<settings::SettingsStore>()
+            .then(|| ThemeSettings::get_global(cx).mermaid_font_family().clone())
     }
 
     pub fn invalidate_mermaid_cache(&mut self, cx: &mut Context<Self>) {

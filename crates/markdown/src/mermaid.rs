@@ -443,14 +443,44 @@ fn is_supported_diagram_type(source: &str) -> bool {
         "xychart-beta",
         "journey",
     ];
-    let first_token = source
-        .trim_start()
+    let first_token = diagram_declaration(source)
         .split(|c: char| c.is_whitespace() || c == '\n')
         .next()
         .unwrap_or("");
     SUPPORTED_PREFIXES
         .iter()
         .any(|prefix| first_token.eq_ignore_ascii_case(prefix))
+}
+
+/// Returns the source starting at the diagram declaration, skipping the YAML
+/// frontmatter, `%%{init}%%` directives and `%%` comments Mermaid allows before it.
+fn diagram_declaration(source: &str) -> &str {
+    let mut rest = source.trim_start();
+    if let Some(after_opening_fence) = rest.strip_prefix("---")
+        && let Some((opening_line_rest, mut frontmatter)) = after_opening_fence.split_once('\n')
+        && opening_line_rest.trim().is_empty()
+    {
+        loop {
+            let (line, after_line) = frontmatter.split_once('\n').unwrap_or((frontmatter, ""));
+            if line.trim_end() == "---" {
+                rest = after_line;
+                break;
+            }
+            if after_line.is_empty() {
+                return "";
+            }
+            frontmatter = after_line;
+        }
+    }
+    loop {
+        rest = rest.trim_start();
+        if !rest.starts_with("%%") {
+            return rest;
+        }
+        rest = rest
+            .split_once('\n')
+            .map_or("", |(_, after_line)| after_line);
+    }
 }
 
 pub(crate) fn extract_mermaid_diagrams(
@@ -969,7 +999,8 @@ mod tests {
     };
     use collections::HashMap;
     use gpui::{
-        Context, Entity, IntoElement, Render, RenderImage, TestAppContext, Window, point, size,
+        Context, Entity, IntoElement, Render, RenderImage, TestAppContext, UpdateGlobal as _,
+        Window, point, size,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1186,6 +1217,39 @@ mod tests {
             diagram.contents.contents.contains("flowchart"),
             "The extracted diagram should be the flowchart"
         );
+    }
+
+    #[test]
+    fn test_mermaid_diagrams_in_nested_lists_are_extracted() {
+        for markdown in [
+            "- Item\n  - Nested\n\n    ```mermaid\n    flowchart TD\n      A --> B\n    ```\n",
+            "1. Item\n   - Nested\n\n     ~~~mermaid\n     flowchart TD\n       A --> B\n     ~~~",
+        ] {
+            let events =
+                crate::parser::parse_markdown_with_options(markdown, false, false, false).events;
+            let diagrams = extract_mermaid_diagrams(markdown, &events);
+            assert_eq!(diagrams.len(), 1, "{markdown:?}");
+        }
+    }
+
+    #[test]
+    fn test_diagram_type_is_read_after_preamble() {
+        for source in [
+            "%% A comment\nflowchart TD\n  A --> B",
+            "%%{init: {'theme': 'forest'}}%%\n\n%% A comment\nsequenceDiagram\n  A->>B: hi",
+            "---\ntitle: Example\n---\nflowchart TD\n  A --> B",
+            "---\nconfig:\n  look: handDrawn\n---\n%% A comment\nerDiagram\n  A ||--o{ B : has",
+        ] {
+            assert!(super::is_supported_diagram_type(source), "{source:?}");
+        }
+        for source in [
+            "%% A comment\nsankey-beta",
+            "---\ntitle: flowchart\n---\nblock-beta",
+            "---\ntitle: Unclosed frontmatter\nflowchart TD",
+            "%% Only a comment",
+        ] {
+            assert!(!super::is_supported_diagram_type(source), "{source:?}");
+        }
     }
 
     #[gpui::test]
@@ -1770,6 +1834,85 @@ mod tests {
             .join("\n");
 
         assert!(!text.contains("graph TD;"));
+    }
+
+    #[gpui::test]
+    fn test_mermaid_font_setting_change_rerenders_diagrams(cx: &mut TestAppContext) {
+        ensure_theme_initialized(cx);
+
+        let markdown = cx.new(|cx| {
+            Markdown::new_with_options(
+                "```mermaid\ngraph TD;\n```".into(),
+                None,
+                None,
+                MarkdownOptions {
+                    render_mermaid_diagrams: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        let render_image = mock_render_image(cx);
+        let insert_cached_diagram = |cx: &mut TestAppContext| {
+            markdown.update(cx, |markdown, _| {
+                let contents = markdown
+                    .parsed_markdown
+                    .mermaid_diagrams
+                    .values()
+                    .next()
+                    .unwrap()
+                    .contents
+                    .clone();
+                let cached = Arc::new(CachedMermaidDiagram::new_for_test(
+                    Some(render_image.clone()),
+                    None,
+                    None,
+                ));
+                markdown
+                    .mermaid_state
+                    .cache
+                    .insert(contents.clone(), cached.clone());
+                markdown.mermaid_state.order = vec![contents];
+                cached
+            })
+        };
+        let is_cached = |cached: &Arc<CachedMermaidDiagram>, cx: &mut TestAppContext| {
+            markdown.read_with(cx, |markdown, _| {
+                markdown
+                    .mermaid_state
+                    .cache
+                    .values()
+                    .any(|entry| Arc::ptr_eq(entry, cached))
+            })
+        };
+        let update_settings =
+            |cx: &mut TestAppContext, update: fn(&mut settings::SettingsContent)| {
+                cx.update(|cx| {
+                    settings::SettingsStore::update_global(cx, |store, cx| {
+                        store.update_user_settings(cx, update);
+                    });
+                });
+                cx.run_until_parked();
+            };
+
+        let cached = insert_cached_diagram(cx);
+        update_settings(cx, |settings| {
+            settings.theme.ui_font_size = Some(16.0.into());
+        });
+        assert!(
+            is_cached(&cached, cx),
+            "settings that don't affect the diagram font keep the cached raster"
+        );
+
+        update_settings(cx, |settings| {
+            settings.theme.mermaid_font_family = Some("Courier".to_string().into());
+        });
+        assert!(
+            !is_cached(&cached, cx),
+            "changing the Mermaid font re-renders the diagram"
+        );
     }
 
     #[gpui::test]

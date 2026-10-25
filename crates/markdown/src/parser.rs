@@ -405,7 +405,10 @@ pub(crate) fn parse_markdown_with_options(
                     )) => {
                         within_code_block = true;
                         let code_block_source = &text[range.clone()];
-                        let content_range = extract_code_block_content_range(code_block_source);
+                        let fence_indentation =
+                            range.start - text[..range.start].rfind('\n').map_or(0, |ix| ix + 1);
+                        let content_range =
+                            extract_code_block_content_range(code_block_source, fence_indentation);
                         let is_fenced_closed = content_range.end < code_block_source.len();
                         let content_range =
                             content_range.start + range.start..content_range.end + range.start;
@@ -985,7 +988,12 @@ fn extract_code_content_range(text: &str) -> Range<usize> {
     start_ticks..text_len - end_ticks
 }
 
-pub(crate) fn extract_code_block_content_range(text: &str) -> Range<usize> {
+/// `fence_indentation` is the column of the opening fence. Inside a list item it includes the
+/// item's indentation, which the closing fence's line repeats.
+pub(crate) fn extract_code_block_content_range(
+    text: &str,
+    fence_indentation: usize,
+) -> Range<usize> {
     let mut range = 0..text.len();
     let Some(fence_character) = text
         .as_bytes()
@@ -1022,7 +1030,7 @@ pub(crate) fn extract_code_block_content_range(text: &str) -> Range<usize> {
             .take_while(|character| *character == fence_character)
             .count();
         let trailing_characters = &closing_fence[closing_fence_len..];
-        if indentation_len <= 3
+        if indentation_len <= fence_indentation + 3
             && closing_fence_len >= opening_fence_len
             && trailing_characters
                 .bytes()
@@ -1777,29 +1785,38 @@ mod tests {
     #[test]
     fn test_extract_code_block_content_range() {
         let input = "```rust\nlet x = 5;\n```";
-        assert_eq!(extract_code_block_content_range(input), 8..19);
+        assert_eq!(extract_code_block_content_range(input, 0), 8..19);
 
         let input = "plain text";
-        assert_eq!(extract_code_block_content_range(input), 0..10);
+        assert_eq!(extract_code_block_content_range(input, 0), 0..10);
 
         let input = "```python\nprint('hello')\nprint('world')\n```";
-        assert_eq!(extract_code_block_content_range(input), 10..40);
+        assert_eq!(extract_code_block_content_range(input, 0), 10..40);
 
         let input = "~~~~mermaid\ngraph TD;\n~~~~";
-        let content_range = extract_code_block_content_range(input);
+        let content_range = extract_code_block_content_range(input, 0);
         assert_eq!(&input[content_range], "graph TD;\n");
 
         let input = "~~~mermaid\ngraph TD;\n    ~~~~";
-        let content_range = extract_code_block_content_range(input);
+        let content_range = extract_code_block_content_range(input, 0);
         assert_eq!(&input[content_range], "graph TD;\n    ~~~~");
 
         let input = "~~~mermaid\ngraph TD;\n   ~~~~ \t";
-        let content_range = extract_code_block_content_range(input);
+        let content_range = extract_code_block_content_range(input, 0);
         assert_eq!(&input[content_range], "graph TD;\n");
+
+        // In a list item, the closing fence's line repeats the item's indentation.
+        let input = "```mermaid\n      graph TD;\n      ```";
+        let content_range = extract_code_block_content_range(input, 3);
+        assert_eq!(&input[content_range], "      graph TD;\n");
+
+        let input = "```mermaid\n      graph TD;\n       ```";
+        let content_range = extract_code_block_content_range(input, 3);
+        assert_eq!(&input[content_range], "      graph TD;\n       ```");
 
         // Malformed input
         let input = "`````";
-        assert_eq!(extract_code_block_content_range(input), 5..5);
+        assert_eq!(extract_code_block_content_range(input, 0), 5..5);
     }
 
     #[test]
