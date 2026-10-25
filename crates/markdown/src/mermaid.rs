@@ -103,7 +103,7 @@ impl CachedMermaidDiagram {
         let task = cx.spawn(async move |this, cx| {
             let value = cx
                 .background_spawn(async move {
-                    let svg_string = mermaid_rs_renderer::render(&contents.contents)?;
+                    let svg_string = render_mermaid_svg(&contents.contents)?;
                     let scale = contents.scale as f32 / 100.0;
                     svg_renderer
                         .render_single_frame(svg_string.as_bytes(), scale, true)
@@ -260,11 +260,21 @@ pub(crate) fn render_mermaid_diagram(
     }
 }
 
+/// Renders a Mermaid diagram to SVG for the gpui SVG renderer.
+fn render_mermaid_svg(source: &str) -> anyhow::Result<String> {
+    let svg = mermaid_rs_renderer::render(source)?;
+    // usvg assumes a fallback font shapes text into as many glyphs as the original font, and
+    // gives up on the rest of the label when it doesn't. An emoji followed by U+FE0F (as in "🕸️")
+    // is one glyph in the emoji font but two elsewhere, which left the label as boxes.
+    Ok(svg.replace('\u{FE0F}', ""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CachedMermaidDiagram, MermaidDiagramCache, MermaidState,
         ParsedMarkdownMermaidDiagramContents, extract_mermaid_diagrams, parse_mermaid_info,
+        render_mermaid_svg,
     };
     use crate::{
         CodeBlockRenderer, CopyButtonVisibility, Markdown, MarkdownElement, MarkdownOptions,
@@ -359,6 +369,15 @@ mod tests {
             .iter()
             .position(|diagram| diagram == &new_content)?;
         MermaidState::get_fallback_image(idx, old_full_order, new_full_order.len(), cache)
+    }
+
+    #[test]
+    fn test_render_mermaid_svg_drops_emoji_variation_selectors() {
+        let svg = render_mermaid_svg("flowchart LR\n    A[\"🕸️ 그래프\"] --> B[\"⚙️ 컴파일러\"]")
+            .expect("diagram should render");
+        assert!(svg.contains("🕸 그래프"));
+        assert!(svg.contains("⚙ 컴파일러"));
+        assert!(!svg.contains('\u{FE0F}'));
     }
 
     #[test]
