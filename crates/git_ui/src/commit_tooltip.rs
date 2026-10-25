@@ -117,6 +117,9 @@ struct CommitAvatarAsset {
 impl Hash for CommitAvatarAsset {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.sha.hash(state);
+        // The email is part of the key so that an avatar requested before the commit's author
+        // email was loaded doesn't pin the email-less lookup's result for the whole session.
+        self.author_email.hash(state);
         self.remote.host.name().hash(state);
     }
 }
@@ -402,4 +405,42 @@ fn blame_entry_timestamp(blame_entry: &BlameEntry, format: time_format::Timestam
 
 pub fn blame_entry_relative_timestamp(blame_entry: &BlameEntry) -> String {
     blame_entry_timestamp(blame_entry, time_format::TimestampFormat::Relative)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt as _;
+    use git_hosting_providers::Github;
+    use gpui::TestAppContext;
+    use std::sync::Arc;
+
+    #[gpui::test]
+    async fn test_commit_avatar_resolves_after_author_email_loads(cx: &mut TestAppContext) {
+        let remote = GitRemote {
+            host: Arc::new(Github::public_instance()),
+            owner: "zed-industries".into(),
+            repo: "zed".into(),
+        };
+        let sha: SharedString = "2c90ed372c0000000000000000000000000000ff".into();
+
+        // While commit data is still loading the avatar is requested without an email, which
+        // falls back to the GitHub API. The test HTTP client answers 404, like GitHub does for
+        // fork-only commits looked up on the upstream remote.
+        let without_email = CommitAvatarAsset::new(remote.clone(), sha.clone(), None);
+        let task = cx.update(|cx| cx.fetch_asset::<CommitAvatarAsset>(&without_email).0);
+        cx.run_until_parked();
+        assert_eq!(task.now_or_never(), Some(None));
+
+        let with_email = CommitAvatarAsset::new(remote, sha, Some("someone@example.com".into()));
+        let task = cx.update(|cx| cx.fetch_asset::<CommitAvatarAsset>(&with_email).0);
+        cx.run_until_parked();
+        assert_eq!(
+            task.now_or_never(),
+            Some(Some(
+                "https://avatars.githubusercontent.com/u/e?email=someone%40example.com&s=128"
+                    .into()
+            ))
+        );
+    }
 }
