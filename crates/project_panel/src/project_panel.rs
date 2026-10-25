@@ -1205,7 +1205,8 @@ impl ProjectPanel {
             let is_remote = project.is_remote();
             let is_collab = project.is_via_collab();
             let is_local = project.is_local() || project.is_via_wsl_with_host_interop(cx);
-            let is_markdown = !is_dir && MarkdownPreviewView::is_markdown_path(entry.path.as_std_path());
+            let is_markdown =
+                !is_dir && MarkdownPreviewView::is_markdown_path(entry.path.as_std_path());
 
             let settings = ProjectPanelSettings::get_global(cx);
             let visible_worktrees_count = project.visible_worktrees(cx).count();
