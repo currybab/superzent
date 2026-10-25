@@ -1701,14 +1701,18 @@ impl Item for MarkdownPreviewView {
 
         let language_registry = project.read(cx).languages().clone();
 
-        Task::ready(Some(MarkdownPreviewView::new(
+        let split = MarkdownPreviewView::new(
             MarkdownPreviewMode::Default,
             active_editor.editor.clone(),
             self.workspace.clone(),
             language_registry,
             window,
             cx,
-        )))
+        );
+        // Either preview may be closed first, so both keep reporting the source editor's edits.
+        let owns_source_editor = self.owns_source_editor;
+        split.update(cx, |split, _| split.owns_source_editor = owns_source_editor);
+        Task::ready(Some(split))
     }
 
     fn set_nav_history(
@@ -3773,6 +3777,42 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui::test]
+    async fn split_of_an_owned_preview_keeps_reporting_unsaved_edits(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<MarkdownPreviewView>(cx)
+                .next()
+                .expect("the preview replaced the editor")
+        });
+
+        let split = multi_workspace
+            .update(cx, |_, window, cx| {
+                preview.update(cx, |preview, cx| preview.clone_on_split(None, window, cx))
+            })
+            .unwrap()
+            .await
+            .expect("previews can be split");
+        let source_editor = split.read_with(cx, |split, _| {
+            split.active_editor.as_ref().unwrap().editor.clone()
+        });
+        source_editor.update(cx, |editor, cx| {
+            editor.edit(
+                [(
+                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
+                    "x",
+                )],
+                cx,
+            );
+        });
+
+        cx.update(|cx| assert!(ItemHandle::is_dirty(&split, cx)));
     }
 
     #[gpui::test]
