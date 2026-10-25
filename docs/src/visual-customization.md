@@ -71,7 +71,22 @@ If you would like to use distinct themes for light mode/dark mode that can be se
   "agent_ui_font_size": 15,
   // Controls the font size for the agent panel's message editor, user message,
   // and any other snippet of code.
-  "agent_buffer_font_size": 12
+  "agent_buffer_font_size": 12,
+
+  "markdown_preview": {
+    // Controls the font size for the markdown preview.
+    // If not specified, it falls back to the editor font size.
+    "font_size": null,
+    // Controls the font family for the markdown preview.
+    // If not specified, it falls back to the UI font family.
+    "font_family": null,
+    // Controls the font family for code blocks in the markdown preview.
+    // If not specified, it falls back to the editor font family.
+    "code_font_family": null,
+    // Controls the font weight for headings (H1 through H6) in the markdown preview,
+    // in CSS units from 100 to 900. Defaults to 600.
+    "heading_font_weight": 600
+  }
 ```
 
 ### Font ligatures

@@ -105,6 +105,26 @@
     // The unit for image file sizes: "binary" (KiB, MiB) or decimal (KB, MB)
     "unit": "binary",
   },
+  // Markdown preview settings
+  "markdown_preview": {
+    // The default font size for the markdown preview. Falls back to the UI font size if unset.
+    "font_size": null,
+    // The font family for the markdown preview. Falls back to the UI font family if unset.
+    "font_family": null,
+    // The font family for code blocks in the markdown preview. Falls back to the editor font family if unset.
+    "code_font_family": null,
+    // The font weight for headings in the markdown preview, in CSS units from 100 to 900.
+    "heading_font_weight": 600,
+    // Whether to automatically open Markdown files in the preview.
+    "open_markdown_files_in_preview": false,
+    // Whether to limit the width of the rendered markdown content. When
+    // enabled, content is constrained to `max_width` and centered
+    // horizontally within the preview pane.
+    "limit_content_width": true,
+    // The maximum width, in pixels, of the rendered markdown content when
+    // limit_content_width is enabled.
+    "max_width": 800,
+  },
   // Determines the modifier to be used to add multiple cursors with the mouse. The open hover link mouse gestures will adapt such that it do not conflict with the multicursor modifier.
   //
   // 1. Maps to `Alt` on Linux and Windows and to `Option` on MacOS:

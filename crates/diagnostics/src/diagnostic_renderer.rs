@@ -8,7 +8,7 @@ use editor::{
 use gpui::{AppContext, Entity, Focusable, WeakEntity};
 use language::{BufferId, Diagnostic, DiagnosticEntryRef, LanguageRegistry};
 use lsp::DiagnosticSeverity;
-use markdown::{Markdown, MarkdownElement};
+use markdown::{CopyButtonVisibility, Markdown, MarkdownElement};
 use settings::Settings;
 use text::{AnchorRangeExt, Point};
 use theme::ThemeSettings;
@@ -239,8 +239,8 @@ impl DiagnosticBlock {
                         diagnostics_markdown_style(bcx.window, cx),
                     )
                     .code_block_renderer(markdown::CodeBlockRenderer::Default {
-                        copy_button: false,
-                        copy_button_on_hover: false,
+                        copy_button_visibility: CopyButtonVisibility::Hidden,
+                        wrap_button_visibility: markdown::WrapButtonVisibility::Hidden,
                         border: false,
                     })
                     .on_url_click({
@@ -269,7 +269,8 @@ impl DiagnosticBlock {
         cx: &mut Context<Editor>,
     ) {
         let Some(diagnostic_link) = link.strip_prefix("file://#diagnostic-") else {
-            editor::hover_popover::open_markdown_url(link, window, cx);
+            let workspace = editor.workspace();
+            editor::hover_popover::open_markdown_url(workspace, link, window, cx);
             return;
         };
         let Some((buffer_id, group_id, ix)) = maybe!({

@@ -956,6 +956,100 @@ fn appearance_page() -> SettingsPage {
         ]
     }
 
+    fn markdown_preview_font_section() -> [SettingsPageItem; 5] {
+        [
+            SettingsPageItem::SectionHeader("Markdown Preview Font"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Font Family",
+                description: "Font family for the markdown preview. Falls back to the UI font family.",
+                field: Box::new(SettingField {
+                    json_path: Some("markdown_preview.font_family"),
+                    pick: |settings_content| {
+                        settings_content
+                            .markdown_preview
+                            .as_ref()?
+                            .font_family
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .font_family = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Code Font Family",
+                description: "Font family for code blocks in the markdown preview. Falls back to the editor font family.",
+                field: Box::new(SettingField {
+                    json_path: Some("markdown_preview.code_font_family"),
+                    pick: |settings_content| {
+                        settings_content
+                            .markdown_preview
+                            .as_ref()?
+                            .code_font_family
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .code_font_family = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Font Size",
+                description: "Font size for the markdown preview. Falls back to the editor font size.",
+                field: Box::new(SettingField {
+                    json_path: Some("markdown_preview.font_size"),
+                    pick: |settings_content| {
+                        settings_content
+                            .markdown_preview
+                            .as_ref()
+                            .and_then(|preview| preview.font_size.as_ref())
+                            .or(settings_content.theme.buffer_font_size.as_ref())
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .font_size = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Heading Font Weight",
+                description: "Font weight for headings in the markdown preview, in CSS units from 100 to 900.",
+                field: Box::new(SettingField {
+                    json_path: Some("markdown_preview.heading_font_weight"),
+                    pick: |settings_content| {
+                        settings_content
+                            .markdown_preview
+                            .as_ref()?
+                            .heading_font_weight
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .heading_font_weight = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn text_rendering_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("Text Rendering"),
@@ -1171,6 +1265,7 @@ fn appearance_page() -> SettingsPage {
         theme_section(),
         buffer_font_section(),
         ui_font_section(),
+        markdown_preview_font_section(),
         text_rendering_section(),
         cursor_section(),
         highlighting_section(),
@@ -7892,7 +7987,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn global_only_miscellaneous_sub_section() -> [SettingsPageItem; 3] {
+    fn global_only_miscellaneous_sub_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Image Viewer",
@@ -7911,6 +8006,85 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                 }),
                 metadata: None,
                 files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Open Markdown Files in Preview",
+                description: "Whether to automatically open Markdown files in the preview.",
+                field: Box::new(SettingField {
+                    json_path: Some("markdown_preview.open_markdown_files_in_preview"),
+                    pick: |settings_content| {
+                        settings_content
+                            .markdown_preview
+                            .as_ref()?
+                            .open_markdown_files_in_preview
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .open_markdown_files_in_preview = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::DynamicItem(DynamicItem {
+                discriminant: SettingItem {
+                    files: USER,
+                    title: "Limit Markdown Preview Width",
+                    description: "Whether to constrain the markdown preview content to a maximum width, centering it when the pane is wider, for optimal readability.",
+                    field: Box::new(SettingField::<bool> {
+                        json_path: Some("markdown_preview.limit_content_width"),
+                        pick: |settings_content| {
+                            settings_content
+                                .markdown_preview
+                                .as_ref()?
+                                .limit_content_width
+                                .as_ref()
+                        },
+                        write: |settings_content, value| {
+                            settings_content
+                                .markdown_preview
+                                .get_or_insert_default()
+                                .limit_content_width = value;
+                        },
+                    }),
+                    metadata: None,
+                },
+                pick_discriminant: |settings_content| {
+                    let enabled = settings_content
+                        .markdown_preview
+                        .as_ref()?
+                        .limit_content_width
+                        .unwrap_or(true);
+                    Some(if enabled { 1 } else { 0 })
+                },
+                fields: vec![
+                    vec![],
+                    vec![SettingItem {
+                        files: USER,
+                        title: "Max Width",
+                        description: "Maximum content width in pixels. Content will be centered when the pane is wider than this value.",
+                        field: Box::new(SettingField {
+                            json_path: Some("markdown_preview.max_width"),
+                            pick: |settings_content| {
+                                settings_content
+                                    .markdown_preview
+                                    .as_ref()?
+                                    .max_width
+                                    .as_ref()
+                            },
+                            write: |settings_content, value| {
+                                settings_content
+                                    .markdown_preview
+                                    .get_or_insert_default()
+                                    .max_width = value;
+                            },
+                        }),
+                        metadata: None,
+                    }],
+                ],
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Auto Replace Emoji Shortcode",

@@ -135,6 +135,7 @@ pub use toolbar::{
 };
 pub use ui;
 use ui::{Window, prelude::*};
+use url::Url;
 use util::{
     ResultExt, TryFutureExt,
     paths::{PathStyle, SanitizedPath},
@@ -1359,6 +1360,7 @@ pub struct Workspace {
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
     _panels_task: Option<Task<Result<()>>>,
+    restoring_workspace: bool,
 }
 
 impl EventEmitter<Event> for Workspace {}
@@ -1739,6 +1741,7 @@ impl Workspace {
             bottom_dock,
             right_dock,
             _panels_task: None,
+            restoring_workspace: false,
             project: project.clone(),
             follower_states: Default::default(),
             last_leaders_by_pane: Default::default(),
@@ -2197,6 +2200,15 @@ impl Workspace {
 
     pub fn app_state(&self) -> &Arc<AppState> {
         &self.app_state
+    }
+
+    pub fn is_restoring(&self) -> bool {
+        self.restoring_workspace
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_restoring_workspace(&mut self, restoring: bool) {
+        self.restoring_workspace = restoring;
     }
 
     pub fn set_panels_task(&mut self, task: Task<Result<()>>) {
@@ -4199,6 +4211,119 @@ impl Workspace {
         })
     }
 
+    /// Opens a URL or file path, intelligently routing to the appropriate handler:
+    ///
+    /// - `http://` and `https://` URLs are opened in the system's default browser
+    /// - `file://` URIs are opened as files in the editor
+    /// - Paths without a URL scheme are treated as file paths:
+    ///   - Absolute paths are opened directly
+    ///   - Relative paths are first resolved against `base_path` (if provided),
+    ///     then against visible project worktrees
+    /// - Other URI schemes (e.g., `mailto:`, `vscode:`) are passed to the system handler
+    ///
+    /// # Arguments
+    /// * `url_or_path` - The URL or file path to open
+    /// * `base_path` - Optional base directory for resolving relative paths (e.g., the
+    ///   directory containing a markdown file). If not provided, relative paths are
+    ///   resolved against project worktrees.
+    ///
+    /// This method provides a unified way to handle links that may be either URLs
+    /// or file paths, such as those found in markdown documents, terminal output,
+    /// or LSP responses.
+    pub fn open_url_or_file(
+        &mut self,
+        url_or_path: &str,
+        base_path: Option<&Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut open_abs_path = |this: &mut Self, path, cx: &mut _| {
+            let url_or_path = url_or_path.to_owned();
+            let task = this.open_abs_path(
+                path,
+                OpenOptions {
+                    visible: Some(OpenVisible::None),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            (**cx)
+                .spawn(async move |cx| {
+                    if task.await.is_err() {
+                        cx.update(|cx| cx.open_url(&url_or_path));
+                    }
+                })
+                .detach();
+        };
+
+        let project = self.project();
+        let path_style = project.read(cx).path_style(cx);
+        let project_is_local = project.read(cx).is_local();
+
+        // Check absolute paths before URLs: a Windows path like `C:/dir/file.rs` also parses as a
+        // URL with the scheme `c`.
+        if path_style.is_absolute(url_or_path) {
+            open_abs_path(self, PathBuf::from(url_or_path), cx);
+            return;
+        }
+
+        if let Ok(url) = Url::parse(url_or_path) {
+            match url.scheme() {
+                "http" | "https" => cx.open_url(url_or_path),
+                "file" => match url.to_file_path() {
+                    Ok(path) => open_abs_path(self, path, cx),
+                    Err(()) => cx.open_url(url_or_path),
+                },
+                _ => cx.open_url(url_or_path),
+            }
+            return;
+        }
+
+        let path = Path::new(url_or_path);
+        // Try to resolve relative path against base_path first
+        let path_from_base = if let Some(base) = base_path {
+            let resolved_path = path_style.join(base, path).map(PathBuf::from);
+            if project_is_local {
+                if let Some(resolved_path) = resolved_path
+                    && resolved_path.exists()
+                {
+                    open_abs_path(self, resolved_path, cx);
+                    return;
+                }
+                None
+            } else {
+                resolved_path
+            }
+        } else {
+            None
+        };
+
+        // Try to resolve against project worktrees
+        let project_path = project.update(cx, |project, cx| {
+            path_from_base
+                .as_deref()
+                .and_then(|base_path| project.find_project_path(base_path, cx))
+                .or_else(|| project.find_project_path(path, cx))
+        });
+        if let Some(project_path) = project_path {
+            let url_or_path = url_or_path.to_owned();
+            let task = self.open_path(project_path, None, true, window, cx);
+            (**cx)
+                .spawn(async move |cx| {
+                    if task.await.is_err() {
+                        cx.update(|cx| cx.open_url(&url_or_path));
+                    }
+                })
+                .detach();
+            return;
+        }
+
+        // Couldn't resolve as a file path - try opening as URL anyway
+        // (the OS might be able to handle it)
+        cx.open_url(url_or_path);
+    }
+
     pub fn split_path(
         &mut self,
         path: impl Into<ProjectPath>,
@@ -5069,10 +5194,19 @@ impl Workspace {
     }
 
     pub fn adjacent_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Pane> {
-        self.find_pane_in_direction(SplitDirection::Right, cx)
-            .unwrap_or_else(|| {
-                self.split_pane(self.active_pane.clone(), SplitDirection::Right, window, cx)
-            })
+        self.adjacent_pane_of(&self.active_pane.clone(), window, cx)
+    }
+
+    pub fn adjacent_pane_of(
+        &mut self,
+        origin: &Entity<Pane>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Pane> {
+        self.center
+            .find_pane_in_direction(origin, SplitDirection::Right, cx)
+            .cloned()
+            .unwrap_or_else(|| self.split_pane(origin.clone(), SplitDirection::Right, window, cx))
     }
 
     pub fn pane_for(&self, handle: &dyn ItemHandle) -> Option<Entity<Pane>> {
@@ -6392,6 +6526,9 @@ impl Workspace {
         cx: &mut Context<Workspace>,
     ) -> Task<Result<Vec<Option<Box<dyn ItemHandle>>>>> {
         cx.spawn_in(window, async move |workspace, cx| {
+            workspace.update(cx, |workspace, _| {
+                workspace.restoring_workspace = true;
+            })?;
             let project = workspace.read_with(cx, |workspace, _| workspace.project().clone())?;
 
             let mut center_group = None;
@@ -6467,6 +6604,7 @@ impl Workspace {
                     });
                 }
 
+                workspace.restoring_workspace = false;
                 cx.notify();
             })?;
 
@@ -13202,9 +13340,12 @@ mod tests {
         // View
         struct TestPngItemView {
             focus_handle: FocusHandle,
+            project_path: ProjectPath,
         }
         // Model
-        struct TestPngItem {}
+        struct TestPngItem {
+            project_path: ProjectPath,
+        }
 
         impl project::ProjectItem for TestPngItem {
             fn try_open(
@@ -13213,7 +13354,8 @@ mod tests {
                 cx: &mut App,
             ) -> Option<Task<anyhow::Result<Entity<Self>>>> {
                 if path.path.extension().unwrap() == "png" {
-                    Some(cx.spawn(async move |cx| Ok(cx.new(|_| TestPngItem {}))))
+                    let project_path = path.clone();
+                    Some(cx.spawn(async move |cx| Ok(cx.new(|_| TestPngItem { project_path }))))
                 } else {
                     None
                 }
@@ -13224,7 +13366,7 @@ mod tests {
             }
 
             fn project_path(&self, _: &App) -> Option<ProjectPath> {
-                None
+                Some(self.project_path.clone())
             }
 
             fn is_dirty(&self) -> bool {
@@ -13261,7 +13403,7 @@ mod tests {
             fn for_project_item(
                 _project: Entity<Project>,
                 _pane: Option<&Pane>,
-                _item: Entity<Self::Item>,
+                item: Entity<Self::Item>,
                 _: &mut Window,
                 cx: &mut Context<Self>,
             ) -> Self
@@ -13270,6 +13412,7 @@ mod tests {
             {
                 Self {
                     focus_handle: cx.focus_handle(),
+                    project_path: item.read(cx).project_path.clone(),
                 }
             }
         }
@@ -13394,6 +13537,37 @@ mod tests {
                     focus_handle: cx.focus_handle(),
                 }
             }
+        }
+
+        #[gpui::test]
+        async fn test_open_url_or_file_decodes_file_urls(cx: &mut TestAppContext) {
+            init_test(cx);
+            cx.update(register_project_item::<TestPngItemView>);
+
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(util::path!("/root"), json!({ "my image.png": "" }))
+                .await;
+            let project = Project::test(fs, [util::path!("/root").as_ref()], cx).await;
+            let (workspace, cx) =
+                cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+            let file_url = Url::from_file_path(util::path!("/root/my image.png"))
+                .expect("absolute path")
+                .to_string();
+            assert!(file_url.contains("%20"));
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_url_or_file(&file_url, None, window, cx);
+            });
+            cx.run_until_parked();
+
+            let opened_path = workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .and_then(|item| item.downcast::<TestPngItemView>())
+                    .map(|item| item.read(cx).project_path.path.clone())
+            });
+            assert_eq!(opened_path.as_deref(), Some(rel_path("my image.png")));
+            assert_eq!(cx.opened_url(), None);
         }
 
         #[gpui::test]
@@ -13847,5 +14021,50 @@ mod tests {
             );
             assert!(panel.is_zoomed(window, cx));
         });
+    }
+
+    #[gpui::test]
+    async fn test_open_url_or_file_routes_urls(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/root",
+            json!({
+                "file.txt": "content",
+                "subdir": {
+                    "nested.txt": "nested content"
+                }
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs, [util::path!("/root").as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        // Test opening an HTTPS URL - should go to open_url
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_url_or_file("https://example.com", None, window, cx);
+        });
+        assert_eq!(cx.opened_url(), Some("https://example.com".to_string()));
+
+        // Test opening an HTTP URL - should go to open_url
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_url_or_file("http://example.com", None, window, cx);
+        });
+        assert_eq!(cx.opened_url(), Some("http://example.com".to_string()));
+
+        // Test opening other URI schemes - should go to open_url
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_url_or_file("mailto:test@example.com", None, window, cx);
+        });
+        assert_eq!(cx.opened_url(), Some("mailto:test@example.com".to_string()));
+
+        // Test opening a path that doesn't exist and doesn't match project - should fallback to open_url
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_url_or_file("nonexistent.txt", None, window, cx);
+        });
+        assert_eq!(cx.opened_url(), Some("nonexistent.txt".to_string()));
     }
 }

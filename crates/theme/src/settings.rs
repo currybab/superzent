@@ -5,7 +5,8 @@ use crate::{
 use collections::HashMap;
 use derive_more::{Deref, DerefMut};
 use gpui::{
-    App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, Window, px,
+    App, Context, Font, FontFallbacks, FontStyle, FontWeight, Global, Pixels, SharedString,
+    Subscription, Window, px,
 };
 use refineable::Refineable;
 use schemars::JsonSchema;
@@ -114,6 +115,20 @@ pub struct ThemeSettings {
     agent_ui_font_size: Option<Pixels>,
     /// The agent buffer font size. Determines the size of user messages in the agent panel.
     agent_buffer_font_size: Option<Pixels>,
+    /// The font family to use for rendering in the markdown preview.
+    /// Falls back to the UI font family if unset.
+    markdown_preview_font_family: Option<SharedString>,
+    /// The font family to use for code in the markdown preview.
+    /// Falls back to the buffer font family if unset.
+    markdown_preview_code_font_family: Option<SharedString>,
+    /// The font size to use for rendering in the markdown preview.
+    /// Falls back to the UI font size if unset.
+    markdown_preview_font_size: Option<Pixels>,
+    /// The theme to use for the markdown preview.
+    /// Falls back to the main editor theme if unset.
+    pub markdown_preview_theme: Option<ThemeSelection>,
+    /// The font weight for headings in the markdown preview.
+    markdown_preview_heading_font_weight: FontWeight,
     /// The line height for buffers, and the terminal.
     ///
     /// Changing this may affect the spacing of some UI elements.
@@ -193,6 +208,12 @@ impl Global for UiFontSize {}
 pub struct AgentFontSize(Pixels);
 
 impl Global for AgentFontSize {}
+
+/// In-memory override for the markdown preview font size.
+#[derive(Default)]
+pub struct MarkdownPreviewFontSize(Pixels);
+
+impl Global for MarkdownPreviewFontSize {}
 
 /// Represents the selection of a theme, which can be either static or dynamic.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -498,6 +519,39 @@ impl ThemeSettings {
             .unwrap_or_else(|| self.buffer_font_size(cx))
     }
 
+    /// Returns the font family to use in the markdown preview,
+    /// falling back to the UI font family when unset.
+    pub fn markdown_preview_font_family(&self) -> &SharedString {
+        self.markdown_preview_font_family
+            .as_ref()
+            .unwrap_or(&self.ui_font.family)
+    }
+
+    /// Returns the font family to use for code in the markdown preview,
+    /// falling back to the buffer font family when unset.
+    pub fn markdown_preview_code_font_family(&self) -> &SharedString {
+        self.markdown_preview_code_font_family
+            .as_ref()
+            .unwrap_or(&self.buffer_font.family)
+    }
+
+    /// Returns the font weight to use for headings in the markdown preview.
+    pub fn markdown_preview_heading_font_weight(&self) -> FontWeight {
+        self.markdown_preview_heading_font_weight
+    }
+
+    /// Returns the markdown preview font size.
+    ///
+    /// Note: the fallback deliberately uses `self.ui_font_size` instead of `ui_font_size(cx)`,
+    /// so that temporary UI zoom does not also resize the markdown preview.
+    pub fn markdown_preview_font_size(&self, cx: &App) -> Pixels {
+        cx.try_global::<MarkdownPreviewFontSize>()
+            .map(|size| size.0)
+            .or(self.markdown_preview_font_size)
+            .map(clamp_font_size)
+            .unwrap_or_else(|| clamp_font_size(self.ui_font_size))
+    }
+
     /// Returns the buffer font size, read from the settings.
     ///
     /// The real buffer font size is stored in-memory, to support temporary font size changes.
@@ -528,6 +582,14 @@ impl ThemeSettings {
     /// Use [`Self::agent_buffer_font_size`] to get the real font size.
     pub fn agent_buffer_font_size_settings(&self) -> Option<Pixels> {
         self.agent_buffer_font_size
+    }
+
+    /// Returns the markdown preview font size, read from the settings.
+    ///
+    /// The real markdown preview font size is stored in-memory, to support temporary
+    /// font size changes. Use [`Self::markdown_preview_font_size`] to get the real font size.
+    pub fn markdown_preview_font_size_settings(&self) -> Option<Pixels> {
+        self.markdown_preview_font_size
     }
 
     // TODO: Rename: `line_height` -> `buffer_line_height`
@@ -681,6 +743,24 @@ pub fn reset_agent_buffer_font_size(cx: &mut App) {
     }
 }
 
+/// Sets the adjusted font size of the markdown preview.
+pub fn adjust_markdown_preview_font_size(cx: &mut App, f: impl FnOnce(Pixels) -> Pixels) {
+    let markdown_preview_font_size = ThemeSettings::get_global(cx).markdown_preview_font_size(cx);
+    let adjusted_size = cx
+        .try_global::<MarkdownPreviewFontSize>()
+        .map_or(markdown_preview_font_size, |adjusted_size| adjusted_size.0);
+    cx.set_global(MarkdownPreviewFontSize(clamp_font_size(f(adjusted_size))));
+    cx.refresh_windows();
+}
+
+/// Resets the markdown preview font size to the default value.
+pub fn reset_markdown_preview_font_size(cx: &mut App) {
+    if cx.has_global::<MarkdownPreviewFontSize>() {
+        cx.remove_global::<MarkdownPreviewFontSize>();
+        cx.refresh_windows();
+    }
+}
+
 /// Ensures font size is within the valid range.
 pub fn clamp_font_size(size: Pixels) -> Pixels {
     size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
@@ -700,8 +780,9 @@ fn font_fallbacks_from_settings(
 }
 
 impl settings::Settings for ThemeSettings {
-    fn from_settings(content: &settings::SettingsContent) -> Self {
-        let content = &content.theme;
+    fn from_settings(settings_content: &settings::SettingsContent) -> Self {
+        let content = &settings_content.theme;
+        let markdown_preview = settings_content.markdown_preview.as_ref();
         let theme_selection: ThemeSelection = content.theme.clone().unwrap().into();
         let icon_theme_selection: IconThemeSelection = content.icon_theme.clone().unwrap().into();
         Self {
@@ -730,6 +811,22 @@ impl settings::Settings for ThemeSettings {
             buffer_line_height: content.buffer_line_height.unwrap().into(),
             agent_ui_font_size: content.agent_ui_font_size.map(|s| s.into_gpui()),
             agent_buffer_font_size: content.agent_buffer_font_size.map(|s| s.into_gpui()),
+            markdown_preview_font_family: markdown_preview
+                .and_then(|preview| preview.font_family.as_ref())
+                .map(|f| f.0.clone().into()),
+            markdown_preview_code_font_family: markdown_preview
+                .and_then(|preview| preview.code_font_family.as_ref())
+                .map(|f| f.0.clone().into()),
+            markdown_preview_font_size: markdown_preview
+                .and_then(|preview| preview.font_size)
+                .map(|size| size.into_gpui()),
+            markdown_preview_theme: markdown_preview
+                .and_then(|preview| preview.theme.clone())
+                .map(ThemeSelection::from),
+            markdown_preview_heading_font_weight: markdown_preview
+                .and_then(|preview| preview.heading_font_weight)
+                .map(|weight| weight.into_gpui())
+                .unwrap_or(FontWeight::SEMIBOLD),
             theme: theme_selection,
             experimental_theme_overrides: content.experimental_theme_overrides.clone(),
             theme_overrides: content.theme_overrides.clone(),

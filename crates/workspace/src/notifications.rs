@@ -5,7 +5,7 @@ use gpui::{
     DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, PromptLevel, Render, ScrollHandle,
     Task, TextStyleRefinement, UnderlineStyle, WeakEntity, svg,
 };
-use markdown::{Markdown, MarkdownElement, MarkdownStyle};
+use markdown::{CopyButtonVisibility, Markdown, MarkdownElement, MarkdownStyle};
 use parking_lot::Mutex;
 use project::project_settings::ProjectSettings;
 use settings::Settings;
@@ -401,11 +401,19 @@ impl Render for LanguageServerPrompt {
                         MarkdownElement::new(self.markdown.clone(), markdown_style(window, cx))
                             .text_size(TextSize::Small.rems(cx))
                             .code_block_renderer(markdown::CodeBlockRenderer::Default {
-                                copy_button: false,
-                                copy_button_on_hover: false,
+                                copy_button_visibility: CopyButtonVisibility::Hidden,
+                                wrap_button_visibility: markdown::WrapButtonVisibility::Hidden,
                                 border: false,
                             })
-                            .on_url_click(|link, _, cx| cx.open_url(&link)),
+                            .on_url_click(|link, window, cx| {
+                                if let Some(workspace) = Workspace::for_window(window, cx) {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.open_url_or_file(&link, None, window, cx);
+                                    });
+                                } else {
+                                    cx.open_url(&link);
+                                }
+                            }),
                     )
                     .children(request.actions.iter().enumerate().map(|(ix, action)| {
                         let this_handle = cx.entity();

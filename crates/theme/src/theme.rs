@@ -131,6 +131,8 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
     let mut prev_ui_font_size_settings = settings.ui_font_size_settings();
     let mut prev_agent_ui_font_size_settings = settings.agent_ui_font_size_settings();
     let mut prev_agent_buffer_font_size_settings = settings.agent_buffer_font_size_settings();
+    let mut prev_markdown_preview_font_size_settings =
+        settings.markdown_preview_font_size_settings();
     let mut prev_theme_name = settings.theme.name(SystemAppearance::global(cx).0);
     let mut prev_icon_theme_name = settings.icon_theme.name(SystemAppearance::global(cx).0);
     let mut prev_theme_overrides = (
@@ -145,6 +147,7 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
         let ui_font_size_settings = settings.ui_font_size_settings();
         let agent_ui_font_size_settings = settings.agent_ui_font_size_settings();
         let agent_buffer_font_size_settings = settings.agent_buffer_font_size_settings();
+        let markdown_preview_font_size_settings = settings.markdown_preview_font_size_settings();
         let theme_name = settings.theme.name(SystemAppearance::global(cx).0);
         let icon_theme_name = settings.icon_theme.name(SystemAppearance::global(cx).0);
         let theme_overrides = (
@@ -170,6 +173,11 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
         if agent_buffer_font_size_settings != prev_agent_buffer_font_size_settings {
             prev_agent_buffer_font_size_settings = agent_buffer_font_size_settings;
             reset_agent_buffer_font_size(cx);
+        }
+
+        if markdown_preview_font_size_settings != prev_markdown_preview_font_size_settings {
+            prev_markdown_preview_font_size_settings = markdown_preview_font_size_settings;
+            reset_markdown_preview_font_size(cx);
         }
 
         if theme_name != prev_theme_name || theme_overrides != prev_theme_overrides {

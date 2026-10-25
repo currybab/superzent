@@ -4749,25 +4749,35 @@ impl ThreadView {
                     let this = entity.read(cx);
                     let is_at_top = this.list_state.logical_scroll_top().item_ix == 0;
 
-                    let has_selection = this
-                        .thread
-                        .read(cx)
-                        .entries()
-                        .get(entry_ix)
-                        .and_then(|entry| match &entry {
-                            AgentThreadEntry::AssistantMessage(msg) => Some(&msg.chunks),
-                            _ => None,
-                        })
+                    let chunks =
+                        this.thread.read(cx).entries().get(entry_ix).and_then(
+                            |entry| match &entry {
+                                AgentThreadEntry::AssistantMessage(msg) => Some(&msg.chunks),
+                                _ => None,
+                            },
+                        );
+
+                    let has_selection = chunks
                         .map(|chunks| {
                             chunks.iter().any(|chunk| {
                                 let md = match chunk {
                                     AssistantMessageChunk::Message { block } => block.markdown(),
                                     AssistantMessageChunk::Thought { block } => block.markdown(),
                                 };
-                                md.map_or(false, |m| m.read(cx).selected_text().is_some())
+                                md.map_or(false, |m| m.read(cx).has_selection())
                             })
                         })
                         .unwrap_or(false);
+
+                    let context_menu_link = chunks.and_then(|chunks| {
+                        chunks.iter().find_map(|chunk| {
+                            let md = match chunk {
+                                AssistantMessageChunk::Message { block } => block.markdown(),
+                                AssistantMessageChunk::Thought { block } => block.markdown(),
+                            };
+                            md.and_then(|m| m.read(cx).context_menu_link().cloned())
+                        })
+                    });
 
                     let copy_this_agent_response =
                         ContextMenuEntry::new("Copy This Agent Response").handler({
@@ -4820,6 +4830,12 @@ impl ThreadView {
                         });
 
                     menu.when_some(focus, |menu, focus| menu.context(focus))
+                        .when_some(context_menu_link, |menu, url| {
+                            menu.entry("Copy Link", None, move |_, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(url.to_string()));
+                            })
+                            .separator()
+                        })
                         .action_disabled_when(
                             !has_selection,
                             "Copy Selection",
@@ -8094,6 +8110,59 @@ pub(crate) fn open_link(
             MentionUri::MergeConflict { .. } => {}
         })
     } else {
-        cx.open_url(&url);
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_url_or_file(&url, None, window, cx);
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use project::{FakeFs, Project};
+    use serde_json::json;
+    use util::path;
+    use workspace::MultiWorkspace;
+
+    #[gpui::test]
+    async fn test_open_link_bare_path(cx: &mut gpui::TestAppContext) {
+        crate::test_support::init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({"src": {"main.rs": ""}}))
+            .await;
+
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let workspace_weak = workspace.downgrade();
+
+        // Relative path — call from multi_workspace so the inner workspace entity is not locked
+        multi_workspace.update_in(cx, |_, window, cx| {
+            open_link("src/main.rs".into(), &workspace_weak, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let active = workspace
+                .active_item(cx)
+                .and_then(|item| item.project_path(cx))
+                .expect("file should be open");
+            assert!(*active.path == *"src/main.rs");
+        });
+
+        // Absolute path
+        let abs_path: SharedString = path!("/project/src/main.rs").to_string().into();
+        multi_workspace.update_in(cx, |_, window, cx| {
+            open_link(abs_path, &workspace_weak, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let active = workspace
+                .active_item(cx)
+                .and_then(|item| item.project_path(cx))
+                .expect("file should be open");
+            assert!(*active.path == *"src/main.rs");
+        });
     }
 }

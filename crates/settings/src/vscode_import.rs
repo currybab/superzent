@@ -192,6 +192,7 @@ impl VsCodeSettings {
             }),
             helix_mode: None,
             image_viewer: None,
+            markdown_preview: None,
             journal: None,
             language_models: None,
             line_indicator_format: None,
