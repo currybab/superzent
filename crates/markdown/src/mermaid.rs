@@ -1,8 +1,8 @@
 use collections::HashMap;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, ImageSource,
-    ParsedSvg, RenderImage, SMOOTH_SVG_SCALE_FACTOR, ScrollDelta, ScrollHandle, ScrollWheelEvent,
-    Size, Stateful, StyledText, Task, Window, img, pulsating_between, size,
+    ParsedSvg, RenderImage, ScrollDelta, ScrollHandle, ScrollWheelEvent, Size, Stateful,
+    StyledText, Task, Window, img, pulsating_between, size,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -537,15 +537,14 @@ pub(crate) fn extract_mermaid_diagrams(
 /// one of its rasters.
 ///
 /// Mermaid rasters always come from `SvgRenderer::render_parsed`, whose images
-/// have a device scale of [`SMOOTH_SVG_SCALE_FACTOR`]; dividing by it and by
-/// the scale the raster was made at recovers the natural size, regardless of
+/// know their logical size even when the raster was capped; dividing it by the
+/// scale the raster was requested at recovers the natural size, regardless of
 /// which raster is currently cached.
 fn mermaid_base_size(image: &RenderImage, rasterized_scale: f32) -> Size<Pixels> {
-    let device_size = image.size(0);
-    let device_scale = SMOOTH_SVG_SCALE_FACTOR * rasterized_scale;
+    let logical_size = image.render_size(0);
     size(
-        px(device_size.width.0 as f32 / device_scale),
-        px(device_size.height.0 as f32 / device_scale),
+        logical_size.width / rasterized_scale,
+        logical_size.height / rasterized_scale,
     )
 }
 

@@ -177,10 +177,9 @@ impl SvgRenderer {
         scale_factor: f32,
         to_brga: bool,
     ) -> Result<Arc<RenderImage>, usvg::Error> {
-        let pixmap = rasterize_tree(
-            &svg.0,
-            SvgSize::ScaleFactor(scale_factor * SMOOTH_SVG_SCALE_FACTOR),
-        )?;
+        let requested_scale = scale_factor * SMOOTH_SVG_SCALE_FACTOR;
+        let (pixmap, rasterized_scale) =
+            rasterize_tree(&svg.0, SvgSize::ScaleFactor(requested_scale))?;
         let mut buffer =
             image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take()).unwrap();
 
@@ -191,7 +190,9 @@ impl SvgRenderer {
         }
 
         let mut image = RenderImage::new(SmallVec::from_const([Frame::new(buffer)]));
-        image.scale_factor = SMOOTH_SVG_SCALE_FACTOR;
+        // When the pixmap was capped, the image keeps the logical size it was requested at
+        // and is drawn at a lower resolution.
+        image.scale_factor = SMOOTH_SVG_SCALE_FACTOR * rasterized_scale / requested_scale;
         Ok(Arc::new(image))
     }
 
@@ -241,11 +242,13 @@ impl SvgRenderer {
 
     fn render_pixmap(&self, bytes: &[u8], size: SvgSize) -> Result<Pixmap, usvg::Error> {
         let tree = usvg::Tree::from_data(bytes, &self.usvg_options)?;
-        rasterize_tree(&tree, size)
+        rasterize_tree(&tree, size).map(|(pixmap, _)| pixmap)
     }
 }
 
-fn rasterize_tree(tree: &usvg::Tree, size: SvgSize) -> Result<Pixmap, usvg::Error> {
+/// Returns the pixmap and the scale it was rendered at, which is lower than requested when the
+/// pixmap had to be capped.
+fn rasterize_tree(tree: &usvg::Tree, size: SvgSize) -> Result<(Pixmap, f32), usvg::Error> {
     // Cap the size of the rendered pixmap to avoid texture allocation panics
     // Related issue: #56466
     const MAX_SIZE: f32 = 8192.0;
@@ -278,7 +281,7 @@ fn rasterize_tree(tree: &usvg::Tree, size: SvgSize) -> Result<Pixmap, usvg::Erro
 
     resvg::render(tree, transform, &mut pixmap.as_mut());
 
-    Ok(pixmap)
+    Ok((pixmap, scale))
 }
 
 #[cfg(test)]
@@ -311,6 +314,29 @@ mod tests {
     const IBM_PLEX_REGULAR: &[u8] =
         include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
     const LILEX_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/lilex/Lilex-Regular.ttf");
+
+    #[test]
+    fn capped_render_keeps_requested_logical_size() {
+        let renderer = SvgRenderer::new(Arc::new(()));
+        let svg = renderer
+            .parse_svg(
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="100"><rect width="6000" height="100"/></svg>"#,
+            )
+            .unwrap();
+
+        let image = renderer.render_parsed(&svg, 2.0, true).unwrap();
+
+        assert_eq!(image.size(0).width.0, 8192);
+        let logical_size = image.render_size(0);
+        assert!(
+            (logical_size.width.0 - 12000.0).abs() < 1.0,
+            "{logical_size:?}"
+        );
+        assert!(
+            (logical_size.height.0 - 200.0).abs() < 1.0,
+            "{logical_size:?}"
+        );
+    }
 
     #[test]
     fn text_with_split_glyph_clusters_in_mixed_fonts_does_not_panic() {

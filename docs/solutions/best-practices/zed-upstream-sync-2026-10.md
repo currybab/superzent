@@ -126,6 +126,7 @@ These fork-only follow-ups sit on top of upstream code, so expect small conflict
 - `gpui/src/svg_renderer.rs`: the non-emoji fallback excludes macOS's LastResort font, and `markdown/src/mermaid.rs` drops U+FE0F from the `merman` SVG before parsing it. Emoji that need U+FE0F for color (🕸️, ⚙️, ❤️) render as monochrome glyphs instead of boxes.
 - `markdown/src/mermaid.rs`: the supported-diagram check skips YAML frontmatter, `%%{init}%%` directives and `%%` comments before reading the diagram type, and open previews re-render diagrams when `mermaid_font_family` (or the UI font it falls back to) changes. Upstream rejects diagrams with a preamble and only re-renders on theme changes.
 - `markdown/src/parser.rs` `extract_code_block_content_range`: a closing fence may be indented by its list item's indentation plus three spaces. Upstream's #62257 allows only three spaces, so fenced blocks in nested lists show the closing fence as code and their Mermaid diagrams are skipped.
+- `gpui/src/svg_renderer.rs` `render_parsed`: when the 8192px cap shrinks a raster, the image's `scale_factor` is lowered to match, so `RenderImage::render_size` (now public) stays at the requested logical size. `mermaid_base_size` uses it, so zoomed large diagrams keep their size. Upstream still shrinks them once the capped raster arrives.
 
 ## Pending for the next sync
 
