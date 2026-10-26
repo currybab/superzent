@@ -1222,28 +1222,63 @@ impl MarkdownPreviewView {
             let view = view.read(cx);
             view.embedded || view.source_buffer_has_owner(editor, cx)
         });
-        if !source_has_owner && let Some(project) = editor.read(cx).project().cloned() {
-            Pane::autosave_item(editor, project, window, cx).detach_and_log_err(cx);
+        if !source_has_owner
+            && let Some(view) = view_handle.upgrade()
+            && let Some(project) = editor.read(cx).project().cloned()
+        {
+            let workspace = view.read(cx).workspace.clone();
+            let preview_id = view.entity_id();
+            let save = Pane::autosave_item(editor, project, window, cx);
+            let editor = editor.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let saved = save.await;
+                    // Autosave skips conflicted and deleted files, and saving can fail. Show the
+                    // source in a tab then, so that its unsaved edits aren't dropped with the
+                    // preview.
+                    cx.update(|window, cx| {
+                        if Item::is_dirty(editor.read(cx), cx) {
+                            Self::show_unsaved_source(&workspace, preview_id, editor, window, cx);
+                        }
+                    })?;
+                    saved
+                })
+                .detach_and_log_err(cx);
         }
 
         Self::refresh_preview(view_handle, window, cx);
     }
 
     fn source_buffer_has_owner(&self, editor: &Entity<Editor>, cx: &App) -> bool {
-        let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton() else {
-            return true;
-        };
-        let Some(workspace) = self.workspace.upgrade() else {
-            return true;
-        };
+        self.workspace
+            .upgrade()
+            .is_none_or(|workspace| workspace_shows_buffer_of(workspace.read(cx), editor, cx))
+    }
+
+    fn show_unsaved_source(
+        workspace: &WeakEntity<Workspace>,
+        preview_id: EntityId,
+        editor: Entity<Editor>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         workspace
-            .read(cx)
-            .items(cx)
-            .filter(|item| item.downcast::<MarkdownPreviewView>().is_none())
-            .filter_map(|item| item.act_as::<Editor>(cx))
-            .any(|editor| {
-                editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer)
+            .update(cx, |workspace, cx| {
+                if workspace_shows_buffer_of(workspace, &editor, cx) {
+                    return;
+                }
+                let pane = workspace
+                    .pane_for_item_id(preview_id)
+                    .unwrap_or_else(|| workspace.active_pane().clone());
+                // Adding the source emits `ItemAdded`; suppress its automatic preview once.
+                cx.global_mut::<SuppressedAutoPreviews>()
+                    .0
+                    .insert(editor.entity_id());
+                pane.update(cx, |pane, cx| {
+                    pane.add_item_inner(Box::new(editor), false, false, false, None, window, cx)
+                });
             })
+            .log_err();
     }
 
     fn apply_checkbox_toggle_to_editor(
@@ -1469,6 +1504,18 @@ fn open_preview_path_at_line(
         })
         .detach_and_log_err(cx);
     true
+}
+
+/// Whether a tab other than a preview shows `editor`'s buffer, and so owns its unsaved edits.
+fn workspace_shows_buffer_of(workspace: &Workspace, editor: &Entity<Editor>, cx: &App) -> bool {
+    let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton() else {
+        return true;
+    };
+    workspace
+        .items(cx)
+        .filter(|item| item.downcast::<MarkdownPreviewView>().is_none())
+        .filter_map(|item| item.act_as::<Editor>(cx))
+        .any(|editor| editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer))
 }
 
 fn resolve_preview_image(
@@ -4146,6 +4193,82 @@ mod tests {
             "- [x] task\n"
         );
         cx.update(|cx| assert!(!first_buffer.read(cx).is_dirty()));
+    }
+
+    #[gpui::test]
+    async fn preview_shows_its_source_when_a_checkbox_toggle_cannot_be_saved(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "first.md": "- [ ] task\n" }), false).await;
+        let first_path = cx.update(|cx| test_project_path(&project, "first.md", cx));
+        let first_buffer = project
+            .update(cx, |project, cx| project.open_buffer(first_path, cx))
+            .await
+            .unwrap();
+        let preview = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let first_editor = cx.new(|cx| {
+                        Editor::for_buffer(first_buffer.clone(), Some(project.clone()), window, cx)
+                    });
+                    let preview = MarkdownPreviewView::new(
+                        super::MarkdownPreviewMode::Default,
+                        first_editor,
+                        workspace.weak_handle(),
+                        workspace.project().read(cx).languages().clone(),
+                        window,
+                        cx,
+                    );
+                    workspace.add_item_to_active_pane(
+                        Box::new(preview.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                    preview
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        // Autosave skips deleted files.
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        fs.remove_file(path!("/project/first.md").as_ref(), Default::default())
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let first_editor = preview.read_with(cx, |preview, _| {
+            preview.active_editor.as_ref().unwrap().editor.clone()
+        });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                MarkdownPreviewView::toggle_checkbox(
+                    preview.downgrade(),
+                    &first_editor,
+                    2..5,
+                    true,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_item_as::<MarkdownPreviewView>(cx),
+                Some(preview.clone())
+            );
+            let owner = workspace
+                .items_of_type::<Editor>(cx)
+                .find(|editor| editor == &first_editor)
+                .expect("a tab must own the toggle that couldn't be saved");
+            assert!(ItemHandle::is_dirty(&owner, cx));
+            assert!(workspace.is_edited());
+        });
     }
 
     #[gpui::test]
