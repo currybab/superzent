@@ -151,8 +151,14 @@ pub fn new_journal_entry(workspace: &Workspace, window: &mut Window, cx: &mut Ap
                     .await
             };
 
+            // Superzent: `act_as` also finds editors wrapped by other items, like Markdown split
+            // views.
             if let Some(Some(Ok(item))) = opened.first()
-                && let Some(editor) = item.downcast::<Editor>().map(|editor| editor.downgrade())
+                && let Some(editor) = cx
+                    .update(|_, cx| item.act_as::<Editor>(cx))
+                    .ok()
+                    .flatten()
+                    .map(|editor| editor.downgrade())
             {
                 editor.update_in(cx, |editor, window, cx| {
                     let len = editor.buffer().read(cx).len(cx);

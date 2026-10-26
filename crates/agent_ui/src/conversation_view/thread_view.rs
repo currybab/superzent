@@ -708,7 +708,9 @@ impl ThreadView {
         window
             .spawn(cx, async move |cx| {
                 let item = open_task.await?;
-                let Some(editor) = item.downcast::<Editor>() else {
+                // Superzent: `act_as` also finds editors wrapped by other items, like Markdown
+                // split views.
+                let Some(editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? else {
                     return anyhow::Ok(());
                 };
                 editor.update_in(cx, |editor, window, cx| {
@@ -8054,7 +8056,10 @@ pub(crate) fn open_link(
                 let item = workspace.open_path(path, None, true, window, cx);
                 window
                     .spawn(cx, async move |cx| {
-                        let Some(editor) = item.await?.downcast::<Editor>() else {
+                        let item = item.await?;
+                        // Superzent: `act_as` also finds editors wrapped by other items, like
+                        // Markdown split views.
+                        let Some(editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? else {
                             return Ok(());
                         };
                         let range =

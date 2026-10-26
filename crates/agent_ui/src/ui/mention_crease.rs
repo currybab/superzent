@@ -210,7 +210,10 @@ fn open_file(
         if let Some(line_range) = line_range {
             window
                 .spawn(cx, async move |cx| {
-                    let Some(editor) = item.await?.downcast::<Editor>() else {
+                    let item = item.await?;
+                    // Superzent: `act_as` also finds editors wrapped by other items, like Markdown
+                    // split views.
+                    let Some(editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? else {
                         return Ok(());
                     };
                     editor

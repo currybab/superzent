@@ -1664,8 +1664,11 @@ impl PickerDelegate for FileFinderDelegate {
                 let item = open_task
                     .await
                     .notify_workspace_async_err(workspace, &mut cx)?;
+                // Superzent: `act_as` also finds editors wrapped by other items, like Markdown
+                // split views.
                 if let Some(row) = row
-                    && let Some(active_editor) = item.downcast::<Editor>()
+                    && let Some(active_editor) =
+                        cx.update(|_, cx| item.act_as::<Editor>(cx)).ok().flatten()
                 {
                     active_editor
                         .downgrade()

@@ -159,7 +159,9 @@ impl BreakpointList {
                     })
                 })??
                 .await?;
-            if let Some(editor) = item.downcast::<Editor>() {
+            // Superzent: `act_as` also finds editors wrapped by other items, like Markdown split
+            // views.
+            if let Some(editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? {
                 editor
                     .update_in(cx, |this, window, cx| {
                         this.go_to_singleton_buffer_point(Point { row, column: 0 }, window, cx);
