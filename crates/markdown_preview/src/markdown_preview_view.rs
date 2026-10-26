@@ -4947,6 +4947,44 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn editor_only_from_a_preview_tab_unwraps_the_split_view_that_owns_the_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let preview = MarkdownPreviewView::create_markdown_view(
+                        workspace,
+                        editor.clone(),
+                        window,
+                        cx,
+                    );
+                    workspace.add_item_to_active_pane(Box::new(preview), None, true, window, cx);
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::Editor);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.active_item_as::<Editor>(cx), Some(editor.clone()));
+            assert_eq!(workspace.items_of_type::<MarkdownSplitView>(cx).count(), 0);
+            assert_eq!(
+                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
+                0
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn side_by_side_from_a_preview_tab_turns_its_editor_tab_into_a_split_view(
         cx: &mut TestAppContext,
     ) {

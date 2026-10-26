@@ -355,16 +355,20 @@ fn switch_preview_layout(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    let source = preview.read(cx).switchable_source_editor();
+    let owner = source
+        .as_ref()
+        .and_then(|editor| item_showing_editor(workspace, editor, cx));
     match layout {
         MarkdownLayout::Preview => {}
-        MarkdownLayout::Editor => preview.update(cx, |preview, cx| {
+        MarkdownLayout::Editor if owner.is_none() => preview.update(cx, |preview, cx| {
             preview.close_and_return_to_editor(&CloseAndReturnToEditor, window, cx)
         }),
-        MarkdownLayout::SideBySide => {
-            let Some(editor) = preview.read(cx).switchable_source_editor() else {
+        MarkdownLayout::Editor | MarkdownLayout::SideBySide => {
+            let Some(editor) = source else {
                 return;
             };
-            match item_showing_editor(workspace, &editor, cx) {
+            match owner {
                 Some(owner) => {
                     switch_layout(workspace, owner.as_ref(), layout, window, cx);
                     if let Some(owner) = item_showing_editor(workspace, &editor, cx) {
