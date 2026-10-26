@@ -2300,11 +2300,16 @@ mod tests {
     use editor::{Editor, MultiBufferOffset, SelectionEffects};
     use fs::FakeFs;
     use gpui::UpdateGlobal as _;
-    use gpui::{App, AppContext as _, Entity, Focusable, TestAppContext, WindowHandle};
+    use gpui::{
+        App, AppContext as _, Entity, Focusable, Modifiers, MouseButton, TestAppContext,
+        VisualTestContext, WindowHandle, point, px,
+    };
     use language::Point;
     use project::{Project, ProjectPath};
     use serde_json::json;
+    use std::cell::Cell;
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Duration;
     use util::path;
@@ -2320,7 +2325,7 @@ mod tests {
         MarkdownPreviewView, filter_non_rendered_matches, open_preview_url,
         reset_persisted_font_size,
     };
-    use crate::markdown_split_view::{MarkdownLayout, MarkdownSplitView};
+    use crate::markdown_split_view::{MarkdownLayout, MarkdownSplitView, MarkdownSplitViewEvent};
 
     #[test]
     fn filters_matches_in_non_rendered_link_source() {
@@ -4861,6 +4866,80 @@ mod tests {
                 .unwrap();
             cx.update(|cx| assert_eq!(ItemHandle::capability(&split_view, cx), expected));
         }
+    }
+
+    #[gpui::test]
+    async fn dragging_a_divider_resizes_only_its_split_view(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({ "first.md": "# First\n", "second.md": "# Second\n" }),
+            false,
+        )
+        .await;
+        open_project_file(cx, &project, &multi_workspace, "first.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let first = active_split_view(cx, &workspace);
+        let right_pane = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let pane = workspace.active_pane().clone();
+                    workspace.split_pane(pane, workspace::SplitDirection::Right, window, cx)
+                })
+            })
+            .unwrap();
+        open_project_file(
+            cx,
+            &project,
+            &multi_workspace,
+            "second.md",
+            Some(&right_pane),
+            true,
+        )
+        .await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let second = active_split_view(cx, &workspace);
+        let layout_changes = Rc::new(Cell::new(0));
+        let _subscription = cx.update(|cx| {
+            let layout_changes = layout_changes.clone();
+            cx.subscribe(&first, move |_, event, _| {
+                if matches!(event, MarkdownSplitViewEvent::LayoutChanged) {
+                    layout_changes.set(layout_changes.get() + 1);
+                }
+            })
+        });
+
+        let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
+        cx.run_until_parked();
+        let selector: &'static str = Box::leak(
+            crate::markdown_split_view::divider_selector(first.entity_id()).into_boxed_str(),
+        );
+        let handle = cx
+            .debug_bounds(selector)
+            .expect("the divider should be drawn");
+        let start = handle.center();
+        let end = point(start.x - px(40.), start.y);
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+        // The first move starts the drag, and the next ones move it.
+        cx.simulate_mouse_move(
+            point(start.x - px(10.), start.y),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+
+        let first_ratio = first.read_with(cx, |split_view, _| split_view.editor_ratio());
+        let second_ratio = second.read_with(cx, |split_view, _| split_view.editor_ratio());
+        assert!(
+            first_ratio < 0.5,
+            "the dragged divider moves: {first_ratio}"
+        );
+        assert_eq!(second_ratio, 0.5, "other split views keep their divider");
+        assert!(
+            layout_changes.get() > 0,
+            "resizing must ask the workspace to serialize the new ratio"
+        );
     }
 
     #[gpui::test]

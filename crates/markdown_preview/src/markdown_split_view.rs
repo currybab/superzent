@@ -78,11 +78,13 @@ pub struct MarkdownSplitView {
 #[derive(Clone, Debug)]
 pub enum MarkdownSplitViewEvent {
     Editor(EditorEvent),
+    /// The layout or the divider's position changed.
     LayoutChanged,
 }
 
+/// Drag moves reach every split view on screen, so the divider names the split view it belongs to.
 #[derive(Clone)]
-struct DraggedDivider;
+struct DraggedDivider(EntityId);
 
 impl Render for DraggedDivider {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -146,6 +148,11 @@ impl MarkdownSplitView {
         &self.preview
     }
 
+    #[cfg(test)]
+    pub(crate) fn editor_ratio(&self) -> f32 {
+        self.editor_ratio
+    }
+
     pub fn layout(&self) -> MarkdownLayout {
         if self.preview_only {
             MarkdownLayout::Preview
@@ -187,11 +194,20 @@ impl MarkdownSplitView {
         cx: &mut Context<Self>,
     ) {
         let width = event.bounds.size.width;
-        if width <= px(0.) {
+        if event.drag(cx).0 != cx.entity_id() || width <= px(0.) {
             return;
         }
         let ratio = (event.event.position.x - event.bounds.left()) / width;
-        self.editor_ratio = ratio.clamp(MIN_EDITOR_RATIO, MAX_EDITOR_RATIO);
+        self.set_editor_ratio(ratio, cx);
+    }
+
+    fn set_editor_ratio(&mut self, ratio: f32, cx: &mut Context<Self>) {
+        let ratio = ratio.clamp(MIN_EDITOR_RATIO, MAX_EDITOR_RATIO);
+        if ratio == self.editor_ratio {
+            return;
+        }
+        self.editor_ratio = ratio;
+        cx.emit(MarkdownSplitViewEvent::LayoutChanged);
         cx.notify();
     }
 
@@ -229,7 +245,8 @@ impl MarkdownSplitView {
                     .h_full()
                     .w(px(7.))
                     .cursor_col_resize()
-                    .on_drag(DraggedDivider, |divider, _, _, cx| {
+                    .debug_selector(|| divider_selector(cx.entity_id()))
+                    .on_drag(DraggedDivider(cx.entity_id()), |divider, _, _, cx| {
                         cx.stop_propagation();
                         cx.new(|_| divider.clone())
                     })
@@ -237,13 +254,16 @@ impl MarkdownSplitView {
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseUpEvent, _, cx| {
                             if event.click_count == 2 {
-                                this.editor_ratio = DEFAULT_EDITOR_RATIO;
-                                cx.notify();
+                                this.set_editor_ratio(DEFAULT_EDITOR_RATIO, cx);
                             }
                         }),
                     ),
             )
     }
+}
+
+pub(crate) fn divider_selector(split_view_id: EntityId) -> String {
+    format!("markdown-split-view-divider-{split_view_id}")
 }
 
 /// Shows `item` in `layout` by swapping it for a split view or a plain editor in its pane, or by
