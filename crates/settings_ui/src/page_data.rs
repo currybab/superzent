@@ -8013,7 +8013,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn global_only_miscellaneous_sub_section() -> [SettingsPageItem; 5] {
+    fn global_only_miscellaneous_sub_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Image Viewer",
@@ -8050,6 +8050,28 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                             .markdown_preview
                             .get_or_insert_default()
                             .open_markdown_files_in_preview = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Open Markdown Files Side by Side",
+                description: "Whether to automatically open Markdown files with the editor and the preview side by side in one tab.",
+                field: Box::new(SettingField {
+                    json_path: Some("markdown_preview.open_markdown_files_side_by_side"),
+                    pick: |settings_content| {
+                        settings_content
+                            .markdown_preview
+                            .as_ref()?
+                            .open_markdown_files_side_by_side
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .markdown_preview
+                            .get_or_insert_default()
+                            .open_markdown_files_side_by_side = value;
                     },
                 }),
                 metadata: None,

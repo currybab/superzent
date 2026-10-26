@@ -199,10 +199,12 @@ fn tab_items_for_queries(
                         }
                     }
 
-                    for editor in workspace.items_of_type::<Editor>(cx) {
-                        if let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton()
-                            && let Some(timestamp) =
-                                timestamps_by_entity_id.get(&editor.entity_id())
+                    // Superzent: `act_as` also finds the editor of a Markdown split view. The activation
+                    // history records the tab, not the editor inside it.
+                    for item in workspace.items(cx) {
+                        if let Some(editor) = item.act_as::<Editor>(cx)
+                            && let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton()
+                            && let Some(timestamp) = timestamps_by_entity_id.get(&item.item_id())
                             && visited_buffers.insert(buffer.read(cx).remote_id())
                         {
                             let snapshot = buffer.read(cx).snapshot();
@@ -286,10 +288,11 @@ fn active_item_buffer(
     workspace: &mut Workspace,
     cx: &mut Context<Workspace>,
 ) -> anyhow::Result<BufferSnapshot> {
+    // Superzent: `act_as` also finds the editor of a Markdown split view.
     let active_editor = workspace
         .active_item(cx)
         .context("no active item")?
-        .downcast::<Editor>()
+        .act_as::<Editor>(cx)
         .context("active item is not an editor")?;
     let snapshot = active_editor
         .read(cx)
@@ -314,4 +317,71 @@ fn create_tab_completion_label(
     label.push_str(parent_path.unwrap_or_default(), comment_id);
     label.respan_filter_range(Some(file_name));
     label.build()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    use editor::{Editor, test::EditorWrapperItem};
+    use fs::FakeFs;
+    use gpui::{AppContext as _, TestAppContext, VisualTestContext};
+    use project::Project;
+    use serde_json::json;
+    use util::path;
+    use workspace::{AppState, MultiWorkspace};
+
+    use super::tab_items_for_queries;
+
+    #[gpui::test]
+    async fn tabs_include_editors_wrapped_by_other_items(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            AppState::test(cx);
+            theme::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/root"), json!({ "note.md": "# Note\n" }))
+            .await;
+        let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/root/note.md"), cx)
+            })
+            .await
+            .unwrap();
+        workspace.update_in(cx, |workspace, window, cx| {
+            let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+            let wrapper = cx.new(|cx| EditorWrapperItem::new(editor, cx));
+            workspace.add_item_to_active_pane(Box::new(wrapper), None, true, window, cx);
+        });
+
+        // `/tab` with no argument takes the active tab, and `/tab all` every tab.
+        for strict_match in [true, false] {
+            let tabs = cx
+                .update(|window, cx| {
+                    tab_items_for_queries(
+                        Some(workspace.downgrade()),
+                        &[],
+                        Arc::new(AtomicBool::new(false)),
+                        strict_match,
+                        window,
+                        cx,
+                    )
+                })
+                .await
+                .unwrap();
+            let paths = tabs
+                .into_iter()
+                .map(|(path, _, _)| path)
+                .collect::<Vec<_>>();
+            assert_eq!(paths, [Some(path!("root/note.md").to_string())]);
+        }
+    }
 }

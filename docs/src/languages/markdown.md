@@ -24,6 +24,28 @@ def fib(n):
 ```
 ````
 
+## Preview
+
+Markdown tabs have three layouts, which the buttons at the right of the tab's toolbar switch between:
+
+- **Editor only**: a plain editor tab ({#action markdown::SwitchToEditor}).
+- **Editor and preview**: the editor and the rendered preview side by side in one tab ({#action markdown::SwitchToSideBySide}). Drag the divider to resize them, or double-click it to reset.
+- **Preview only**: the rendered preview, with the editor kept in the same tab ({#action markdown::SwitchToPreview}).
+
+The tab keeps its unsaved edits when you switch layouts, and saving, closing, and restoring the tab work like an editor tab.
+
+To open Markdown files in one of the preview layouts automatically, open the Settings Editor ({#kb zed::OpenSettings}) and go to **Languages & Tools > Miscellaneous**. Turn on **Open Markdown Files Side by Side** to open them with the editor and the preview side by side, or **Open Markdown Files in Preview** to open them in the preview only. When both are on, side by side wins.
+
+Or add this to your settings.json:
+
+```json [settings]
+{
+  "markdown_preview": {
+    "open_markdown_files_side_by_side": true
+  }
+}
+```
+
 ## Configuration
 
 ### Format

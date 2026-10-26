@@ -213,7 +213,8 @@ impl StatusItemView for DiagnosticIndicator {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(editor) = active_pane_item.and_then(|item| item.downcast::<Editor>()) {
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
+        if let Some(editor) = active_pane_item.and_then(|item| item.act_as::<Editor>(cx)) {
             self.active_editor = Some(editor.downgrade());
             self._observe_active_editor = Some(cx.observe_in(&editor, window, Self::update));
             self.update(editor, window, cx);

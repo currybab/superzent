@@ -218,7 +218,10 @@ impl BufferDiagnosticsEditor {
         // finding the project path for the buffer.
         // If there's no active editor with a project path, avoiding deploying
         // the buffer diagnostics view.
-        if let Some(editor) = workspace.active_item_as::<Editor>(cx)
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
+        if let Some(editor) = workspace
+            .active_item(cx)
+            .and_then(|item| item.act_as::<Editor>(cx))
             && let Some(project_path) = editor.project_path(cx)
         {
             // Check if there's already a `BufferDiagnosticsEditor` tab for this

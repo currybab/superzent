@@ -163,9 +163,10 @@ impl NewProcessModal {
                                         task_position,
                                         cx,
                                     );
+                                    // Superzent: `act_as` also finds the editor of a Markdown split view.
                                     let prefer_lsp = workspace
                                         .active_item(cx)
-                                        .and_then(|item| item.downcast::<Editor>())
+                                        .and_then(|item| item.act_as::<Editor>(cx))
                                         .map(|editor| {
                                             editor
                                                 .read(cx)

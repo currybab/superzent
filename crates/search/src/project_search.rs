@@ -1513,8 +1513,17 @@ impl ProjectSearchView {
 
     fn open_buffers(&self, cx: &App, workspace: &Workspace) -> Vec<Entity<Buffer>> {
         let mut buffers = Vec::new();
-        for editor in workspace.items_of_type::<Editor>(cx) {
-            if let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton() {
+        // Superzent: `act_as` also finds editors wrapped by other items, like Markdown split views.
+        // It reads the item, so skip project searches: this one is being updated, and their results
+        // aren't open files.
+        for editor in workspace
+            .items(cx)
+            .filter(|item| item.downcast::<ProjectSearchView>().is_none())
+            .filter_map(|item| item.act_as::<Editor>(cx))
+        {
+            if let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton()
+                && !buffers.contains(&buffer)
+            {
                 buffers.push(buffer);
             }
         }
@@ -3363,6 +3372,64 @@ pub mod tests {
                 });
             }
         }
+    }
+
+    #[gpui::test]
+    async fn test_open_buffers_include_editors_wrapped_by_other_items(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/dir"),
+            json!({ "one.rs": "const ONE: usize = 1;", "two.rs": "const TWO: usize = 2;" }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/dir/one.rs"), cx)
+            })
+            .await
+            .unwrap();
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            let editor =
+                cx.new(|cx| Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx));
+            let wrapper = cx.new(|cx| editor::test::EditorWrapperItem::new(editor, cx));
+            workspace.add_item_to_active_pane(Box::new(wrapper), None, true, window, cx);
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx);
+        });
+        cx.run_until_parked();
+
+        let search_view = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_item_as::<ProjectSearchView>(cx)
+                .expect("project search should be active")
+        });
+        let open_buffers = workspace.update(cx, |workspace, cx| {
+            search_view.read(cx).open_buffers(cx, workspace)
+        });
+        assert_eq!(open_buffers, [buffer]);
+
+        // Searching collects the open buffers while the search view is being updated.
+        search_view.update_in(cx, |search_view, window, cx| {
+            search_view.toggle_opened_only(window, cx);
+            search_view.query_editor.update(cx, |query_editor, cx| {
+                query_editor.set_text("ONE", window, cx)
+            });
+            search_view.search(cx);
+        });
+        cx.run_until_parked();
+        search_view.read_with(cx, |search_view, cx| {
+            let results = search_view.results_editor.read(cx).text(cx);
+            assert!(results.contains("ONE"), "{results:?}");
+            assert!(!results.contains("TWO"), "{results:?}");
+        });
     }
 
     #[perf]

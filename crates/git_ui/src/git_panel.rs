@@ -1529,7 +1529,11 @@ impl GitPanel {
                     .await
                     .notify_workspace_async_err(workspace, &mut cx)
                     .ok_or_else(|| anyhow::anyhow!("Failed to open file"))?;
-                if let Some(active_editor) = item.downcast::<Editor>() {
+                // Superzent: `act_as` also finds editors wrapped by other items, like Markdown
+                // split views.
+                if let Some(active_editor) =
+                    cx.update(|_, cx| item.act_as::<Editor>(cx)).ok().flatten()
+                {
                     if let Some(diff_task) =
                         active_editor.update(cx, |editor, _cx| editor.wait_for_diff_to_load())
                     {

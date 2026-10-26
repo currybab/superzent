@@ -2152,3 +2152,39 @@ fn random_lsp_diagnostic(
         ..Default::default()
     }
 }
+
+#[gpui::test]
+async fn test_buffer_diagnostics_deploy_from_an_item_wrapping_an_editor(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/test"), json!({ "main.rs": "fn main() {}\n" }))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/test/main.rs"), cx)
+        })
+        .await
+        .unwrap();
+    workspace.update_in(cx, |workspace, window, cx| {
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+        let wrapper = cx.new(|cx| editor::test::EditorWrapperItem::new(editor, cx));
+        workspace.add_item_to_active_pane(Box::new(wrapper), None, true, window, cx);
+    });
+    cx.dispatch_action(crate::buffer_diagnostics::DeployCurrentFile);
+    cx.run_until_parked();
+
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(
+            workspace
+                .active_item_as::<BufferDiagnosticsEditor>(cx)
+                .is_some(),
+            "current-file diagnostics should open for the editor inside the active tab"
+        );
+    });
+}

@@ -1188,7 +1188,8 @@ impl StatusItemView for LspButton {
         cx: &mut Context<Self>,
     ) {
         if ProjectSettings::get_global(cx).global_lsp_settings.button {
-            if let Some(editor) = active_pane_item.and_then(|item| item.downcast::<Editor>()) {
+            // Superzent: `act_as` also finds the editor of a Markdown split view.
+            if let Some(editor) = active_pane_item.and_then(|item| item.act_as::<Editor>(cx)) {
                 if Some(&editor)
                     != self
                         .server_state

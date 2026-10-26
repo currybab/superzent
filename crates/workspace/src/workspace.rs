@@ -2253,7 +2253,17 @@ impl Workspace {
     }
 
     pub fn recent_active_item_by_type<T: 'static>(&self, cx: &App) -> Option<Entity<T>> {
-        let mut recent_item: Option<Entity<T>> = None;
+        self.recent_active_tab_by_type::<T>(cx)
+            .map(|(_, typed_item)| typed_item)
+    }
+
+    /// Superzent: like `recent_active_item_by_type`, along with the pane item that acts as the
+    /// `T`, such as a Markdown split view for its editor. Activate that pane item, not the `T`.
+    pub fn recent_active_tab_by_type<T: 'static>(
+        &self,
+        cx: &App,
+    ) -> Option<(Box<dyn ItemHandle>, Entity<T>)> {
+        let mut recent_item: Option<(Box<dyn ItemHandle>, Entity<T>)> = None;
         let mut recent_timestamp = 0;
         for pane_handle in &self.panes {
             let pane = pane_handle.read(cx);
@@ -2265,7 +2275,7 @@ impl Workspace {
                     && let Some(typed_item) = item.act_as::<T>(cx)
                 {
                     recent_timestamp = entry.timestamp;
-                    recent_item = Some(typed_item);
+                    recent_item = Some((item.boxed_clone(), typed_item));
                 }
             }
         }
@@ -4403,6 +4413,21 @@ impl Workspace {
     where
         T: ProjectItem,
     {
+        self.find_project_item_and_its_tab::<T>(pane, project_item, cx)
+            .map(|(_, item)| item)
+    }
+
+    /// Superzent: also finds a `T` that another pane item shows through `act_as`, like the editor
+    /// of a Markdown split view, and returns that pane item with it.
+    fn find_project_item_and_its_tab<T>(
+        &self,
+        pane: &Entity<Pane>,
+        project_item: &Entity<T::Item>,
+        cx: &App,
+    ) -> Option<(Box<dyn ItemHandle>, Entity<T>)>
+    where
+        T: ProjectItem,
+    {
         use project::ProjectItem as _;
         let project_item = project_item.read(cx);
         let entry_id = project_item.entry_id(cx);
@@ -4418,7 +4443,9 @@ impl Workspace {
             item = pane.read(cx).item_for_path(project_path, cx);
         }
 
-        item.and_then(|item| item.downcast::<T>())
+        let item = item?;
+        let project_item = item.downcast::<T>().or_else(|| item.act_as::<T>(cx))?;
+        Some((item, project_item))
     }
 
     pub fn is_project_item_open<T>(
@@ -4450,10 +4477,10 @@ impl Workspace {
     {
         let old_item_id = pane.read(cx).active_item().map(|item| item.item_id());
 
-        if let Some(item) = self.find_project_item(&pane, &project_item, cx) {
+        if let Some((tab, item)) = self.find_project_item_and_its_tab(&pane, &project_item, cx) {
             if !keep_old_preview
                 && let Some(old_id) = old_item_id
-                && old_id != item.item_id()
+                && old_id != tab.item_id()
             {
                 // switching to a different item, so unpreview old active item
                 pane.update(cx, |pane, _| {
@@ -4461,10 +4488,10 @@ impl Workspace {
                 });
             }
 
-            self.activate_item(&item, activate_pane, focus_item, window, cx);
+            self.activate_item(tab.as_ref(), activate_pane, focus_item, window, cx);
             if !allow_new_preview {
                 pane.update(cx, |pane, _| {
-                    pane.unpreview_item_if_preview(item.item_id());
+                    pane.unpreview_item_if_preview(tab.item_id());
                 });
             }
             return item;

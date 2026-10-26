@@ -14,6 +14,7 @@ use gpui::{
     FocusHandle, Focusable, InteractiveElement, ParentElement, Render, Styled, Subscription,
     WeakEntity, Window, anchored, deferred, point,
 };
+use markdown_preview::markdown_split_view;
 use project::{DisableAiSettings, project_settings::DiagnosticSeverity};
 use search::{BufferSearchBar, buffer_search};
 use settings::{Settings, SettingsStore};
@@ -34,6 +35,7 @@ pub struct QuickActionBar {
     _inlay_hints_enabled_subscription: Option<Subscription>,
     _settings_subscription: Subscription,
     active_item: Option<Box<dyn ItemHandle>>,
+    active_editor: Option<Entity<Editor>>,
     buffer_search_bar: Entity<BufferSearchBar>,
     show: bool,
     toggle_selections_handle: PopoverMenuHandle<ContextMenu>,
@@ -53,6 +55,7 @@ impl QuickActionBar {
             _inlay_hints_enabled_subscription: None,
             _settings_subscription: settings_subscription,
             active_item: None,
+            active_editor: None,
             buffer_search_bar,
             show: true,
             toggle_selections_handle: Default::default(),
@@ -66,9 +69,7 @@ impl QuickActionBar {
     }
 
     fn active_editor(&self) -> Option<Entity<Editor>> {
-        self.active_item
-            .as_ref()
-            .and_then(|item| item.downcast::<Editor>())
+        self.active_editor.clone()
     }
 
     fn apply_settings(&mut self, cx: &mut Context<Self>) {
@@ -692,10 +693,15 @@ impl ToolbarItemView for QuickActionBar {
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         self.active_item = active_pane_item.map(ItemHandle::boxed_clone);
-        if let Some(active_item) = active_pane_item {
+        // Superzent: a Markdown split view laid out side by side shows an editor too.
+        self.active_editor = active_pane_item.and_then(|item| {
+            item.downcast::<Editor>()
+                .or_else(|| markdown_split_view::side_by_side_editor(item, cx))
+        });
+        if active_pane_item.is_some() {
             self._inlay_hints_enabled_subscription.take();
 
-            if let Some(editor) = active_item.downcast::<Editor>() {
+            if let Some(editor) = self.active_editor.clone() {
                 let (
                     mut inlay_hints_enabled,
                     mut supports_inlay_hints,
@@ -733,5 +739,83 @@ impl ToolbarItemView for QuickActionBar {
             }
         }
         self.get_toolbar_item_location()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use editor::Editor;
+    use gpui::TestAppContext;
+    use markdown_preview::markdown_split_view::{self, MarkdownLayout};
+    use serde_json::json;
+    use util::path;
+    use workspace::{MultiWorkspace, open_paths};
+
+    use super::QuickActionBar;
+    use crate::zed::tests::init_test;
+
+    #[gpui::test]
+    async fn shows_for_the_editor_of_a_side_by_side_markdown_tab(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        cx.update(markdown_preview::init);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "note.md": "# Note\n" }))
+            .await;
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+
+        for (layout, shows_editor) in [
+            (MarkdownLayout::SideBySide, true),
+            (MarkdownLayout::Preview, false),
+            (MarkdownLayout::Editor, true),
+        ] {
+            multi_workspace
+                .update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        let item = workspace.active_item(cx).unwrap();
+                        markdown_split_view::switch_layout(
+                            workspace,
+                            item.as_ref(),
+                            layout,
+                            window,
+                            cx,
+                        );
+                    })
+                })
+                .unwrap();
+            cx.run_until_parked();
+
+            multi_workspace
+                .read_with(cx, |multi_workspace, cx| {
+                    let workspace = multi_workspace.workspace().read(cx);
+                    let item = workspace.active_item(cx).unwrap();
+                    assert_eq!(MarkdownLayout::of_item(item.as_ref(), cx), Some(layout));
+                    let quick_action_bar = workspace
+                        .active_pane()
+                        .read(cx)
+                        .toolbar()
+                        .read(cx)
+                        .item_of_type::<QuickActionBar>()
+                        .unwrap();
+                    let active_editor = quick_action_bar.read(cx).active_editor();
+                    let editor = item.act_as::<Editor>(cx);
+                    assert_eq!(active_editor, editor.filter(|_| shows_editor));
+                })
+                .unwrap();
+        }
     }
 }

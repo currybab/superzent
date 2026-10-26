@@ -496,7 +496,13 @@ fn possibly_open_target(
                 if let Some(Ok(opened_item)) = opened_item {
                     if let Some(row) = path_to_open.row {
                         let col = path_to_open.column.unwrap_or(0);
-                        if let Some(active_editor) = opened_item.downcast::<Editor>() {
+                        // Superzent: `act_as` also finds editors wrapped by other items, like
+                        // Markdown split views.
+                        if let Some(active_editor) = cx
+                            .update(|_, cx| opened_item.act_as::<Editor>(cx))
+                            .ok()
+                            .flatten()
+                        {
                             active_editor
                                 .downgrade()
                                 .update_in(cx, |editor, window, cx| {
@@ -938,6 +944,108 @@ mod tests {
         });
         // Column 4 is the fourth character of `aéøbc` (the `b`), which starts at byte 5.
         assert_eq!(cursor, language::Point::new(1, 5));
+    }
+
+    #[gpui::test]
+    async fn test_open_target_at_line_in_an_item_wrapping_an_editor(app_cx: &mut TestAppContext) {
+        use editor::test::EditorWrapperItem;
+
+        let fs = app_cx.update(AppState::test).fs.as_fake().clone();
+        app_cx.update(|cx| {
+            theme::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        fs.insert_tree(path!("/root"), json!({ "note.md": "first\nsecond\n" }))
+            .await;
+        let project: gpui::Entity<Project> =
+            Project::test(fs.clone(), [Path::new(path!("/root"))], app_cx).await;
+        let (multi_workspace, cx) = app_cx
+            .add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/root/note.md"), cx)
+            })
+            .await
+            .unwrap();
+        let wrapper = workspace.update_in(cx, |workspace, window, cx| {
+            let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+            let wrapper = cx.new(|cx| EditorWrapperItem::new(editor, cx));
+            workspace.add_item_to_active_pane(Box::new(wrapper.clone()), None, true, window, cx);
+            wrapper
+        });
+        let terminal = app_cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .expect("Failed to create display-only terminal")
+            .subscribe(cx)
+        });
+        let (terminal_view, cx) = app_cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal,
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+
+        let maybe_path = "note.md:2:3";
+        let path_like_target = PathLikeTarget {
+            maybe_path: maybe_path.to_string(),
+            terminal_dir: Some(PathBuf::from(path!("/root"))),
+        };
+        terminal_view
+            .update(cx, |_, cx| {
+                possible_hover_target(
+                    &workspace.downgrade(),
+                    HoveredWord {
+                        word: maybe_path.to_string(),
+                        word_match: AlacPoint::default()..=AlacPoint::default(),
+                        id: 0,
+                    },
+                    &path_like_target,
+                    cx,
+                    BackgroundFsChecks::Enabled,
+                )
+            })
+            .await;
+        terminal_view
+            .update_in(cx, |terminal_view, window, cx| {
+                possibly_open_target(
+                    &workspace.downgrade(),
+                    terminal_view,
+                    &path_like_target,
+                    window,
+                    cx,
+                    BackgroundFsChecks::Enabled,
+                )
+            })
+            .await
+            .expect("Failed to possibly open target")
+            .expect("target should open");
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_item_as::<EditorWrapperItem>(cx),
+                Some(wrapper.clone())
+            );
+        });
+        let editor = wrapper.read_with(cx, |wrapper, _| wrapper.editor.clone());
+        let cursor = editor.update_in(cx, |editor, _, cx| {
+            editor
+                .selections
+                .newest::<language::Point>(&editor.display_snapshot(cx))
+                .head()
+        });
+        assert_eq!(cursor, language::Point::new(1, 2));
     }
 
     #[gpui::test]

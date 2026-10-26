@@ -840,6 +840,7 @@ dependencies = [
  "settings",
  "smol",
  "text",
+ "theme",
  "ui",
  "util",
  "workspace",

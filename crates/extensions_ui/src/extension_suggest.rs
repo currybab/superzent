@@ -152,7 +152,11 @@ pub(crate) fn suggest(buffer: Entity<Buffer>, window: &mut Window, cx: &mut Cont
     };
 
     cx.on_next_frame(window, move |workspace, _, cx| {
-        let Some(editor) = workspace.active_item_as::<Editor>(cx) else {
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
+        let Some(editor) = workspace
+            .active_item(cx)
+            .and_then(|item| item.act_as::<Editor>(cx))
+        else {
             return;
         };
 

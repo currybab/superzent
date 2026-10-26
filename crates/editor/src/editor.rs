@@ -7087,7 +7087,15 @@ impl Editor {
                 .read(cx)
                 .panes()
                 .iter()
-                .flat_map(|pane| pane.read(cx).items_of_type::<Editor>())
+                // Superzent: `act_as` also finds the editor of a Markdown split view.
+                .flat_map(|pane| {
+                    pane.read(cx)
+                        .items()
+                        // `act_as` reads the item, and this editor is being updated.
+                        .filter(|item| item.item_id() != cx.entity_id())
+                        .filter_map(|item| item.act_as::<Editor>(cx))
+                        .collect::<Vec<_>>()
+                })
                 .filter(|editor| editor.entity_id() != cx.entity_id())
                 .collect();
 
@@ -8460,7 +8468,10 @@ impl Editor {
             let target = text::ToPoint::to_point(&target, snapshot);
             let item = workspace.open_path(path, None, true, window, cx);
             window.spawn(cx, async move |cx| {
-                let Some(editor) = item.await?.downcast::<Editor>() else {
+                let item = item.await?;
+                // Superzent: `act_as` also finds editors wrapped by other items, like Markdown
+                // split views.
+                let Some(editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? else {
                     return Ok(());
                 };
                 editor
@@ -20401,10 +20412,11 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        let Some(item) = workspace.recent_active_item_by_type::<Self>(cx) else {
+        // Superzent: activate the tab that shows the editor, which can be a Markdown split view.
+        let Some((tab, _)) = workspace.recent_active_tab_by_type::<Self>(cx) else {
             return;
         };
-        workspace.activate_item(&item, true, true, window, cx);
+        workspace.activate_item(tab.as_ref(), true, true, window, cx);
     }
 
     pub fn toggle_fold(
@@ -25289,7 +25301,12 @@ impl Editor {
                                 // Instead, we try to activate the existing editor in the pane first.
                                 let (editor, pane_item_index, pane_item_id) =
                                     pane.read(cx).items().enumerate().find_map(|(i, item)| {
-                                        let editor = item.downcast::<Editor>()?;
+                                        // Superzent: `act_as` also finds the editor of a
+                                        // Markdown split view. Downcast first, since `act_as`
+                                        // reads the item and this editor is being updated.
+                                        let editor = item
+                                            .downcast::<Editor>()
+                                            .or_else(|| item.act_as::<Editor>(cx))?;
                                         let singleton_buffer =
                                             editor.read(cx).buffer().read(cx).as_singleton()?;
                                         if singleton_buffer == buffer {
