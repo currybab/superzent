@@ -394,6 +394,10 @@ struct MermaidViewState {
     showing_code: bool,
     /// The display scale relative to the diagram's natural size; 1.0 is 1:1.
     zoom: f32,
+    /// The requested zoom before snapping to 1.0. Scrolling continues from it
+    /// while `zoom` is snapped, so small trackpad deltas add up until they
+    /// leave the snap range instead of being snapped back one by one.
+    unsnapped_zoom: f32,
     /// Whether the user zoomed out to the fit-to-width floor. While set, the
     /// zoom tracks the container width so the diagram stays fully visible
     /// when the container is resized, instead of keeping a stale absolute
@@ -426,6 +430,7 @@ impl Default for MermaidViewState {
         Self {
             showing_code: false,
             zoom: 1.0,
+            unsnapped_zoom: 1.0,
             zoomed_to_fit: false,
             scroll_handle: ScrollHandle::new(),
             debounce_task: None,
@@ -777,6 +782,19 @@ impl Markdown {
         container_width / natural_size.width
     }
 
+    /// The zoom a scroll-wheel zoom continues from: the unsnapped zoom while
+    /// the zoom is snapped to 1.0, and the displayed zoom otherwise.
+    pub(crate) fn mermaid_scroll_zoom_origin(&self, source_offset: usize) -> f32 {
+        let Some(view) = self.mermaid_views.get(&source_offset) else {
+            return 1.0;
+        };
+        if view.zoom == 1.0 && (view.unsnapped_zoom - 1.0).abs() <= MERMAID_ZOOM_SNAP_TOLERANCE {
+            view.unsnapped_zoom
+        } else {
+            view.zoom
+        }
+    }
+
     pub(crate) fn set_mermaid_zoom_level(
         &mut self,
         source_offset: usize,
@@ -785,7 +803,8 @@ impl Markdown {
     ) {
         let min_zoom = self.mermaid_min_zoom_level(source_offset);
         let requested_zoom = zoom;
-        let mut zoom = zoom.clamp(min_zoom, MERMAID_MAX_ZOOM);
+        let unsnapped_zoom = zoom.clamp(min_zoom, MERMAID_MAX_ZOOM);
+        let mut zoom = unsnapped_zoom;
         if (zoom - 1.0).abs() <= MERMAID_ZOOM_SNAP_TOLERANCE {
             zoom = 1.0;
         }
@@ -799,6 +818,7 @@ impl Markdown {
         let debounce_task = self.schedule_mermaid_rerasterize(source_offset, cx);
         let view = self.mermaid_views.entry(source_offset).or_default();
         view.zoom = zoom;
+        view.unsnapped_zoom = unsnapped_zoom;
         view.zoomed_to_fit = zoomed_to_fit;
         view.debounce_task = Some(debounce_task);
         cx.notify();

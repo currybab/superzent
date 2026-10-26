@@ -583,7 +583,8 @@ fn on_mermaid_zoom_scroll(
         if scroll_ticks != 0.0 {
             let zoom_changed = markdown.update(cx, |markdown, cx| {
                 let current_zoom = markdown.mermaid_zoom_level(source_offset);
-                let new_zoom = current_zoom + scroll_ticks * MERMAID_ZOOM_STEP;
+                let new_zoom = markdown.mermaid_scroll_zoom_origin(source_offset)
+                    + scroll_ticks * MERMAID_ZOOM_STEP;
                 markdown.set_mermaid_zoom_level(source_offset, new_zoom, cx);
                 markdown.mermaid_zoom_level(source_offset) != current_zoom
             });
@@ -1607,6 +1608,41 @@ mod tests {
             markdown.set_mermaid_zoom_level(0, 1.06, cx);
             assert_eq!(markdown.mermaid_zoom_level(0), 1.06);
         });
+    }
+
+    #[gpui::test]
+    fn test_small_trackpad_deltas_zoom_out_of_snap_range(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let markdown = cx.new(|cx| Markdown::new("".into(), None, None, cx));
+        let on_scroll = super::on_mermaid_zoom_scroll(markdown.clone(), 0, None);
+        let scroll = |pixels: f32, cx: &mut gpui::VisualTestContext| {
+            let event = gpui::ScrollWheelEvent {
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(pixels))),
+                modifiers: gpui::Modifiers::secondary_key(),
+                ..Default::default()
+            };
+            cx.update(|window, cx| on_scroll(&event, window, cx));
+        };
+
+        // 2px is a hundredth of a zoom step: well inside the snap range on
+        // its own, but enough events have to add up to leave it.
+        for _ in 0..30 {
+            scroll(2.0, cx);
+        }
+        let zoomed_in = markdown.read_with(cx, |markdown, _| markdown.mermaid_zoom_level(0));
+        assert!(zoomed_in > 1.05, "zoom stayed at {zoomed_in}");
+
+        for _ in 0..60 {
+            scroll(-2.0, cx);
+        }
+        let zoomed_back = markdown.read_with(cx, |markdown, _| markdown.mermaid_zoom_level(0));
+        assert_eq!(zoomed_back, 1.0, "zooming out stops at the minimum zoom");
+
+        for _ in 0..30 {
+            scroll(2.0, cx);
+        }
+        let zoomed_in_again = markdown.read_with(cx, |markdown, _| markdown.mermaid_zoom_level(0));
+        assert!(zoomed_in_again > 1.05, "zoom stayed at {zoomed_in_again}");
     }
 
     #[gpui::test]
