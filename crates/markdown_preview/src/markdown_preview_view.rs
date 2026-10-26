@@ -4119,6 +4119,84 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn split_view_restores_its_editors_scroll_position(cx: &mut TestAppContext) {
+        let text = (0..100)
+            .map(|row| format!("line {row}\n"))
+            .collect::<String>();
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": text }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        // Scroll away from the cursor, which stays on the first line.
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    let anchor = editor
+                        .buffer()
+                        .read(cx)
+                        .snapshot(cx)
+                        .anchor_before(Point::new(60, 0));
+                    editor.set_scroll_anchor(
+                        editor::scroll::ScrollAnchor {
+                            offset: gpui::Point::new(0., 0.5),
+                            anchor,
+                        },
+                        window,
+                        cx,
+                    );
+                })
+            })
+            .unwrap();
+
+        let workspace_id = workspace.update(cx, |workspace, _| {
+            workspace.set_random_database_id();
+            workspace.database_id().unwrap()
+        });
+        insert_split_view_workspace_row(workspace_id).await;
+        let item_id = split_view.entity_id().as_u64();
+        let serialize = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    split_view.update(cx, |split_view, cx| {
+                        split_view.serialize(workspace, item_id, false, window, cx)
+                    })
+                })
+            })
+            .unwrap()
+            .unwrap();
+        serialize.await.unwrap();
+
+        let restored = multi_workspace
+            .update(cx, |_, window, cx| {
+                MarkdownSplitView::deserialize(
+                    project.clone(),
+                    workspace.downgrade(),
+                    workspace_id,
+                    item_id,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap()
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        let restored_editor = restored.read_with(cx, |restored, _| restored.editor().clone());
+        let (top_row, offset_y) = restored_editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let scroll_anchor = editor.scroll_manager.native_anchor(&snapshot, cx);
+            (
+                scroll_anchor.top_row(snapshot.buffer_snapshot()),
+                scroll_anchor.offset.y,
+            )
+        });
+        assert_eq!((top_row, offset_y), (60, 0.5));
+    }
+
+    #[gpui::test]
     async fn preview_saves_checkbox_toggles_when_no_tab_shows_the_source(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) = markdown_workspace(
             cx,

@@ -2,7 +2,7 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use editor::scroll::Autoscroll;
+use editor::scroll::{Autoscroll, ScrollAnchor};
 use editor::{
     Bias, Editor, EditorEvent, MultiBuffer, MultiBufferOffset, SelectionEffects, ToOffset as _,
 };
@@ -12,7 +12,7 @@ use gpui::{
     Focusable, Font, IntoElement, MouseButton, MouseUpEvent, Render, SharedString, Subscription,
     Task, WeakEntity, Window, relative,
 };
-use language::{Buffer, LanguageRegistry};
+use language::{Buffer, LanguageRegistry, Point};
 use project::project_settings::ProjectSettings;
 use project::{Project, ProjectPath};
 use settings::Settings as _;
@@ -866,7 +866,16 @@ impl SerializableItem for MarkdownSplitView {
                 let language_registry = project.read(cx).languages().clone();
                 let editor = cx.new(|cx| {
                     let mut editor = Editor::for_buffer(buffer, Some(project.clone()), window, cx);
-                    restore_selections(&mut editor, &serialized.selections, window, cx);
+                    restore_selections(
+                        &mut editor,
+                        &serialized.selections,
+                        serialized.scroll.is_none(),
+                        window,
+                        cx,
+                    );
+                    if let Some(scroll) = &serialized.scroll {
+                        restore_scroll(&mut editor, scroll, window, cx);
+                    }
                     editor
                 });
                 let split_view = Self::new(
@@ -904,6 +913,15 @@ impl SerializableItem for MarkdownSplitView {
             return None;
         }
         let workspace_id = workspace.database_id()?;
+        let scroll = self.editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let scroll_anchor = editor.scroll_manager.native_anchor(&snapshot, cx);
+            persistence::SerializedScroll {
+                top_row: scroll_anchor.top_row(snapshot.buffer_snapshot()),
+                offset_x: scroll_anchor.offset.x,
+                offset_y: scroll_anchor.offset.y,
+            }
+        });
         let project = workspace.project().read(cx);
         let buffer = self.editor.read(cx).buffer().read(cx).as_singleton()?;
         let buffer = buffer.read(cx);
@@ -952,6 +970,7 @@ impl SerializableItem for MarkdownSplitView {
                 preview_only,
                 editor_ratio,
                 selections,
+                scroll: Some(scroll),
             };
             persistence::MARKDOWN_SPLIT_VIEW_DB
                 .save_split_view(item_id, workspace_id, serialized)
@@ -969,6 +988,7 @@ impl SerializableItem for MarkdownSplitView {
                     | EditorEvent::BufferEdited
                     | EditorEvent::FileHandleChanged
                     | EditorEvent::SelectionsChanged { local: true }
+                    | EditorEvent::ScrollPositionChanged { local: true, .. }
             ),
         }
     }
@@ -977,6 +997,7 @@ impl SerializableItem for MarkdownSplitView {
 fn restore_selections(
     editor: &mut Editor,
     selections: &[(usize, usize)],
+    autoscroll: bool,
     window: &mut Window,
     cx: &mut Context<Editor>,
 ) {
@@ -984,16 +1005,39 @@ fn restore_selections(
         return;
     }
     let snapshot = editor.buffer().read(cx).snapshot(cx);
-    editor.change_selections(
-        SelectionEffects::scroll(Autoscroll::center()),
+    let effects = if autoscroll {
+        SelectionEffects::scroll(Autoscroll::center())
+    } else {
+        SelectionEffects::no_scroll()
+    };
+    editor.change_selections(effects, window, cx, |selections_collection| {
+        selections_collection.select_ranges(selections.iter().map(|&(start, end)| {
+            snapshot.clip_offset(MultiBufferOffset(start), Bias::Left)
+                ..snapshot.clip_offset(MultiBufferOffset(end), Bias::Right)
+        }))
+    });
+}
+
+/// Mirrors how editors restore their scroll position: from the buffer row at the top and the
+/// offset from it, since display rows depend on the wrap width before the first layout.
+fn restore_scroll(
+    editor: &mut Editor,
+    scroll: &persistence::SerializedScroll,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) {
+    let anchor = editor
+        .buffer()
+        .read(cx)
+        .snapshot(cx)
+        .anchor_before(Point::new(scroll.top_row, 0));
+    editor.set_scroll_anchor(
+        ScrollAnchor {
+            offset: gpui::Point::new(scroll.offset_x, scroll.offset_y),
+            anchor,
+        },
         window,
         cx,
-        |selections_collection| {
-            selections_collection.select_ranges(selections.iter().map(|&(start, end)| {
-                snapshot.clip_offset(MultiBufferOffset(start), Bias::Left)
-                    ..snapshot.clip_offset(MultiBufferOffset(end), Bias::Right)
-            }))
-        },
     );
 }
 
@@ -1052,11 +1096,19 @@ mod persistence {
         pub(super) editor_ratio: f32,
         /// The editor's selections as offsets into the buffer.
         pub(super) selections: Vec<(usize, usize)>,
+        pub(super) scroll: Option<SerializedScroll>,
+    }
+
+    /// The editor's scroll position as the buffer row at the top and the offset from it.
+    pub(super) struct SerializedScroll {
+        pub(super) top_row: u32,
+        pub(super) offset_x: f64,
+        pub(super) offset_y: f64,
     }
 
     impl StaticColumnCount for SerializedSplitView {
         fn column_count() -> usize {
-            8
+            11
         }
     }
 
@@ -1079,7 +1131,19 @@ mod persistence {
             } else {
                 Some(serde_json::to_string(&self.selections)?)
             };
-            statement.bind(&selections, start_index)
+            let start_index = statement.bind(&selections, start_index)?;
+            let start_index = statement.bind(
+                &self.scroll.as_ref().map(|scroll| scroll.top_row),
+                start_index,
+            )?;
+            let start_index = statement.bind(
+                &self.scroll.as_ref().map(|scroll| scroll.offset_x),
+                start_index,
+            )?;
+            statement.bind(
+                &self.scroll.as_ref().map(|scroll| scroll.offset_y),
+                start_index,
+            )
         }
     }
 
@@ -1102,6 +1166,19 @@ mod persistence {
             let selections = selections
                 .and_then(|selections| serde_json::from_str(&selections).log_err())
                 .unwrap_or_default();
+            let (scroll_top_row, start_index): (Option<u32>, i32) =
+                Column::column(statement, start_index)?;
+            let (scroll_x, start_index): (Option<f64>, i32) =
+                Column::column(statement, start_index)?;
+            let (scroll_y, start_index): (Option<f64>, i32) =
+                Column::column(statement, start_index)?;
+            let scroll = scroll_top_row.zip(scroll_x).zip(scroll_y).map(
+                |((top_row, offset_x), offset_y)| SerializedScroll {
+                    top_row,
+                    offset_x,
+                    offset_y,
+                },
+            );
             let mtime = mtime_seconds.zip(mtime_nanos).map(|(seconds, nanos)| {
                 MTime::from_seconds_and_nanos(seconds as u64, nanos as u32)
             });
@@ -1114,6 +1191,7 @@ mod persistence {
                     preview_only,
                     editor_ratio: editor_ratio as f32,
                     selections,
+                    scroll,
                 },
                 start_index,
             ))
@@ -1146,6 +1224,11 @@ mod persistence {
             sql!(
                 ALTER TABLE markdown_split_views ADD COLUMN selections TEXT;
             ),
+            sql!(
+                ALTER TABLE markdown_split_views ADD COLUMN scroll_top_row INTEGER;
+                ALTER TABLE markdown_split_views ADD COLUMN scroll_x REAL;
+                ALTER TABLE markdown_split_views ADD COLUMN scroll_y REAL;
+            ),
         ];
     }
 
@@ -1156,9 +1239,10 @@ mod persistence {
             pub(super) async fn save_split_view(item_id: ItemId, workspace_id: WorkspaceId, split_view: SerializedSplitView) -> Result<()> {
                 INSERT OR REPLACE INTO markdown_split_views(
                     item_id, workspace_id, abs_path, contents, language,
-                    mtime_seconds, mtime_nanos, preview_only, editor_ratio, selections
+                    mtime_seconds, mtime_nanos, preview_only, editor_ratio, selections,
+                    scroll_top_row, scroll_x, scroll_y
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             }
         }
 
@@ -1171,7 +1255,7 @@ mod persistence {
 
         query! {
             pub(super) fn get_split_view(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<SerializedSplitView>> {
-                SELECT abs_path, contents, language, mtime_seconds, mtime_nanos, preview_only, editor_ratio, selections
+                SELECT abs_path, contents, language, mtime_seconds, mtime_nanos, preview_only, editor_ratio, selections, scroll_top_row, scroll_x, scroll_y
                 FROM markdown_split_views
                 WHERE item_id = ? AND workspace_id = ?
             }
