@@ -422,18 +422,18 @@ pub(crate) fn item_showing_editor(
 
 /// Swaps `old` for `new` at the same position in `pane`. Returns whether `old` was in the pane.
 fn replace_item_in_pane(
-    workspace: &Workspace,
+    workspace: &mut Workspace,
     pane: &Entity<Pane>,
     old: &dyn ItemHandle,
     new: Box<dyn ItemHandle>,
     window: &mut Window,
-    cx: &mut App,
+    cx: &mut Context<Workspace>,
 ) -> bool {
     let pane_is_active = workspace.active_pane() == pane;
     let focus = old.item_focus_handle(cx).contains_focused(window, cx);
     let old_id = old.item_id();
     let new_id = new.item_id();
-    pane.update(cx, |pane, cx| {
+    let replaced = pane.update(cx, |pane, cx| {
         let index_for_item_id =
             |pane: &Pane, item_id| pane.items().position(|item| item.item_id() == item_id);
         let Some(index) = index_for_item_id(pane, old_id) else {
@@ -468,7 +468,13 @@ fn replace_item_in_pane(
             pane.activate_item(active_index, false, false, window, cx);
         }
         true
-    })
+    });
+    if replaced {
+        // The workspace drops a removed item's dirty state only when the item is released, but
+        // the old item lives on inside (or as) the new one.
+        workspace.forget_item_dirty_state(old_id, window, cx);
+    }
+    replaced
 }
 
 impl Focusable for MarkdownSplitView {

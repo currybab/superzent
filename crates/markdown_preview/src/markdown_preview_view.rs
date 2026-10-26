@@ -1453,7 +1453,7 @@ fn open_preview_path_at_line(
     window
         .spawn(cx, async move |cx| {
             let item = task.await?;
-            let Some(editor) = item.downcast::<Editor>() else {
+            let Some(editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? else {
                 return anyhow::Ok(());
             };
             editor.update_in(cx, |editor, window, cx| {
@@ -4655,6 +4655,71 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui::test]
+    async fn saving_a_split_view_clears_its_editors_unsaved_state(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, _| assert!(workspace.is_edited()));
+
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let save = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.save_active_item(SaveIntent::Save, window, cx)
+                })
+            })
+            .unwrap();
+        save.await.unwrap();
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, _| {
+            assert!(
+                !workspace.is_edited(),
+                "the editor's dirty state from before the swap must not outlive the save"
+            )
+        });
+    }
+
+    #[gpui::test]
+    async fn line_links_select_the_line_in_an_open_split_view(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "first\nsecond\nthird\n" }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+
+        let workspace_weak = workspace.downgrade();
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                open_preview_url(
+                    "note.md".into(),
+                    Some("L3".into()),
+                    None,
+                    &workspace_weak,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(active_split_view(cx, &workspace), split_view);
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        let row = editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            editor.selections.newest::<Point>(&snapshot).head().row
+        });
+        assert_eq!(row, 2);
     }
 
     #[gpui::test]
