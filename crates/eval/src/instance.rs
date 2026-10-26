@@ -133,13 +133,13 @@ impl ExampleInstance {
 
         let revision_exists = run_git(
             &self.repo_path,
-            &["rev-parse", &format!("{}^{{commit}}", &meta.revision)],
+            &["rev-parse", &format!("{}^{{commit}}", meta.revision)],
         )
         .await
         .is_ok();
 
         if !revision_exists {
-            println!("{}Fetching revision {}", self.log_prefix, &meta.revision);
+            println!("{}Fetching revision {}", self.log_prefix, meta.revision);
             run_git(
                 &self.repo_path,
                 &["fetch", "--depth", "1", "origin", &meta.revision],

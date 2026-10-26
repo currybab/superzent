@@ -8258,7 +8258,7 @@ pub fn render_breadcrumb_text(
             )
             .into_any_element(),
         None => element
-            .h(rems_from_px(22.)) // Match the height and padding of the `ButtonLike` in the other arm.
+            .h(rems_from_px(22_f32)) // Match the height and padding of the `ButtonLike` in the other arm.
             .pl_1()
             .child(breadcrumbs)
             .into_any_element(),
@@ -8484,7 +8484,7 @@ pub(crate) fn render_buffer_header(
                     let buffer_id = for_excerpt.buffer_id;
                     let toggle_chevron_icon =
                         FileIcons::get_chevron_icon(!is_folded, cx).map(Icon::from_path);
-                    let button_size = rems_from_px(28.);
+                    let button_size = rems_from_px(28_f32);
 
                     header.child(
                         div()

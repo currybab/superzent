@@ -2457,7 +2457,7 @@ fn randomly_mutate_worktree(
             } else {
                 log::info!(
                     "overwriting file {:?} ({})",
-                    &entry.path,
+                    entry.path,
                     entry.id.to_usize()
                 );
                 let task = worktree.write_file(

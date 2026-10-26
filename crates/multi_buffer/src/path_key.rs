@@ -292,11 +292,7 @@ impl MultiBuffer {
 
         let mut result = Vec::new();
         let mut ranges = ranges.into_iter();
-        for (excerpt_id, range_count) in insert_result
-            .excerpt_ids
-            .into_iter()
-            .zip(counts.into_iter())
-        {
+        for (excerpt_id, range_count) in insert_result.excerpt_ids.into_iter().zip(counts) {
             for range in ranges.by_ref().take(range_count) {
                 let range = Anchor::range_in_buffer(
                     excerpt_id,

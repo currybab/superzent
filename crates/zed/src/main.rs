@@ -1700,7 +1700,7 @@ async fn restore_superzent_startup_workspace(
             })
             .cloned()
             .collect();
-        workspaces.sort_by(|left, right| right.last_opened_at.cmp(&left.last_opened_at));
+        workspaces.sort_by_key(|workspace| std::cmp::Reverse(workspace.last_opened_at));
         workspaces
     });
     let mut fallback_local_workspace = None;

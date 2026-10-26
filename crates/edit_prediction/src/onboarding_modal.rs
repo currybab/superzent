@@ -149,8 +149,12 @@ impl Render for ZedPredictModal {
                     .w(px(400.))
                     .h(px(92.))
                     .child(
-                        Vector::new(VectorName::AiGrid, rems_from_px(400.), rems_from_px(92.))
-                            .color(Color::Custom(cx.theme().colors().text.alpha(0.32))),
+                        Vector::new(
+                            VectorName::AiGrid,
+                            rems_from_px(400_f32),
+                            rems_from_px(92_f32),
+                        )
+                        .color(Color::Custom(cx.theme().colors().text.alpha(0.32))),
                     ),
             )
             .child(

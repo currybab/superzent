@@ -312,7 +312,7 @@ impl Render for Onboarding {
                                                     &self.focus_handle,
                                                     cx,
                                                 )
-                                                .size(rems_from_px(12.)),
+                                                .size(rems_from_px(12_f32)),
                                             )
                                             .on_click(|_, window, cx| {
                                                 window.dispatch_action(Finish.boxed_clone(), cx);

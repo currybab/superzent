@@ -463,7 +463,7 @@ impl RemoteConnection for WslRemoteConnection {
             )?;
             for arg in args {
                 let arg = shell_kind.try_quote(&arg).context("shell quoting")?;
-                write!(exec, " {}", &arg)?;
+                write!(exec, " {arg}")?;
             }
         } else {
             write!(&mut exec, "{} -l", self.shell)?;

@@ -458,7 +458,7 @@ fn configured_external_agent_names(project: &Entity<Project>, cx: &App) -> Vec<S
             )
         })
         .collect::<Vec<_>>();
-    agents.sort_by(|left, right| left.1.to_lowercase().cmp(&right.1.to_lowercase()));
+    agents.sort_by_key(|left| left.1.to_lowercase());
     agents
         .into_iter()
         .map(|(agent_name, _)| agent_name)

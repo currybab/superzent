@@ -226,8 +226,11 @@ fn collect_files(
     let Ok(matchers) = glob_inputs
         .iter()
         .map(|glob_input| {
-            util::paths::PathMatcher::new(&[glob_input.to_owned()], project.read(cx).path_style(cx))
-                .with_context(|| format!("invalid path {glob_input}"))
+            util::paths::PathMatcher::new(
+                std::slice::from_ref(glob_input),
+                project.read(cx).path_style(cx),
+            )
+            .with_context(|| format!("invalid path {glob_input}"))
         })
         .collect::<anyhow::Result<Vec<util::paths::PathMatcher>>>()
     else {

@@ -432,7 +432,7 @@ impl LanguageServer {
             {:?}, working directory: {:?}, args: {:?}",
             binary.path,
             working_dir,
-            &binary.arguments
+            binary.arguments
         );
         let mut command = util::command::new_command(&binary.path);
         command
@@ -819,10 +819,11 @@ impl LanguageServer {
                     inlay_hint: Some(InlayHintWorkspaceClientCapabilities {
                         refresh_support: Some(true),
                     }),
-                    diagnostics: Some(DiagnosticWorkspaceClientCapabilities {
-                        refresh_support: Some(true),
-                    })
-                    .filter(|_| pull_diagnostics),
+                    diagnostics: pull_diagnostics.then_some(
+                        DiagnosticWorkspaceClientCapabilities {
+                            refresh_support: Some(true),
+                        },
+                    ),
                     code_lens: Some(CodeLensWorkspaceClientCapabilities {
                         refresh_support: Some(true),
                     }),
@@ -1008,11 +1009,10 @@ impl LanguageServer {
                         dynamic_registration: Some(true),
                         ..DocumentSymbolClientCapabilities::default()
                     }),
-                    diagnostic: Some(DiagnosticClientCapabilities {
+                    diagnostic: pull_diagnostics.then_some(DiagnosticClientCapabilities {
                         dynamic_registration: Some(true),
                         related_document_support: Some(true),
-                    })
-                    .filter(|_| pull_diagnostics),
+                    }),
                     color_provider: Some(DocumentColorClientCapabilities {
                         dynamic_registration: Some(true),
                     }),

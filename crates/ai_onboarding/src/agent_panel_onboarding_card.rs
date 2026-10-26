@@ -53,8 +53,8 @@ impl RenderOnce for AgentPanelOnboardingCard {
                             .child(
                                 Vector::new(
                                     VectorName::AiGrid,
-                                    rems_from_px(400.),
-                                    rems_from_px(92.),
+                                    rems_from_px(400_f32),
+                                    rems_from_px(92_f32),
                                 )
                                 .color(Color::Custom(cx.theme().colors().text.alpha(0.32))),
                             ),

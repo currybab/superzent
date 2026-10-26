@@ -214,7 +214,7 @@ impl Options {
             if arg == INCLUDE_WARNINGS_ARGUMENT {
                 include_warnings = true;
             } else {
-                path_matcher = PathMatcher::new(&[arg.to_owned()], path_style).log_err();
+                path_matcher = PathMatcher::new(std::slice::from_ref(arg), path_style).log_err();
             }
         }
         Self {

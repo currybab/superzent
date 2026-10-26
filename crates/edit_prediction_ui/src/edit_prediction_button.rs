@@ -1124,7 +1124,7 @@ impl EditPredictionButton {
 
                         v_flex()
                             .max_w_64()
-                            .h(rems_from_px(148.))
+                            .h(rems_from_px(148_f32))
                             .child(render_zeta_tab_animation(cx))
                             .child(Label::new("Edit Prediction"))
                             .child(

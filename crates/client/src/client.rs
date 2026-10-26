@@ -70,17 +70,14 @@ static ZED_SERVER_URL: LazyLock<Option<String>> =
 static ZED_RPC_URL: LazyLock<Option<String>> =
     LazyLock::new(|| env_var("SUPERZENT_RPC_URL", "ZED_RPC_URL"));
 
-pub static IMPERSONATE_LOGIN: LazyLock<Option<String>> = LazyLock::new(|| {
-    env_var("SUPERZENT_IMPERSONATE", "ZED_IMPERSONATE")
-        .and_then(|s| if s.is_empty() { None } else { Some(s) })
-});
+pub static IMPERSONATE_LOGIN: LazyLock<Option<String>> =
+    LazyLock::new(|| env_var("SUPERZENT_IMPERSONATE", "ZED_IMPERSONATE").filter(|s| !s.is_empty()));
 
 pub static USE_WEB_LOGIN: LazyLock<bool> =
     LazyLock::new(|| env_flag("SUPERZENT_WEB_LOGIN", "ZED_WEB_LOGIN"));
 
 pub static ADMIN_API_TOKEN: LazyLock<Option<String>> = LazyLock::new(|| {
-    env_var("SUPERZENT_ADMIN_API_TOKEN", "ZED_ADMIN_API_TOKEN")
-        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+    env_var("SUPERZENT_ADMIN_API_TOKEN", "ZED_ADMIN_API_TOKEN").filter(|s| !s.is_empty())
 });
 
 pub static ZED_APP_PATH: LazyLock<Option<PathBuf>> =

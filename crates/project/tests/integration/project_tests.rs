@@ -8850,7 +8850,7 @@ async fn test_multiple_language_server_hovers(cx: &mut gpui::TestAppContext) {
         let new_server = language_servers[i].next().await.unwrap_or_else(|| {
             panic!(
                 "Failed to get language server #{i} with name {}",
-                &language_server_names[i]
+                language_server_names[i]
             )
         });
         let new_server_name = new_server.server.name();
@@ -9260,7 +9260,7 @@ async fn test_multiple_language_server_actions(cx: &mut gpui::TestAppContext) {
         let new_server = language_server_rxs[i].next().await.unwrap_or_else(|| {
             panic!(
                 "Failed to get language server #{i} with name {}",
-                &language_server_names[i]
+                language_server_names[i]
             )
         });
         let new_server_name = new_server.server.name();
@@ -11189,7 +11189,7 @@ fn merge_pending_ops_snapshots(
                     t_ops.ops.push(s_op);
                 }
             }
-            t_ops.ops.sort_by(|l, r| l.id.cmp(&r.id));
+            t_ops.ops.sort_by_key(|op| op.id);
         } else {
             target.push(s_ops);
         }

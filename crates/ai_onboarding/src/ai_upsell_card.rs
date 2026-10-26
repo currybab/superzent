@@ -139,12 +139,12 @@ impl RenderOnce for AiUpsellCard {
             .absolute()
             .top_2()
             .right_2()
-            .size(rems_from_px(72.))
+            .size(rems_from_px(72_f32))
             .child(
                 Vector::new(
                     VectorName::ProUserStamp,
-                    rems_from_px(72.),
-                    rems_from_px(72.),
+                    rems_from_px(72_f32),
+                    rems_from_px(72_f32),
                 )
                 .color(Color::Custom(cx.theme().colors().text_accent.alpha(0.3)))
                 .with_rotate_animation(10),
@@ -154,12 +154,12 @@ impl RenderOnce for AiUpsellCard {
             .absolute()
             .top_2()
             .right_2()
-            .size(rems_from_px(72.))
+            .size(rems_from_px(72_f32))
             .child(
                 Vector::new(
                     VectorName::ProTrialStamp,
-                    rems_from_px(72.),
-                    rems_from_px(72.),
+                    rems_from_px(72_f32),
+                    rems_from_px(72_f32),
                 )
                 .color(Color::Custom(cx.theme().colors().text.alpha(0.2))),
             );

@@ -76,7 +76,7 @@ impl CreateFileParser {
                             self.buffer.push('\n');
                         }
                         edit_events.push(CreateFileParserEvent::NewTextChunk {
-                            chunk: self.buffer.drain(..).collect(),
+                            chunk: std::mem::take(&mut self.buffer),
                         });
                     }
                     self.state = ParserState::Finished;

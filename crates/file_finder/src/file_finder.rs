@@ -611,10 +611,7 @@ impl Matches {
         // We build a sorted Vec<Match>, eliminating duplicate search matches.
         // Search matches with the same paths should have equal `ProjectPanelOrdMatch`, so we should
         // not have any duplicates after building the final list.
-        for new_match in new_history_matches
-            .into_values()
-            .chain(new_search_matches.into_iter())
-        {
+        for new_match in new_history_matches.into_values().chain(new_search_matches) {
             match self.position(&new_match, currently_opened) {
                 Ok(_duplicate) => continue,
                 Err(i) => {
@@ -1846,7 +1843,7 @@ impl PickerDelegate for FileFinderDelegate {
                                                 &focus_handle,
                                                 cx,
                                             )
-                                            .size(rems_from_px(12.)),
+                                            .size(rems_from_px(12_f32)),
                                         ),
                                 )
                                 .menu({
@@ -1882,7 +1879,7 @@ impl PickerDelegate for FileFinderDelegate {
                             Button::new("open-selection", "Open")
                                 .key_binding(
                                     KeyBinding::for_action_in(&menu::Confirm, &focus_handle, cx)
-                                        .map(|kb| kb.size(rems_from_px(12.))),
+                                        .map(|kb| kb.size(rems_from_px(12_f32))),
                                 )
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(menu::Confirm.boxed_clone(), cx)

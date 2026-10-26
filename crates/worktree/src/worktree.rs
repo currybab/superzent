@@ -2491,13 +2491,7 @@ impl Snapshot {
     pub fn entry_for_path(&self, path: &RelPath) -> Option<&Entry> {
         self.traverse_from_path(true, true, true, path)
             .entry()
-            .and_then(|entry| {
-                if entry.path.as_ref() == path {
-                    Some(entry)
-                } else {
-                    None
-                }
-            })
+            .filter(|&entry| entry.path.as_ref() == path)
     }
 
     /// Resolves a path to an executable using the following heuristics:
@@ -2598,7 +2592,7 @@ impl LocalSnapshot {
                 Err(error) => {
                     log::error!(
                         "error loading .gitignore file {:?} - {:?}",
-                        &entry.path,
+                        entry.path,
                         error
                     );
                 }
@@ -4905,7 +4899,7 @@ impl BackgroundScanner {
             }
         }
 
-        for (path, metadata) in relative_paths.iter().zip(metadata.into_iter()) {
+        for (path, metadata) in relative_paths.iter().zip(metadata) {
             let abs_path: Arc<Path> = root_abs_path.join(path.as_std_path()).into();
             match metadata {
                 Ok(Some((metadata, canonical_path))) => {

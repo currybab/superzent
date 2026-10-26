@@ -515,7 +515,7 @@ pub enum RequestError {
         provider: String,
         status_code: StatusCode,
         body: String,
-        headers: HeaderMap<HeaderValue>,
+        headers: Box<HeaderMap<HeaderValue>>,
     },
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -580,7 +580,7 @@ pub async fn non_streaming_completion(
             provider: "openai".to_owned(),
             status_code: response.status(),
             body,
-            headers: response.headers().clone(),
+            headers: Box::new(response.headers().clone()),
         })
     }
 }
@@ -650,7 +650,7 @@ pub async fn stream_completion(
             provider: provider_name.to_owned(),
             status_code: response.status(),
             body,
-            headers: response.headers().clone(),
+            headers: Box::new(response.headers().clone()),
         })
     }
 }

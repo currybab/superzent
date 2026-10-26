@@ -1286,7 +1286,7 @@ impl TextThread {
             sorted_messages.pop();
         }
         sorted_messages.retain(|m| m.role == Role::User);
-        sorted_messages.sort_by(|a, b| b.offset_range.len().cmp(&a.offset_range.len()));
+        sorted_messages.sort_by_key(|message| std::cmp::Reverse(message.offset_range.len()));
 
         let cache_anchors = if self.token_count.unwrap_or(0) < cache_configuration.min_total_token {
             // If we have't hit the minimum threshold to enable caching, don't cache anything.

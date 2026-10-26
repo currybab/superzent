@@ -24047,8 +24047,8 @@ impl Editor {
         let snapshot = self.snapshot(window, cx);
         let mut used_highlight_orders = HashMap::default();
         self.highlighted_rows
-            .iter()
-            .flat_map(|(_, highlighted_rows)| highlighted_rows.iter())
+            .values()
+            .flat_map(|highlighted_rows| highlighted_rows.iter())
             .fold(
                 BTreeMap::<DisplayRow, LineHighlight>::new(),
                 |mut unique_rows, highlight| {
@@ -29840,7 +29840,7 @@ impl Render for MissingEditPredictionKeybindingTooltip {
             container
                 .flex_shrink_0()
                 .max_w_80()
-                .min_h(rems_from_px(124.))
+                .min_h(rems_from_px(124_f32))
                 .justify_between()
                 .child(
                     v_flex()

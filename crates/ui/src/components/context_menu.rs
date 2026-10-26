@@ -2043,7 +2043,7 @@ impl Render for ContextMenu {
         let ui_font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
         let window_size = window.viewport_size();
         let rem_size = window.rem_size();
-        let is_wide_window = window_size.width / rem_size > rems_from_px(800.).0;
+        let is_wide_window = window_size.width / rem_size > rems_from_px(800_f32).0;
 
         let mut focus_submenu: Option<FocusHandle> = None;
 
