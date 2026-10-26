@@ -8,7 +8,7 @@
   <img src="assets/videos/demo.gif" alt="superzent demo" width="800" />
 </p>
 
-One window, multiple local workspaces with git worktree, fast file navigation, diff views, terminal-heavy agent workflows, and center-pane ACP chat tabs.
+One window, multiple local workspaces with git worktree, fast file navigation, diff views, terminal-heavy agent workflows, and center-pane ACP chat tabs. Running agents are listed in the sidebar and resume after a restart, and Markdown files can show their preview side by side in the same tab.
 
 ## Why superzent
 
@@ -43,7 +43,7 @@ The git panel can lay out its changes list the way VS Code does. Pick **Switch t
 
 ## Status
 
-This repository is in early alpha.
+superzent is a personal project. It is built by one person who uses it every day and fixes things as they come up, without a release schedule or support commitments.
 
 Current focus:
 
@@ -72,8 +72,6 @@ Now:
 Next:
 
 - remote project fix
-- session restore
-- native alarm
 
 Later:
 
