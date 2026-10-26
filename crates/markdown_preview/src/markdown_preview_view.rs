@@ -4943,6 +4943,42 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn opening_a_buffer_as_an_editor_reuses_its_split_view(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n", "other.txt": "" }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        open_project_file(cx, &project, &multi_workspace, "other.txt", None, true).await;
+        let buffer = editor.read_with(cx, |editor, cx| {
+            editor.buffer().read(cx).as_singleton().unwrap()
+        });
+
+        // Like opening a project search excerpt.
+        let opened = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let pane = workspace.active_pane().clone();
+                    workspace.open_project_item::<Editor>(
+                        pane, buffer, true, true, false, false, window, cx,
+                    )
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(opened, editor);
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_item_as::<MarkdownSplitView>(cx),
+                Some(split_view.clone())
+            );
+            assert_eq!(workspace.items_of_type::<MarkdownSplitView>(cx).count(), 1);
+        });
+    }
+
+    #[gpui::test]
     async fn reopening_a_file_activates_its_split_view(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "# Note\n", "other.txt": "" }), false).await;
