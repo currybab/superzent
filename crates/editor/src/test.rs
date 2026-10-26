@@ -326,7 +326,10 @@ impl gpui::Focusable for EditorWrapperItem {
 
 impl gpui::Render for EditorWrapperItem {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
-        self.editor.clone()
+        use gpui::{InteractiveElement as _, ParentElement as _};
+        gpui::div()
+            .track_focus(&self.focus_handle)
+            .child(self.editor.clone())
     }
 }
 

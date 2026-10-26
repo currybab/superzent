@@ -20412,10 +20412,11 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        let Some(item) = workspace.recent_active_item_by_type::<Self>(cx) else {
+        // Superzent: activate the tab that shows the editor, which can be a Markdown split view.
+        let Some((tab, _)) = workspace.recent_active_tab_by_type::<Self>(cx) else {
             return;
         };
-        workspace.activate_item(&item, true, true, window, cx);
+        workspace.activate_item(tab.as_ref(), true, true, window, cx);
     }
 
     pub fn toggle_fold(

@@ -37590,3 +37590,55 @@ async fn test_newline_below_with_cursor_on_deleted_hunk(cx: &mut TestAppContext)
         ],
     );
 }
+
+#[gpui::test]
+async fn test_toggle_focus_activates_the_tab_showing_the_editor(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "note.md": "# Note\n" }))
+        .await;
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/root/note.md"), cx)
+        })
+        .await
+        .unwrap();
+    let (wrapper, first_pane) = workspace.update_in(cx, |workspace, window, cx| {
+        // The pane's first activation has timestamp 0, which the most recent lookup skips.
+        let other = cx.new(|cx| Editor::single_line(window, cx));
+        workspace.add_item_to_active_pane(Box::new(other), None, true, window, cx);
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+        let wrapper = cx.new(|cx| crate::test::EditorWrapperItem::new(editor, cx));
+        workspace.add_item_to_active_pane(Box::new(wrapper.clone()), None, true, window, cx);
+        let first_pane = workspace.active_pane().clone();
+        workspace.split_pane(
+            first_pane.clone(),
+            workspace::SplitDirection::Right,
+            window,
+            cx,
+        );
+        (wrapper, first_pane)
+    });
+    workspace.read_with(cx, |workspace, _| {
+        assert_ne!(workspace.active_pane(), &first_pane);
+    });
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        Editor::toggle_focus(workspace, &actions::ToggleFocus, window, cx)
+    });
+    cx.run_until_parked();
+
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.active_pane(), &first_pane);
+        assert_eq!(
+            workspace.active_item_as::<crate::test::EditorWrapperItem>(cx),
+            Some(wrapper.clone())
+        );
+    });
+}

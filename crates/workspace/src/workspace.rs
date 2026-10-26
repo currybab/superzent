@@ -2253,7 +2253,17 @@ impl Workspace {
     }
 
     pub fn recent_active_item_by_type<T: 'static>(&self, cx: &App) -> Option<Entity<T>> {
-        let mut recent_item: Option<Entity<T>> = None;
+        self.recent_active_tab_by_type::<T>(cx)
+            .map(|(_, typed_item)| typed_item)
+    }
+
+    /// Superzent: like `recent_active_item_by_type`, along with the pane item that acts as the
+    /// `T`, such as a Markdown split view for its editor. Activate that pane item, not the `T`.
+    pub fn recent_active_tab_by_type<T: 'static>(
+        &self,
+        cx: &App,
+    ) -> Option<(Box<dyn ItemHandle>, Entity<T>)> {
+        let mut recent_item: Option<(Box<dyn ItemHandle>, Entity<T>)> = None;
         let mut recent_timestamp = 0;
         for pane_handle in &self.panes {
             let pane = pane_handle.read(cx);
@@ -2265,7 +2275,7 @@ impl Workspace {
                     && let Some(typed_item) = item.act_as::<T>(cx)
                 {
                     recent_timestamp = entry.timestamp;
-                    recent_item = Some(typed_item);
+                    recent_item = Some((item.boxed_clone(), typed_item));
                 }
             }
         }
