@@ -1104,6 +1104,12 @@ pub struct MarkdownPreviewSettingsContent {
     ///
     /// Default: false
     pub open_markdown_files_in_preview: Option<bool>,
+    /// Whether to automatically open Markdown files with the editor and the
+    /// preview side by side in one tab. Takes precedence over
+    /// `open_markdown_files_in_preview`.
+    ///
+    /// Default: false
+    pub open_markdown_files_side_by_side: Option<bool>,
     /// Whether to limit the width of the rendered markdown content. When
     /// enabled, content is constrained to `max_width` and centered
     /// horizontally within the preview pane, for optimal readability.

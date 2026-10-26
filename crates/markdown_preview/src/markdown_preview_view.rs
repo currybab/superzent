@@ -14,7 +14,7 @@ use editor::{
 };
 use gpui::{
     Action, App, ClipboardItem, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    Global, ImageSource, InteractiveElement, IntoElement, IsZero, Pixels, Render, Resource,
+    Font, Global, ImageSource, InteractiveElement, IntoElement, IsZero, Pixels, Render, Resource,
     RetainAllImageCache, ScrollHandle, SharedString, SharedUri, Subscription, Task, WeakEntity,
     Window, point, px,
 };
@@ -25,7 +25,7 @@ use markdown::{
 };
 use project::search::SearchQuery;
 use project::{Project, ProjectPath};
-use settings::{AutosaveSetting, Settings, update_settings_file};
+use settings::{Settings, update_settings_file};
 use theme::ThemeSettings;
 use theme::{SystemAppearance, Theme, ThemeRegistry};
 use ui::utils::WithRemSize;
@@ -37,18 +37,21 @@ use util::{
     markdown::{source_position_from_fragment, split_local_url_fragment},
 };
 use workspace::item::{
-    Item, ItemBufferKind, ItemHandle, SaveOptions, SerializableItem, TabContentParams,
+    HighlightedText, Item, ItemBufferKind, ItemHandle, SaveOptions, SerializableItem,
+    TabContentParams,
 };
 use workspace::notifications::NotifyResultExt;
 use workspace::searchable::{
     Direction, SearchEvent, SearchOptions, SearchToken, SearchableItem, SearchableItemHandle,
 };
 use workspace::{
-    ItemId, ItemNavHistory, Pane, SaveIntent, Workspace, WorkspaceId, delete_unloaded_items,
+    ItemId, ItemNavHistory, Pane, SaveIntent, ToolbarItemLocation, Workspace, WorkspaceId,
+    delete_unloaded_items,
 };
 use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize};
 
 use crate::markdown_preview_settings::MarkdownPreviewSettings;
+use crate::markdown_split_view::{self, MarkdownLayout, MarkdownSplitView};
 use crate::{
     CloseAndReturnToEditor, OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, ScrollDown,
     ScrollDownByItem,
@@ -80,9 +83,8 @@ pub struct MarkdownPreviewView {
     /// background parse is in flight. Tracked so matches can be invalidated once it lands.
     markdown_parse_pending: bool,
     nav_history: Option<ItemNavHistory>,
-    /// Whether the source editor exists only for this preview, with no tab of its own: an automatic
-    /// preview closed its tab, or the preview was restored with a fresh editor.
-    owns_source_editor: bool,
+    /// Whether the preview is part of a [`MarkdownSplitView`], which owns the source editor.
+    embedded: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -114,8 +116,10 @@ struct EditorState {
     _subscription: Subscription,
 }
 
+/// Editors whose next `ItemAdded` must not open an automatic preview, because they are being given
+/// a tab of their own on purpose.
 #[derive(Default)]
-struct SuppressedAutoPreviews(HashSet<EntityId>);
+pub(crate) struct SuppressedAutoPreviews(pub(crate) HashSet<EntityId>);
 
 impl Global for SuppressedAutoPreviews {}
 
@@ -124,6 +128,7 @@ pub enum MarkdownPreviewEvent {
     SourceEditorChanged,
     SourceFileHandleChanged,
     SourceDirtyChanged,
+    SourceSelectionChanged,
 }
 
 impl MarkdownPreviewView {
@@ -144,9 +149,12 @@ impl MarkdownPreviewView {
                 {
                     return;
                 }
-                if !MarkdownPreviewSettings::get_global(cx).open_markdown_files_in_preview
-                    || workspace.is_restoring()
-                {
+                let Some(layout) =
+                    MarkdownPreviewSettings::get_global(cx).layout_for_opened_files()
+                else {
+                    return;
+                };
+                if workspace.is_restoring() {
                     return;
                 }
                 let Some(editor) = item.downcast::<Editor>() else {
@@ -155,38 +163,7 @@ impl MarkdownPreviewView {
                 if !Self::is_markdown_editor(workspace, &editor, cx) {
                     return;
                 }
-                let Some(pane) = workspace.pane_for_item_id(item.item_id()) else {
-                    return;
-                };
-                let replaces_editor = !item.is_dirty(cx);
-                let replaces_temporary_editor =
-                    replaces_editor && pane.read(cx).is_active_preview_item(item.item_id());
-                let activate = workspace.active_pane() == &pane
-                    && pane
-                        .read(cx)
-                        .active_item()
-                        .is_some_and(|active_item| active_item.item_id() == item.item_id());
-                let focus = editor.focus_handle(cx).contains_focused(window, cx);
-                let preview = Self::activate_or_add_preview(
-                    workspace,
-                    editor,
-                    pane.clone(),
-                    activate,
-                    focus,
-                    window,
-                    cx,
-                );
-                if !replaces_editor {
-                    return;
-                }
-                preview.update(cx, |preview, _| preview.owns_source_editor = true);
-                pane.update(cx, |pane, cx| {
-                    if replaces_temporary_editor {
-                        pane.replace_preview_item_id(preview.entity_id(), window, cx);
-                    } else {
-                        pane.remove_item(item.item_id(), false, false, window, cx);
-                    }
-                });
+                markdown_split_view::switch_layout(workspace, item.as_ref(), layout, window, cx);
             },
         )
         .detach();
@@ -307,11 +284,15 @@ impl MarkdownPreviewView {
         Some((view, index))
     }
 
-    fn owned_source_editor(&self) -> Option<&Entity<Editor>> {
+    /// The source editor of a standalone preview bound to one file, which the layout toggle can
+    /// switch to.
+    pub(crate) fn switchable_source_editor(&self) -> Option<Entity<Editor>> {
+        if self.embedded || self.mode != MarkdownPreviewMode::Default {
+            return None;
+        }
         self.active_editor
             .as_ref()
-            .filter(|_| self.owns_source_editor)
-            .map(|editor_state| &editor_state.editor)
+            .map(|editor_state| editor_state.editor.clone())
     }
 
     fn is_previewing(&self, buffer: &Entity<Buffer>, cx: &App) -> bool {
@@ -385,6 +366,46 @@ impl MarkdownPreviewView {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
+        Self::build(
+            mode,
+            false,
+            active_editor,
+            workspace,
+            language_registry,
+            window,
+            cx,
+        )
+    }
+
+    /// A preview for a [`MarkdownSplitView`]. It stays bound to the split view's editor and leaves
+    /// tab-level actions to the split view.
+    pub(crate) fn new_embedded(
+        editor: Entity<Editor>,
+        workspace: WeakEntity<Workspace>,
+        language_registry: Arc<LanguageRegistry>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        Self::build(
+            MarkdownPreviewMode::Default,
+            true,
+            editor,
+            workspace,
+            language_registry,
+            window,
+            cx,
+        )
+    }
+
+    fn build(
+        mode: MarkdownPreviewMode,
+        embedded: bool,
+        active_editor: Entity<Editor>,
+        workspace: WeakEntity<Workspace>,
+        language_registry: Arc<LanguageRegistry>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         cx.new(|cx| {
             let markdown = cx.new(|cx| {
                 Markdown::new_with_options(
@@ -421,7 +442,7 @@ impl MarkdownPreviewView {
                 scroll_handle: ScrollHandle::new(),
                 image_cache: RetainAllImageCache::new(cx),
                 base_directory: None,
-                owns_source_editor: false,
+                embedded,
                 pending_update_task: None,
                 hovered_url: None,
                 mode,
@@ -443,6 +464,7 @@ impl MarkdownPreviewView {
                         log::error!("Failed to listen to workspace updates");
                     }
                 }
+                MarkdownPreviewMode::Default if embedded => {}
                 MarkdownPreviewMode::Default => {
                     // After workspace restoration the bound editor may be an orphan that
                     // wraps the right buffer but isn't the canonical Editor instance in
@@ -485,42 +507,31 @@ impl MarkdownPreviewView {
         })
     }
 
+    /// Opens the file as a preview-only tab. The tab owns the file's editor, so an existing tab for
+    /// the file switches to the preview instead of gaining a second owner.
     pub fn open_for_project_path(
         project_path: ProjectPath,
         workspace: &mut Workspace,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        let open_buffer = workspace
-            .project()
-            .update(cx, |project, cx| project.open_buffer(project_path, cx));
-
-        cx.spawn_in(window, async move |workspace, mut cx| {
-            let Some(buffer) = open_buffer
+        let open_path = workspace.open_path(project_path, None, true, window, cx);
+        cx.spawn_in(window, async move |workspace, cx| {
+            let Some(item) = open_path
                 .await
-                .notify_workspace_async_err(workspace.clone(), &mut cx)
+                .notify_workspace_async_err(workspace.clone(), cx)
             else {
                 return;
             };
             workspace
                 .update_in(cx, |workspace, window, cx| {
-                    // Preview the file's editor tab if it has one, so unsaved edits stay with that
-                    // tab. Otherwise the preview gets a hidden editor of its own.
-                    let editor_tab = workspace.items_of_type::<Editor>(cx).find(|editor| {
-                        editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer)
-                    });
-                    let owns_source_editor = editor_tab.is_none();
-                    let editor = editor_tab.unwrap_or_else(|| {
-                        let project = workspace.project().clone();
-                        cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx))
-                    });
-                    let preview = Self::create_markdown_view(workspace, editor, window, cx);
-                    preview.update(cx, |preview, _| {
-                        preview.owns_source_editor = owns_source_editor;
-                    });
-                    workspace.active_pane().update(cx, |pane, cx| {
-                        pane.add_item(Box::new(preview), true, true, None, window, cx);
-                    });
+                    markdown_split_view::switch_layout(
+                        workspace,
+                        item.as_ref(),
+                        MarkdownLayout::Preview,
+                        window,
+                        cx,
+                    );
                 })
                 .ok();
         })
@@ -565,7 +576,6 @@ impl MarkdownPreviewView {
         }
 
         let had_active_editor = self.active_editor.is_some();
-        self.owns_source_editor = false;
         let subscription = cx.subscribe_in(
             &editor,
             window,
@@ -601,6 +611,7 @@ impl MarkdownPreviewView {
                             this.sync_preview_to_source_index(selection_start, reveal, cx);
                             cx.notify();
                         }
+                        cx.emit(MarkdownPreviewEvent::SourceSelectionChanged);
                     }
                     _ => {}
                 };
@@ -647,7 +658,11 @@ impl MarkdownPreviewView {
         let current = self.active_editor.as_ref()?.editor.clone();
         let our_buffer = current.read(cx).buffer().read(cx).as_singleton()?;
         let mut fallback = None;
-        for editor in workspace.items_of_type::<Editor>(cx) {
+        let editors = workspace
+            .items(cx)
+            .filter(|item| item.downcast::<MarkdownPreviewView>().is_none())
+            .filter_map(|item| item.act_as::<Editor>(cx));
+        for editor in editors {
             if editor.read(cx).buffer().read(cx).as_singleton().as_ref() != Some(&our_buffer) {
                 continue;
             }
@@ -1009,12 +1024,17 @@ impl MarkdownPreviewView {
         cx.notify();
     }
 
-    fn close_and_return_to_editor(
+    pub(crate) fn close_and_return_to_editor(
         &mut self,
         _: &CloseAndReturnToEditor,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The split view the preview belongs to switches itself to its editor.
+        if self.embedded {
+            cx.propagate();
+            return;
+        }
         let Some(editor) = self
             .active_editor
             .as_ref()
@@ -1026,13 +1046,23 @@ impl MarkdownPreviewView {
             return;
         };
         let preview_id = cx.entity_id();
-        // The source editor gets a tab of its own below, which takes over its unsaved edits.
-        // Closing the preview without saving reloads it, and that must not discard them.
-        self.owns_source_editor = false;
 
         window.defer(cx, move |window, cx| {
             workspace.update(cx, |workspace, cx| {
-                if !workspace.activate_item(&editor, true, true, window, cx) {
+                if let Some(owner) =
+                    markdown_split_view::item_showing_editor(workspace, &editor, cx)
+                {
+                    if owner.downcast::<MarkdownSplitView>().is_some() {
+                        markdown_split_view::switch_layout(
+                            workspace,
+                            owner.as_ref(),
+                            MarkdownLayout::SideBySide,
+                            window,
+                            cx,
+                        );
+                    }
+                    workspace.activate_item(owner.as_ref(), true, true, window, cx);
+                } else {
                     // Re-adding the source emits `ItemAdded`; suppress its automatic preview once.
                     cx.global_mut::<SuppressedAutoPreviews>()
                         .0
@@ -1179,19 +1209,34 @@ impl MarkdownPreviewView {
     ) {
         Self::apply_checkbox_toggle_to_editor(editor, source_range, new_checked, cx);
 
-        // An owned source editor has no tab, so workspace autosave never sees its edits. A checkbox
-        // toggle is a single discrete change, so save it right away when autosave is on.
-        let owns_source_editor = view_handle
-            .upgrade()
-            .is_some_and(|view| view.read(cx).owns_source_editor);
-        if owns_source_editor
-            && editor.workspace_settings(cx).autosave != AutosaveSetting::Off
-            && let Some(project) = editor.read(cx).project().cloned()
-        {
+        // A preview never owns its source's unsaved edits. When no tab shows the source buffer,
+        // nothing would report the toggle as unsaved, so save it right away instead.
+        let source_has_owner = view_handle.upgrade().is_none_or(|view| {
+            let view = view.read(cx);
+            view.embedded || view.source_buffer_has_owner(editor, cx)
+        });
+        if !source_has_owner && let Some(project) = editor.read(cx).project().cloned() {
             Pane::autosave_item(editor, project, window, cx).detach_and_log_err(cx);
         }
 
         Self::refresh_preview(view_handle, window, cx);
+    }
+
+    fn source_buffer_has_owner(&self, editor: &Entity<Editor>, cx: &App) -> bool {
+        let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton() else {
+            return true;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return true;
+        };
+        workspace
+            .read(cx)
+            .items(cx)
+            .filter(|item| item.downcast::<MarkdownPreviewView>().is_none())
+            .filter_map(|item| item.act_as::<Editor>(cx))
+            .any(|editor| {
+                editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer)
+            })
     }
 
     fn apply_checkbox_toggle_to_editor(
@@ -1263,9 +1308,20 @@ fn handle_url_click(
                         .active_editor
                         .as_ref()
                         .map(|state| state.editor.clone());
-                    // An owned source editor isn't rendered, so focusing it would only take
-                    // keyboard input away from the preview.
-                    let move_focus = !view.read(cx).owns_source_editor;
+                    // A source editor without a tab isn't rendered, so focusing it would only take
+                    // keyboard input away from the preview. A split view keeps the focus on its
+                    // preview by itself while the editor is hidden.
+                    let move_focus = view.read(cx).embedded
+                        || active_editor.as_ref().is_some_and(|editor| {
+                            view.read(cx).workspace.upgrade().is_some_and(|workspace| {
+                                markdown_split_view::item_showing_editor(
+                                    workspace.read(cx),
+                                    editor,
+                                    cx,
+                                )
+                                .is_some()
+                            })
+                        });
 
                     let source_index =
                         markdown.update(cx, |markdown, cx| markdown.scroll_to_heading(&slug, cx));
@@ -1591,25 +1647,6 @@ impl Item for MarkdownPreviewView {
         }
     }
 
-    // When the source editor has no tab of its own, the preview is the only item for the buffer, so
-    // edits made through it, like toggling a task checkbox, must count as unsaved for save all and
-    // close prompts. Reporting the buffer as a project item instead would make panes treat the
-    // preview as a duplicate of the editor.
-    fn is_dirty(&self, cx: &App) -> bool {
-        self.owned_source_editor()
-            .is_some_and(|editor| editor.read(cx).is_dirty(cx))
-    }
-
-    fn has_conflict(&self, cx: &App) -> bool {
-        self.owned_source_editor()
-            .is_some_and(|editor| editor.read(cx).has_conflict(cx))
-    }
-
-    fn has_deleted_file(&self, cx: &App) -> bool {
-        self.owned_source_editor()
-            .is_some_and(|editor| editor.read(cx).has_deleted_file(cx))
-    }
-
     fn can_save(&self, cx: &App) -> bool {
         self.active_editor
             .as_ref()
@@ -1656,18 +1693,14 @@ impl Item for MarkdownPreviewView {
             .unwrap_or_else(|| Task::ready(Ok(())))
     }
 
+    // A preview never owns its source's unsaved edits, so force-closing it has nothing to discard.
     fn reload(
         &mut self,
-        project: Entity<Project>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
+        _project: Entity<Project>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        // When the source editor has a tab of its own, that tab owns the edits, so force-closing
-        // the preview must not discard them. An owned source editor has no other item to do it.
-        match self.owned_source_editor().cloned() {
-            Some(editor) => editor.update(cx, |editor, cx| editor.reload(project, window, cx)),
-            None => Task::ready(Ok(())),
-        }
+        Task::ready(Ok(()))
     }
 
     fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(workspace::item::ItemEvent)) {
@@ -1679,6 +1712,9 @@ impl Item for MarkdownPreviewView {
             }
             MarkdownPreviewEvent::SourceDirtyChanged => {
                 f(workspace::item::ItemEvent::UpdateTab);
+            }
+            MarkdownPreviewEvent::SourceSelectionChanged => {
+                f(workspace::item::ItemEvent::UpdateBreadcrumbs);
             }
         }
     }
@@ -1693,6 +1729,17 @@ impl Item for MarkdownPreviewView {
         _: &App,
     ) -> Option<Box<dyn SearchableItemHandle>> {
         Some(Box::new(handle.clone()))
+    }
+
+    fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {
+        match &self.active_editor {
+            Some(editor_state) => editor_state.editor.read(cx).breadcrumb_location(cx),
+            None => ToolbarItemLocation::Hidden,
+        }
+    }
+
+    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)> {
+        self.active_editor.as_ref()?.editor.read(cx).breadcrumbs(cx)
     }
 
     fn can_split(&self) -> bool {
@@ -1718,18 +1765,14 @@ impl Item for MarkdownPreviewView {
 
         let language_registry = project.read(cx).languages().clone();
 
-        let split = MarkdownPreviewView::new(
+        Task::ready(Some(MarkdownPreviewView::new(
             MarkdownPreviewMode::Default,
             active_editor.editor.clone(),
             self.workspace.clone(),
             language_registry,
             window,
             cx,
-        );
-        // Either preview may be closed first, so both keep reporting the source editor's edits.
-        let owns_source_editor = self.owns_source_editor;
-        split.update(cx, |split, _| split.owns_source_editor = owns_source_editor);
-        Task::ready(Some(split))
+        )))
     }
 
     fn set_nav_history(
@@ -2085,18 +2128,10 @@ impl SerializableItem for MarkdownPreviewView {
 
             cx.update(|window, cx| {
                 let language_registry = project.read(cx).languages().clone();
+                // Rebinds to the file's tab once the workspace has restored it.
                 let editor =
                     cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
-                let preview = MarkdownPreviewView::new(
-                    mode,
-                    editor,
-                    workspace,
-                    language_registry,
-                    window,
-                    cx,
-                );
-                preview.update(cx, |preview, _| preview.owns_source_editor = true);
-                preview
+                MarkdownPreviewView::new(mode, editor, workspace, language_registry, window, cx)
             })
         })
     }
@@ -2115,15 +2150,10 @@ impl SerializableItem for MarkdownPreviewView {
         &mut self,
         workspace: &mut Workspace,
         item_id: ItemId,
-        closing: bool,
+        _closing: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<()>>> {
-        // Only the path and mode are stored, not the buffer. Serializing would tell the workspace
-        // that unsaved edits in an owned source editor survive closing, so let it prompt instead.
-        if closing && Item::is_dirty(self, cx) {
-            return None;
-        }
         let workspace_id = workspace.database_id()?;
         let editor = self.active_editor.as_ref()?.editor.clone();
         let buffer = editor.read(cx).buffer().read(cx).as_singleton()?;
@@ -2216,7 +2246,7 @@ mod tests {
     use editor::Editor;
     use fs::FakeFs;
     use gpui::UpdateGlobal as _;
-    use gpui::{App, AppContext as _, Entity, Focusable as _, TestAppContext, WindowHandle};
+    use gpui::{App, AppContext as _, Entity, Focusable, TestAppContext, WindowHandle};
     use language::Point;
     use project::{Project, ProjectPath};
     use serde_json::json;
@@ -2236,6 +2266,7 @@ mod tests {
         MarkdownPreviewView, filter_non_rendered_matches, open_preview_url,
         reset_persisted_font_size,
     };
+    use crate::markdown_split_view::{MarkdownLayout, MarkdownSplitView};
 
     #[test]
     fn filters_matches_in_non_rendered_link_source() {
@@ -3056,20 +3087,13 @@ mod tests {
             markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
 
-        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+        let split_view = active_split_view(cx, &workspace);
 
-        let preview = cx.update(|cx| {
-            assert_eq!(workspace.read(cx).items_of_type::<Editor>(cx).count(), 0);
-            workspace
-                .read(cx)
-                .active_item_as::<MarkdownPreviewView>(cx)
-                .unwrap()
-        });
-        let editor = preview.read_with(cx, |preview, _| {
-            preview.active_editor.as_ref().unwrap().editor.clone()
-        });
-
-        dispatch_close_and_return_to_editor(cx, &multi_workspace, &preview);
+        dispatch_close_and_return_to_editor(cx, &multi_workspace, &split_view);
         cx.run_until_parked();
 
         assert_editor_is_active_and_focused(cx, &multi_workspace, &editor);
@@ -3077,25 +3101,20 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn show_source_keeps_unsaved_edits_from_an_owned_preview(cx: &mut TestAppContext) {
+    async fn show_source_keeps_unsaved_edits_from_a_preview_tab(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
-        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = cx.update(|cx| {
-            workspace
-                .read(cx)
-                .active_item_as::<MarkdownPreviewView>(cx)
-                .unwrap()
-        });
-        let editor = preview.read_with(cx, |preview, _| {
-            preview.active_editor.as_ref().unwrap().editor.clone()
-        });
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+        let split_view = active_split_view(cx, &workspace);
         cx.update(|cx| {
             MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
         });
 
-        dispatch_close_and_return_to_editor(cx, &multi_workspace, &preview);
+        dispatch_close_and_return_to_editor(cx, &multi_workspace, &split_view);
         cx.run_until_parked();
 
         assert_editor_is_active_and_focused(cx, &multi_workspace, &editor);
@@ -3525,12 +3544,12 @@ mod tests {
     fn dispatch_close_and_return_to_editor(
         cx: &mut TestAppContext,
         multi_workspace: &WindowHandle<MultiWorkspace>,
-        preview: &Entity<MarkdownPreviewView>,
+        preview: &impl Focusable,
     ) {
         multi_workspace
             .update(cx, |_, window, cx| {
                 assert!(
-                    preview.read(cx).focus_handle.contains_focused(window, cx),
+                    preview.focus_handle(cx).contains_focused(window, cx),
                     "preview must be focused for the keyboard action to dispatch to it"
                 );
                 window.dispatch_action(Box::new(CloseAndReturnToEditor), cx);
@@ -3565,14 +3584,12 @@ mod tests {
     ) {
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
                 assert_eq!(
-                    multi_workspace
-                        .workspace()
-                        .read(cx)
-                        .items_of_type::<MarkdownPreviewView>(cx)
-                        .count(),
+                    workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
                     0
                 );
+                assert_eq!(workspace.items_of_type::<MarkdownSplitView>(cx).count(), 0);
             })
             .unwrap();
     }
@@ -3625,23 +3642,23 @@ mod tests {
             true,
         )
         .await;
-        let preview = cx.update(|cx| {
-            let preview = target_pane
+        let split_view = cx.update(|cx| {
+            let split_view = target_pane
                 .read(cx)
                 .active_item()
-                .and_then(|item| item.downcast::<MarkdownPreviewView>())
+                .and_then(|item| item.downcast::<MarkdownSplitView>())
                 .expect("the Markdown preview should open in the requested pane");
             assert_eq!(
                 other_pane
                     .read(cx)
-                    .items_of_type::<MarkdownPreviewView>()
+                    .items_of_type::<MarkdownSplitView>()
                     .count(),
                 0
             );
-            preview
+            split_view
         });
         assert_eq!(
-            preview_source_path(cx, &preview).as_ref(),
+            split_view_source_path(cx, &split_view).as_ref(),
             rel_path("targeted.md")
         );
     }
@@ -3686,10 +3703,7 @@ mod tests {
                 workspace.active_item_as::<Editor>(cx),
                 Some(restored_editor)
             );
-            assert_eq!(
-                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
-                0
-            );
+            assert_eq!(workspace.items_of_type::<MarkdownSplitView>(cx).count(), 0);
         });
 
         workspace.update(cx, |workspace, _| workspace.set_restoring_workspace(false));
@@ -3704,7 +3718,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn dirty_markdown_editor_is_retained_when_auto_preview_runs(cx: &mut TestAppContext) {
+    async fn automatic_preview_takes_over_a_dirty_editor(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
         let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
@@ -3732,64 +3746,46 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
 
+        let split_view = active_split_view(cx, &workspace);
         cx.update(|cx| {
-            let workspace = workspace.read(cx);
+            assert_editor_replaced_by_preview(workspace.read(cx), &editor, cx);
+            assert_eq!(split_view.read(cx).editor(), &editor);
             assert!(
-                workspace
-                    .panes()
-                    .iter()
-                    .any(|pane| pane.read(cx).index_for_item(&editor).is_some())
-            );
-            assert_eq!(
-                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
-                1
+                ItemHandle::is_dirty(&split_view, cx),
+                "the split view owns the editor, so it must report the unsaved edit"
             );
         });
     }
 
     #[gpui::test]
-    async fn replacing_preview_reports_unsaved_source_edits(cx: &mut TestAppContext) {
+    async fn automatic_preview_reports_unsaved_source_edits(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
         let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = workspace.read_with(cx, |workspace, cx| {
+        let split_view = workspace.read_with(cx, |workspace, cx| {
             assert_editor_replaced_by_preview(workspace, editor.as_ref(), cx);
-            workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
-                .next()
-                .expect("the preview replaced the editor")
+            workspace.active_item_as::<MarkdownSplitView>(cx).unwrap()
         });
 
-        cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
+        cx.update(|cx| assert!(!ItemHandle::is_dirty(&split_view, cx)));
 
-        // Toggling a task checkbox in the preview edits the hidden source editor.
-        let source_editor = preview.read_with(cx, |preview, _| {
-            preview.active_editor.as_ref().unwrap().editor.clone()
-        });
-        source_editor.update(cx, |editor, cx| {
-            editor.edit(
-                [(
-                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
-                    "x",
-                )],
-                cx,
-            );
+        let source_editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&source_editor, 2..5, true, cx)
         });
         cx.run_until_parked();
 
         cx.update(|cx| {
             assert!(
-                ItemHandle::is_dirty(&preview, cx),
-                "save all and close prompts only see the preview, so it must report the edit"
+                ItemHandle::is_dirty(&split_view, cx),
+                "save all and close prompts only see the split view, so it must report the edit"
             );
         });
     }
 
     #[gpui::test]
-    async fn project_panel_preview_owns_its_source_editor_only_without_an_editor_tab(
-        cx: &mut TestAppContext,
-    ) {
+    async fn project_panel_preview_switches_the_files_tab_to_its_preview(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) = markdown_workspace(
             cx,
             json!({ "alone.md": "- [ ] task\n", "opened.md": "- [ ] task\n" }),
@@ -3802,10 +3798,10 @@ mod tests {
                 .downcast::<Editor>()
                 .unwrap();
 
-        multi_workspace
-            .update(cx, |_, window, cx| {
-                workspace.update(cx, |workspace, cx| {
-                    for path in ["alone.md", "opened.md"] {
+        for path in ["alone.md", "opened.md"] {
+            multi_workspace
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
                         let project_path = test_project_path(&project, path, cx);
                         MarkdownPreviewView::open_for_project_path(
                             project_path,
@@ -3813,76 +3809,69 @@ mod tests {
                             window,
                             cx,
                         );
-                    }
-                });
-            })
-            .unwrap();
-        cx.run_until_parked();
+                    });
+                })
+                .unwrap();
+            cx.run_until_parked();
+        }
 
-        let previews = workspace.read_with(cx, |workspace, cx| {
+        let split_views = workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<Editor>(cx).count(), 0);
+            assert_eq!(
+                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
+                0
+            );
             workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
+                .items_of_type::<MarkdownSplitView>(cx)
                 .collect::<Vec<_>>()
         });
-        assert_eq!(previews.len(), 2);
-        for preview in previews {
-            let source_editor = preview.read_with(cx, |preview, _| {
-                preview.active_editor.as_ref().unwrap().editor.clone()
-            });
-            source_editor.update(cx, |editor, cx| {
-                editor.edit(
-                    [(
-                        editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
-                        "x",
-                    )],
-                    cx,
-                );
+        assert_eq!(split_views.len(), 2);
+        assert!(
+            split_views.iter().any(|split_view| split_view
+                .read_with(cx, |split_view, _| split_view.editor() == &opened_editor)),
+            "the open editor tab must turn into the preview rather than gain a second owner"
+        );
+        for split_view in split_views {
+            let editor = split_view.read_with(cx, |split_view, _| {
+                assert_eq!(split_view.layout(), MarkdownLayout::Preview);
+                split_view.editor().clone()
             });
             cx.update(|cx| {
-                let reuses_editor_tab = source_editor == opened_editor;
-                assert_eq!(
-                    ItemHandle::is_dirty(&preview, cx),
-                    !reuses_editor_tab,
-                    "only a preview without an editor tab should report unsaved edits"
-                );
+                MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
             });
+            cx.update(|cx| assert!(ItemHandle::is_dirty(&split_view, cx)));
         }
     }
 
     #[gpui::test]
-    async fn split_of_an_owned_preview_keeps_reporting_unsaved_edits(cx: &mut TestAppContext) {
+    async fn split_of_a_split_view_keeps_reporting_unsaved_edits(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
         open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = workspace.read_with(cx, |workspace, cx| {
-            workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
-                .next()
-                .expect("the preview replaced the editor")
-        });
+        let split_view = active_split_view(cx, &workspace);
 
         let split = multi_workspace
             .update(cx, |_, window, cx| {
-                preview.update(cx, |preview, cx| preview.clone_on_split(None, window, cx))
+                split_view.update(cx, |split_view, cx| {
+                    split_view.clone_on_split(None, window, cx)
+                })
             })
             .unwrap()
             .await
-            .expect("previews can be split");
+            .expect("split views can be split");
         let source_editor = split.read_with(cx, |split, _| {
-            split.active_editor.as_ref().unwrap().editor.clone()
+            assert_eq!(split.layout(), MarkdownLayout::Preview);
+            split.editor().clone()
         });
-        source_editor.update(cx, |editor, cx| {
-            editor.edit(
-                [(
-                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
-                    "x",
-                )],
-                cx,
-            );
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&source_editor, 2..5, true, cx)
         });
 
-        cx.update(|cx| assert!(ItemHandle::is_dirty(&split, cx)));
+        cx.update(|cx| {
+            assert!(ItemHandle::is_dirty(&split, cx));
+            assert!(ItemHandle::is_dirty(&split_view, cx));
+        });
     }
 
     #[gpui::test]
@@ -3905,7 +3894,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn heading_links_keep_focus_in_an_owned_preview(cx: &mut TestAppContext) {
+    async fn heading_links_keep_focus_in_a_preview_tab(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) = markdown_workspace(
             cx,
             json!({ "note.md": "[Jump](#section)\n\n# Section\n\nBody\n" }),
@@ -3914,12 +3903,8 @@ mod tests {
         .await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
         open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = workspace.read_with(cx, |workspace, cx| {
-            workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
-                .next()
-                .expect("the preview replaced the editor")
-        });
+        let preview = active_split_view(cx, &workspace)
+            .read_with(cx, |split_view, _| split_view.preview().clone());
 
         multi_workspace
             .update(cx, |_, window, cx| {
@@ -3948,35 +3933,22 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn reloading_an_owned_preview_discards_source_edits(cx: &mut TestAppContext) {
+    async fn reloading_a_split_view_discards_source_edits(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
         open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = workspace.read_with(cx, |workspace, cx| {
-            workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
-                .next()
-                .expect("the preview replaced the editor")
+        let split_view = active_split_view(cx, &workspace);
+        let source_editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&source_editor, 2..5, true, cx)
         });
-        let source_editor = preview.read_with(cx, |preview, _| {
-            preview.active_editor.as_ref().unwrap().editor.clone()
-        });
-        source_editor.update(cx, |editor, cx| {
-            editor.edit(
-                [(
-                    editor::MultiBufferOffset(3)..editor::MultiBufferOffset(4),
-                    "x",
-                )],
-                cx,
-            );
-        });
-        cx.update(|cx| assert!(ItemHandle::is_dirty(&preview, cx)));
+        cx.update(|cx| assert!(ItemHandle::is_dirty(&split_view, cx)));
 
         let reload = multi_workspace
             .update(cx, |_, window, cx| {
-                preview.update(cx, |preview, cx| {
-                    preview.reload(project.clone(), window, cx)
+                split_view.update(cx, |split_view, cx| {
+                    split_view.reload(project.clone(), window, cx)
                 })
             })
             .unwrap();
@@ -3987,81 +3959,136 @@ mod tests {
             editor.buffer().read(cx).snapshot(cx).text()
         });
         assert_eq!(text, "- [ ] task\n");
-        cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
+        cx.update(|cx| assert!(!ItemHandle::is_dirty(&split_view, cx)));
     }
 
     #[gpui::test]
-    async fn closing_a_dirty_owned_preview_does_not_claim_its_edits_are_serialized(
-        cx: &mut TestAppContext,
-    ) {
+    async fn split_view_restores_unsaved_edits_after_closing(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
         open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = workspace.read_with(cx, |workspace, cx| {
-            workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
-                .next()
-                .expect("the preview replaced the editor")
-        });
-        let editor = preview.read_with(cx, |preview, _| {
-            preview.active_editor.as_ref().unwrap().editor.clone()
-        });
+        let split_view = active_split_view(cx, &workspace);
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
         cx.update(|cx| {
             MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
         });
 
-        multi_workspace
+        let workspace_id = workspace.update(cx, |workspace, _| {
+            workspace.set_random_database_id();
+            workspace.database_id().unwrap()
+        });
+        insert_split_view_workspace_row(workspace_id).await;
+        let item_id = split_view.entity_id().as_u64();
+        let serialize = multi_workspace
             .update(cx, |_, window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.set_random_database_id();
-                    let item_id = preview.entity_id().as_u64();
-                    preview.update(cx, |preview, cx| {
-                        assert!(
-                            preview
-                                .serialize(workspace, item_id, true, window, cx)
-                                .is_none(),
-                            "only the buffer holds the edit, so closing must prompt to save it"
-                        );
-                        assert!(
-                            preview
-                                .serialize(workspace, item_id, false, window, cx)
-                                .is_some()
-                        );
-                    });
-                });
+                    split_view.update(cx, |split_view, cx| {
+                        split_view.serialize(workspace, item_id, true, window, cx)
+                    })
+                })
+            })
+            .unwrap()
+            .expect("unsaved edits are restored, so closing must not prompt for them");
+        serialize.await.unwrap();
+
+        // Discard the edit on disk's side, as quitting would, then restore the tab.
+        let reload = multi_workspace
+            .update(cx, |_, window, cx| {
+                split_view.update(cx, |split_view, cx| {
+                    split_view.reload(project.clone(), window, cx)
+                })
             })
             .unwrap();
+        reload.await.unwrap();
+
+        let restored = multi_workspace
+            .update(cx, |_, window, cx| {
+                MarkdownSplitView::deserialize(
+                    project.clone(),
+                    workspace.downgrade(),
+                    workspace_id,
+                    item_id,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap()
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        restored.read_with(cx, |restored, cx| {
+            assert_eq!(restored.layout(), MarkdownLayout::Preview);
+            assert_eq!(
+                restored
+                    .editor()
+                    .read(cx)
+                    .buffer()
+                    .read(cx)
+                    .snapshot(cx)
+                    .text(),
+                "- [x] task\n"
+            );
+            assert!(Item::is_dirty(restored, cx));
+        });
     }
 
     #[gpui::test]
-    async fn owned_preview_autosaves_checkbox_toggles(cx: &mut TestAppContext) {
-        let (project, workspace, multi_workspace) =
-            markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
-        cx.update(|cx| {
-            set_auto_preview_enabled(cx, true);
-            settings::SettingsStore::update_global(cx, |store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings.workspace.autosave = Some(settings::AutosaveSetting::OnFocusChange);
-                });
-            });
-        });
-        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
-        let preview = workspace.read_with(cx, |workspace, cx| {
-            workspace
-                .items_of_type::<MarkdownPreviewView>(cx)
-                .next()
-                .expect("the preview replaced the editor")
-        });
+    async fn preview_saves_checkbox_toggles_when_no_tab_shows_the_source(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({ "first.md": "- [ ] task\n", "second.md": "# Second\n" }),
+            false,
+        )
+        .await;
+        let second_editor =
+            open_project_file(cx, &project, &multi_workspace, "second.md", None, true)
+                .await
+                .downcast::<Editor>()
+                .unwrap();
+        let first_path = cx.update(|cx| test_project_path(&project, "first.md", cx));
+        let first_buffer = project
+            .update(cx, |project, cx| project.open_buffer(first_path, cx))
+            .await
+            .unwrap();
 
-        let editor = preview.read_with(cx, |preview, _| {
+        // Like a restored following preview: it has an editor no tab shows.
+        let preview = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let first_editor = cx.new(|cx| {
+                        Editor::for_buffer(first_buffer.clone(), Some(project.clone()), window, cx)
+                    });
+                    let preview = MarkdownPreviewView::new(
+                        super::MarkdownPreviewMode::Follow,
+                        first_editor,
+                        workspace.weak_handle(),
+                        workspace.project().read(cx).languages().clone(),
+                        window,
+                        cx,
+                    );
+                    workspace.add_item_to_active_pane(
+                        Box::new(preview.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                    preview
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let first_editor = preview.read_with(cx, |preview, _| {
             preview.active_editor.as_ref().unwrap().editor.clone()
         });
         multi_workspace
             .update(cx, |_, window, cx| {
                 MarkdownPreviewView::toggle_checkbox(
                     preview.downgrade(),
-                    &editor,
+                    &first_editor,
                     2..5,
                     true,
                     window,
@@ -4071,12 +4098,22 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
 
+        // Following another file must not lose the toggle, which no tab would report.
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.activate_item(&second_editor, true, true, window, cx);
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
         let fs = project.read_with(cx, |project, _| project.fs().clone());
         assert_eq!(
-            fs.load(path!("/project/note.md").as_ref()).await.unwrap(),
+            fs.load(path!("/project/first.md").as_ref()).await.unwrap(),
             "- [x] task\n"
         );
-        cx.update(|cx| assert!(!ItemHandle::is_dirty(&preview, cx)));
+        cx.update(|cx| assert!(!first_buffer.read(cx).is_dirty()));
     }
 
     #[gpui::test]
@@ -4161,16 +4198,19 @@ mod tests {
             open.await.unwrap();
             cx.run_until_parked();
 
-            let preview = cx.update(|cx| {
+            let split_view = cx.update(|cx| {
                 let pane = workspace.read(cx).active_pane().read(cx);
-                let preview = pane
+                let split_view = pane
                     .preview_item()
-                    .and_then(|item| item.downcast::<MarkdownPreviewView>())
+                    .and_then(|item| item.downcast::<MarkdownSplitView>())
                     .unwrap();
                 assert_eq!(pane.items_len(), 1);
-                preview
+                split_view
             });
-            assert_eq!(preview_source_path(cx, &preview).as_ref(), rel_path(path));
+            assert_eq!(
+                split_view_source_path(cx, &split_view).as_ref(),
+                rel_path(path)
+            );
         }
     }
 
@@ -4224,7 +4264,7 @@ mod tests {
                 let target_preview = target_pane
                     .read(cx)
                     .active_item()
-                    .and_then(|item| item.downcast::<MarkdownPreviewView>())
+                    .and_then(|item| item.downcast::<MarkdownSplitView>())
                     .unwrap();
                 assert!(plain_editor.focus_handle(cx).contains_focused(window, cx));
                 target_preview
@@ -4257,12 +4297,12 @@ mod tests {
         multi_workspace
             .update(cx, |_, window, cx| {
                 assert_eq!(workspace.read(cx).active_pane(), &target_pane);
-                assert!(
-                    plain_pane
-                        .read(cx)
-                        .active_item()
-                        .and_then(|item| item.downcast::<MarkdownPreviewView>())
-                        .is_some()
+                let plain_pane = plain_pane.read(cx);
+                assert_eq!(plain_pane.items_of_type::<MarkdownSplitView>().count(), 1);
+                assert_eq!(
+                    plain_pane.active_item().map(|item| item.item_id()),
+                    Some(plain_editor.entity_id()),
+                    "a file opened in the background must not become the active tab"
                 );
                 assert!(target_preview.focus_handle(cx).contains_focused(window, cx));
             })
@@ -4388,6 +4428,316 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    async fn switching_layouts_keeps_one_owner_for_the_editor(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({ "before.txt": "", "note.md": "- [ ] task\n", "after.txt": "" }),
+            false,
+        )
+        .await;
+        for path in ["before.txt", "note.md", "after.txt"] {
+            open_project_file(cx, &project, &multi_workspace, path, None, true).await;
+        }
+        let editor = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .items_of_type::<Editor>(cx)
+                .find(|editor| MarkdownPreviewView::is_markdown_file(editor, cx))
+                .unwrap()
+        });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.activate_item(&editor, true, true, window, cx);
+                })
+            })
+            .unwrap();
+        cx.update(|cx| {
+            MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
+        });
+
+        for layout in [
+            MarkdownLayout::SideBySide,
+            MarkdownLayout::Preview,
+            MarkdownLayout::SideBySide,
+            MarkdownLayout::Editor,
+        ] {
+            switch_active_layout(cx, &multi_workspace, &workspace, layout);
+            workspace.read_with(cx, |workspace, cx| {
+                let pane = workspace.active_pane().read(cx);
+                assert_eq!(pane.items_len(), 3);
+                assert_eq!(
+                    pane.active_item_index(),
+                    1,
+                    "the tab must keep its position"
+                );
+                let item = pane.active_item().unwrap();
+                assert_eq!(MarkdownLayout::of_item(item.as_ref(), cx), Some(layout));
+                assert_eq!(item.act_as::<Editor>(cx), Some(editor.clone()));
+                assert!(
+                    item.is_dirty(cx),
+                    "the unsaved edit must move with the editor"
+                );
+                let owners = workspace
+                    .items(cx)
+                    .filter(|item| item.act_as::<Editor>(cx).as_ref() == Some(&editor))
+                    .count();
+                assert_eq!(owners, 1);
+            });
+        }
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.active_item_as::<Editor>(cx), Some(editor.clone()));
+        });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                assert!(editor.focus_handle(cx).contains_focused(window, cx));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn split_view_searches_the_side_it_shows(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let searchable_id = |cx: &mut TestAppContext| {
+            split_view.read_with(cx, |split_view, cx| {
+                split_view
+                    .as_searchable(&split_view_handle(split_view, cx), cx)
+                    .unwrap()
+                    .item_id()
+            })
+        };
+        let (editor_id, preview_id) = split_view.read_with(cx, |split_view, _| {
+            (
+                split_view.editor().entity_id(),
+                split_view.preview().entity_id(),
+            )
+        });
+        assert_eq!(searchable_id(cx), editor_id);
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::Preview);
+        assert_eq!(searchable_id(cx), preview_id);
+    }
+
+    #[gpui::test]
+    async fn opens_markdown_files_side_by_side_when_enabled(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        cx.update(|cx| {
+            set_auto_preview_enabled(cx, true);
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .open_markdown_files_side_by_side = Some(true);
+                });
+            });
+        });
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+
+        let split_view = active_split_view(cx, &workspace);
+        split_view.read_with(cx, |split_view, _| {
+            assert_eq!(split_view.layout(), MarkdownLayout::SideBySide);
+            assert_eq!(split_view.editor(), &editor);
+        });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                assert!(editor.focus_handle(cx).contains_focused(window, cx));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn reopening_a_file_activates_its_split_view(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n", "other.txt": "" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let split_view = active_split_view(cx, &workspace);
+        open_project_file(cx, &project, &multi_workspace, "other.txt", None, true).await;
+
+        let reopened =
+            open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+
+        assert_eq!(reopened.item_id(), split_view.entity_id());
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<MarkdownSplitView>(cx).count(), 1);
+            assert_eq!(
+                workspace
+                    .items_of_type::<Editor>(cx)
+                    .filter(|editor| MarkdownPreviewView::is_markdown_file(editor, cx))
+                    .count(),
+                0
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn show_source_from_a_preview_reveals_the_split_view_that_owns_the_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        cx.update(|cx| set_auto_preview_enabled(cx, true));
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let split_view = active_split_view(cx, &workspace);
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        let preview = multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let preview = MarkdownPreviewView::create_markdown_view(
+                        workspace,
+                        editor.clone(),
+                        window,
+                        cx,
+                    );
+                    workspace.add_item_to_active_pane(
+                        Box::new(preview.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                    preview
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        dispatch_close_and_return_to_editor(cx, &multi_workspace, &preview);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_item_as::<MarkdownSplitView>(cx),
+                Some(split_view.clone())
+            );
+            assert_eq!(split_view.read(cx).layout(), MarkdownLayout::SideBySide);
+            assert_eq!(
+                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
+                0
+            );
+            assert_eq!(
+                workspace.items_of_type::<Editor>(cx).count(),
+                0,
+                "the editor must not get a second tab"
+            );
+        });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                assert!(editor.focus_handle(cx).contains_focused(window, cx));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn side_by_side_from_a_preview_tab_turns_its_editor_tab_into_a_split_view(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true)
+            .await
+            .downcast::<Editor>()
+            .unwrap();
+        let preview = open_preview_for_active_editor(cx, &multi_workspace);
+        cx.run_until_parked();
+        workspace.read_with(cx, |_, cx| {
+            assert_eq!(
+                MarkdownLayout::of_item(&preview, cx),
+                Some(MarkdownLayout::Preview)
+            );
+            assert_eq!(
+                MarkdownLayout::of_item(&editor, cx),
+                Some(MarkdownLayout::Editor)
+            );
+        });
+
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+
+        let split_view = active_split_view(cx, &workspace);
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(split_view.read(cx).editor(), &editor);
+            assert_eq!(split_view.read(cx).layout(), MarkdownLayout::SideBySide);
+            assert_eq!(
+                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
+                0
+            );
+            assert_eq!(workspace.items_of_type::<Editor>(cx).count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn previews_show_their_sources_breadcrumbs(cx: &mut TestAppContext) {
+        let (multi_workspace, editor) =
+            open_markdown_file(cx, "note.md", "# Note\n\nBody text\n").await;
+        let preview = open_preview_for_active_editor(cx, &multi_workspace);
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let editor_breadcrumbs = editor.breadcrumbs(cx).map(|(segments, _)| {
+                segments
+                    .into_iter()
+                    .map(|segment| segment.text)
+                    .collect::<Vec<_>>()
+            });
+            let preview_breadcrumbs = preview.breadcrumbs(cx).map(|(segments, _)| {
+                segments
+                    .into_iter()
+                    .map(|segment| segment.text)
+                    .collect::<Vec<_>>()
+            });
+            assert!(editor_breadcrumbs.is_some());
+            assert_eq!(preview_breadcrumbs, editor_breadcrumbs);
+            assert_eq!(
+                preview.breadcrumb_location(cx),
+                editor.breadcrumb_location(cx)
+            );
+        });
+    }
+
+    fn switch_active_layout(
+        cx: &mut TestAppContext,
+        multi_workspace: &WindowHandle<MultiWorkspace>,
+        workspace: &Entity<Workspace>,
+        layout: MarkdownLayout,
+    ) {
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let item = workspace.active_pane().read(cx).active_item().unwrap();
+                    crate::markdown_split_view::switch_layout(
+                        workspace,
+                        item.as_ref(),
+                        layout,
+                        window,
+                        cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn split_view_handle(split_view: &MarkdownSplitView, cx: &App) -> Entity<MarkdownSplitView> {
+        let workspace = split_view
+            .editor()
+            .read(cx)
+            .workspace()
+            .expect("the split view's editor knows its workspace");
+        workspace
+            .read(cx)
+            .items_of_type::<MarkdownSplitView>(cx)
+            .find(|handle| handle.read(cx).editor() == split_view.editor())
+            .expect("the split view is in the workspace")
+    }
+
     fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         cx.update(|cx| {
             let state = AppState::test(cx);
@@ -4403,6 +4753,10 @@ mod tests {
                 INSERT OR IGNORE INTO workspaces(workspace_id) VALUES (?)
             }
         }
+    }
+
+    async fn insert_split_view_workspace_row(workspace_id: WorkspaceId) {
+        crate::markdown_split_view::insert_workspace_row_for_tests(workspace_id).await;
     }
 
     // In tests each static connection opens its own in-memory database, so the workspace row
@@ -4469,10 +4823,14 @@ mod tests {
     }
 
     fn assert_editor_replaced_by_preview(workspace: &Workspace, editor: &dyn ItemHandle, cx: &App) {
-        assert!(
-            workspace
-                .active_item_as::<MarkdownPreviewView>(cx)
-                .is_some()
+        let split_view = workspace
+            .active_item_as::<MarkdownSplitView>(cx)
+            .expect("the editor should be shown in a preview tab");
+        assert_eq!(split_view.read(cx).layout(), MarkdownLayout::Preview);
+        assert_eq!(
+            split_view.read(cx).editor().entity_id(),
+            editor.item_id(),
+            "the preview tab should take over the editor"
         );
         assert!(
             workspace
@@ -4552,6 +4910,25 @@ mod tests {
             preview.active_editor.as_ref().unwrap().editor.clone()
         });
         editor_source_path(cx, &editor)
+    }
+
+    fn split_view_source_path(
+        cx: &mut TestAppContext,
+        split_view: &Entity<MarkdownSplitView>,
+    ) -> Arc<RelPath> {
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        editor_source_path(cx, &editor)
+    }
+
+    fn active_split_view(
+        cx: &mut TestAppContext,
+        workspace: &Entity<Workspace>,
+    ) -> Entity<MarkdownSplitView> {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_item_as::<MarkdownSplitView>(cx)
+                .expect("a Markdown split view should be active")
+        })
     }
 
     fn editor_source_path(cx: &mut TestAppContext, editor: &Entity<Editor>) -> Arc<RelPath> {

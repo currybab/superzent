@@ -9,7 +9,6 @@ use ui::{Tooltip, prelude::*, text_for_keystroke};
 use super::QuickActionBar;
 
 enum PreviewTarget {
-    Markdown(Entity<Editor>),
     Svg(Entity<MultiBuffer>),
     Csv(Entity<Editor>),
 }
@@ -22,10 +21,11 @@ impl QuickActionBar {
         let active_item = self.active_item.as_ref()?;
         let editor = active_item.act_as::<Editor>(cx);
 
+        // Superzent: Markdown tabs switch to their preview with the layout buttons next to this bar.
         let preview_target = if let Some(editor) = &editor
             && MarkdownPreviewView::is_markdown_file(editor, cx)
         {
-            PreviewTarget::Markdown(editor.clone())
+            return None;
         } else if let Some(buffer) = active_item.act_as::<MultiBuffer>(cx)
             && SvgPreviewView::is_svg_file(&buffer, cx)
         {
@@ -40,11 +40,6 @@ impl QuickActionBar {
         };
 
         let (button_id, tooltip_text, open_action_for_tooltip) = match &preview_target {
-            PreviewTarget::Markdown(_) => (
-                "toggle-markdown-preview",
-                "Preview Markdown",
-                &markdown_preview::OpenPreview as &dyn gpui::Action,
-            ),
             PreviewTarget::Svg(_) => (
                 "toggle-svg-preview",
                 "Preview SVG",
@@ -90,18 +85,6 @@ impl QuickActionBar {
                         };
                         let open_to_the_side = window.modifiers().alt;
                         match &preview_target {
-                            PreviewTarget::Markdown(editor) => {
-                                let editor = editor.clone();
-                                if open_to_the_side {
-                                    MarkdownPreviewView::open_preview_to_the_side_of_pane(
-                                        workspace, editor, pane, window, cx,
-                                    );
-                                } else {
-                                    MarkdownPreviewView::open_preview_in_pane(
-                                        workspace, editor, pane, window, cx,
-                                    );
-                                }
-                            }
                             PreviewTarget::Svg(buffer) => {
                                 let buffer = buffer.clone();
                                 if open_to_the_side {

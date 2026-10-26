@@ -1224,6 +1224,13 @@ fn initialize_pane(
                 )
             });
             toolbar.add_item(buffer_search_bar.clone(), window, cx);
+            // Right-side items render right to left, so this sits at the far right.
+            let markdown_layout_toolbar = cx.new(|_| {
+                markdown_preview::markdown_layout_toolbar::MarkdownLayoutToolbar::new(
+                    workspace_handle.clone(),
+                )
+            });
+            toolbar.add_item(markdown_layout_toolbar, window, cx);
             let quick_action_bar =
                 cx.new(|cx| QuickActionBar::new(buffer_search_bar, workspace, cx));
             toolbar.add_item(quick_action_bar, window, cx);
