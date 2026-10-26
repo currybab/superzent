@@ -3581,12 +3581,13 @@ impl ThreadView {
         let supports_images = session_capabilities.supports_images();
         let supports_embedded_context = session_capabilities.supports_embedded_context();
 
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
         let has_editor_selection = workspace
             .upgrade()
             .and_then(|ws| {
                 ws.read(cx)
                     .active_item(cx)
-                    .and_then(|item| item.downcast::<Editor>())
+                    .and_then(|item| item.act_as::<Editor>(cx))
             })
             .is_some_and(|editor| {
                 editor.update(cx, |editor, cx| {
@@ -6319,7 +6320,8 @@ impl ThreadView {
             .spawn(cx, async move |cx| {
                 let item = open_task.await?;
 
-                let Some(active_editor) = item.downcast::<Editor>() else {
+                // Superzent: `act_as` also finds the editor of a Markdown split view.
+                let Some(active_editor) = cx.update(|_, cx| item.act_as::<Editor>(cx))? else {
                     return anyhow::Ok(());
                 };
 

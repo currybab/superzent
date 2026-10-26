@@ -1433,8 +1433,9 @@ impl AgentDiff {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
         if let workspace::Event::ItemAdded { item } = event
-            && let Some(editor) = item.downcast::<Editor>()
+            && let Some(editor) = item.act_as::<Editor>(cx)
             && let Some(buffer) = Self::full_editor_buffer(editor.read(cx), cx)
         {
             self.register_editor(workspace.downgrade(), buffer, editor, window, cx);

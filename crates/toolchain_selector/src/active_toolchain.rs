@@ -31,9 +31,10 @@ impl ActiveToolchain {
                     let editor = this
                         .workspace
                         .update(cx, |workspace, cx| {
+                            // Superzent: `act_as` also finds the editor of a Markdown split view.
                             workspace
                                 .active_item(cx)
-                                .and_then(|item| item.downcast::<Editor>())
+                                .and_then(|item| item.act_as::<Editor>(cx))
                         })
                         .ok()
                         .flatten();
@@ -259,7 +260,8 @@ impl StatusItemView for ActiveToolchain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(editor) = active_pane_item.and_then(|item| item.downcast::<Editor>()) {
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
+        if let Some(editor) = active_pane_item.and_then(|item| item.act_as::<Editor>(cx)) {
             self.update_lister(editor, window, cx);
         }
         cx.notify();

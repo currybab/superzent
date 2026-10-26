@@ -2084,7 +2084,12 @@ fn open_bundled_file(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let existing = workspace.items_of_type::<Editor>(cx).find(|editor| {
+    // Superzent: `act_as` also finds the editor of a Markdown split view. Activate the tab
+    // that shows it.
+    let existing = workspace.items(cx).find(|item| {
+        let Some(editor) = item.act_as::<Editor>(cx) else {
+            return false;
+        };
         editor.read_with(cx, |editor, cx| {
             editor.read_only(cx)
                 && editor.title(cx).as_ref() == title
@@ -2095,8 +2100,8 @@ fn open_bundled_file(
                     .is_some_and(|buffer| buffer.read(cx).file().is_none())
         })
     });
-    if let Some(existing) = existing {
-        workspace.activate_item(&existing, true, true, window, cx);
+    if let Some(existing) = existing.map(|item| item.boxed_clone()) {
+        workspace.activate_item(existing.as_ref(), true, true, window, cx);
         return;
     }
 

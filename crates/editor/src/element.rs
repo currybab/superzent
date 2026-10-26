@@ -8179,8 +8179,11 @@ pub fn render_breadcrumb_text(
         breadcrumbs_stack
     };
 
+    // Superzent: `act_as` also finds the editor of a Markdown split view. Downcast first, since
+    // `act_as` reads the item and buffer headers render while their editor is being updated.
     let editor = active_item
         .downcast::<Editor>()
+        .or_else(|| active_item.act_as::<Editor>(cx))
         .map(|editor| editor.downgrade());
 
     let has_project_path = active_item.project_path(cx).is_some();

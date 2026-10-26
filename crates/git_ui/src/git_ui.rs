@@ -219,7 +219,8 @@ pub fn init(cx: &mut App) {
             let Some(active_item) = workspace.active_item(cx) else {
                 return;
             };
-            let Some(editor) = active_item.downcast::<Editor>() else {
+            // Superzent: `act_as` also finds the editor of a Markdown split view.
+            let Some(editor) = active_item.act_as::<Editor>(cx) else {
                 return;
             };
             let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton() else {

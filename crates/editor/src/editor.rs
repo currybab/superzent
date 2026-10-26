@@ -7087,7 +7087,15 @@ impl Editor {
                 .read(cx)
                 .panes()
                 .iter()
-                .flat_map(|pane| pane.read(cx).items_of_type::<Editor>())
+                // Superzent: `act_as` also finds the editor of a Markdown split view.
+                .flat_map(|pane| {
+                    pane.read(cx)
+                        .items()
+                        // `act_as` reads the item, and this editor is being updated.
+                        .filter(|item| item.item_id() != cx.entity_id())
+                        .filter_map(|item| item.act_as::<Editor>(cx))
+                        .collect::<Vec<_>>()
+                })
                 .filter(|editor| editor.entity_id() != cx.entity_id())
                 .collect();
 
@@ -25292,7 +25300,12 @@ impl Editor {
                                 // Instead, we try to activate the existing editor in the pane first.
                                 let (editor, pane_item_index, pane_item_id) =
                                     pane.read(cx).items().enumerate().find_map(|(i, item)| {
-                                        let editor = item.downcast::<Editor>()?;
+                                        // Superzent: `act_as` also finds the editor of a
+                                        // Markdown split view. Downcast first, since `act_as`
+                                        // reads the item and this editor is being updated.
+                                        let editor = item
+                                            .downcast::<Editor>()
+                                            .or_else(|| item.act_as::<Editor>(cx))?;
                                         let singleton_buffer =
                                             editor.read(cx).buffer().read(cx).as_singleton()?;
                                         if singleton_buffer == buffer {

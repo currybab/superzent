@@ -131,7 +131,8 @@ fn capture_example_as_markdown(
 
     let fs = workspace.app_state().fs.clone();
     let project = workspace.project().clone();
-    let editor = workspace.active_item_as::<Editor>(cx)?;
+    // Superzent: `act_as` also finds the editor of a Markdown split view.
+    let editor = workspace.active_item(cx)?.act_as::<Editor>(cx)?;
     let editor = editor.read(cx);
     let (buffer, cursor_anchor) = editor
         .buffer()

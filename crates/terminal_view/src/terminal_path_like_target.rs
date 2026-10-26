@@ -948,66 +948,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_open_target_at_line_in_an_item_wrapping_an_editor(app_cx: &mut TestAppContext) {
-        use gpui::{
-            AnyEntity, Entity, EntityId, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-            SharedString,
-        };
-        use std::any::TypeId;
-        use workspace::item::{Item, ItemBufferKind};
-
-        struct EditorWrapper {
-            editor: Entity<Editor>,
-            focus_handle: FocusHandle,
-        }
-
-        impl EventEmitter<()> for EditorWrapper {}
-
-        impl Focusable for EditorWrapper {
-            fn focus_handle(&self, _: &App) -> FocusHandle {
-                self.focus_handle.clone()
-            }
-        }
-
-        impl Render for EditorWrapper {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                self.editor.clone()
-            }
-        }
-
-        impl Item for EditorWrapper {
-            type Event = ();
-
-            fn tab_content_text(&self, _: usize, _: &App) -> SharedString {
-                "wrapper".into()
-            }
-
-            fn buffer_kind(&self, _: &App) -> ItemBufferKind {
-                ItemBufferKind::Singleton
-            }
-
-            fn for_each_project_item(
-                &self,
-                cx: &App,
-                f: &mut dyn FnMut(EntityId, &dyn project::ProjectItem),
-            ) {
-                Item::for_each_project_item(self.editor.read(cx), cx, f)
-            }
-
-            fn act_as_type<'a>(
-                &'a self,
-                type_id: TypeId,
-                self_handle: &'a Entity<Self>,
-                _: &'a App,
-            ) -> Option<AnyEntity> {
-                if type_id == TypeId::of::<Self>() {
-                    Some(self_handle.clone().into())
-                } else if type_id == TypeId::of::<Editor>() {
-                    Some(self.editor.clone().into())
-                } else {
-                    None
-                }
-            }
-        }
+        use editor::test::EditorWrapperItem;
 
         let fs = app_cx.update(AppState::test).fs.as_fake().clone();
         app_cx.update(|cx| {
@@ -1029,10 +970,7 @@ mod tests {
             .unwrap();
         let wrapper = workspace.update_in(cx, |workspace, window, cx| {
             let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
-            let wrapper = cx.new(|cx| EditorWrapper {
-                editor,
-                focus_handle: cx.focus_handle(),
-            });
+            let wrapper = cx.new(|cx| EditorWrapperItem::new(editor, cx));
             workspace.add_item_to_active_pane(Box::new(wrapper.clone()), None, true, window, cx);
             wrapper
         });
@@ -1096,7 +1034,7 @@ mod tests {
 
         workspace.read_with(cx, |workspace, cx| {
             assert_eq!(
-                workspace.active_item_as::<EditorWrapper>(cx),
+                workspace.active_item_as::<EditorWrapperItem>(cx),
                 Some(wrapper.clone())
             );
         });

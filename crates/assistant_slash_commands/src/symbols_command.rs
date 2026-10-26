@@ -59,8 +59,9 @@ impl SlashCommand for OutlineSlashCommand {
             let Some(active_item) = workspace.active_item(cx) else {
                 return Task::ready(Err(anyhow!("no active tab")));
             };
+            // Superzent: `act_as` also finds the editor of a Markdown split view.
             let Some(buffer) = active_item
-                .downcast::<Editor>()
+                .act_as::<Editor>(cx)
                 .and_then(|editor| editor.read(cx).buffer().read(cx).as_singleton())
             else {
                 return Task::ready(Err(anyhow!("active tab is not an editor")));

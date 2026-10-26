@@ -1187,10 +1187,11 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
             entries.push(PromptContextEntry::Mode(PromptContextType::Thread));
         }
 
+        // Superzent: `act_as` also finds the editor of a Markdown split view.
         let has_editor_selection = workspace
             .read(cx)
             .active_item(cx)
-            .and_then(|item| item.downcast::<Editor>())
+            .and_then(|item| item.act_as::<Editor>(cx))
             .is_some_and(|editor| {
                 editor.update(cx, |editor, cx| {
                     editor.has_non_empty_selection(&editor.display_snapshot(cx))

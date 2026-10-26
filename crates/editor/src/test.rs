@@ -299,3 +299,68 @@ pub fn editor_content_with_blocks_and_size(
     }
     lines.join("\n")
 }
+
+/// A pane item that shows an editor without being one, like a Markdown split view. Code that only
+/// downcasts pane items to `Editor` misses the editor inside it, while `act_as` finds it.
+pub struct EditorWrapperItem {
+    pub editor: Entity<Editor>,
+    focus_handle: gpui::FocusHandle,
+}
+
+impl EditorWrapperItem {
+    pub fn new(editor: Entity<Editor>, cx: &mut gpui::Context<Self>) -> Self {
+        Self {
+            editor,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+}
+
+impl gpui::EventEmitter<()> for EditorWrapperItem {}
+
+impl gpui::Focusable for EditorWrapperItem {
+    fn focus_handle(&self, _: &App) -> gpui::FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl gpui::Render for EditorWrapperItem {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        self.editor.clone()
+    }
+}
+
+impl workspace::item::Item for EditorWrapperItem {
+    type Event = ();
+
+    fn tab_content_text(&self, _: usize, _: &App) -> gpui::SharedString {
+        "wrapper".into()
+    }
+
+    fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
+        workspace::item::ItemBufferKind::Singleton
+    }
+
+    fn for_each_project_item(
+        &self,
+        cx: &App,
+        f: &mut dyn FnMut(gpui::EntityId, &dyn project::ProjectItem),
+    ) {
+        workspace::item::Item::for_each_project_item(self.editor.read(cx), cx, f)
+    }
+
+    fn act_as_type<'a>(
+        &'a self,
+        type_id: std::any::TypeId,
+        self_handle: &'a Entity<Self>,
+        _: &'a App,
+    ) -> Option<gpui::AnyEntity> {
+        if type_id == std::any::TypeId::of::<Self>() {
+            Some(self_handle.clone().into())
+        } else if type_id == std::any::TypeId::of::<Editor>() {
+            Some(self.editor.clone().into())
+        } else {
+            None
+        }
+    }
+}

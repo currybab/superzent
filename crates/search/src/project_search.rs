@@ -3373,48 +3373,6 @@ pub mod tests {
 
     #[gpui::test]
     async fn test_open_buffers_include_editors_wrapped_by_other_items(cx: &mut TestAppContext) {
-        struct EditorWrapper {
-            editor: Entity<Editor>,
-            focus_handle: FocusHandle,
-        }
-
-        impl EventEmitter<()> for EditorWrapper {}
-
-        impl Focusable for EditorWrapper {
-            fn focus_handle(&self, _: &App) -> FocusHandle {
-                self.focus_handle.clone()
-            }
-        }
-
-        impl Render for EditorWrapper {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                self.editor.clone()
-            }
-        }
-
-        impl Item for EditorWrapper {
-            type Event = ();
-
-            fn tab_content_text(&self, _: usize, _: &App) -> SharedString {
-                "wrapper".into()
-            }
-
-            fn act_as_type<'a>(
-                &'a self,
-                type_id: TypeId,
-                self_handle: &'a Entity<Self>,
-                _: &'a App,
-            ) -> Option<gpui::AnyEntity> {
-                if type_id == TypeId::of::<Self>() {
-                    Some(self_handle.clone().into())
-                } else if type_id == TypeId::of::<Editor>() {
-                    Some(self.editor.clone().into())
-                } else {
-                    None
-                }
-            }
-        }
-
         init_test(cx);
         let fs = FakeFs::new(cx.background_executor.clone());
         fs.insert_tree(
@@ -3439,10 +3397,7 @@ pub mod tests {
         workspace.update_in(cx, |workspace, window, cx| {
             let editor =
                 cx.new(|cx| Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx));
-            let wrapper = cx.new(|cx| EditorWrapper {
-                editor,
-                focus_handle: cx.focus_handle(),
-            });
+            let wrapper = cx.new(|cx| editor::test::EditorWrapperItem::new(editor, cx));
             workspace.add_item_to_active_pane(Box::new(wrapper), None, true, window, cx);
             ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx);
         });

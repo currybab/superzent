@@ -214,7 +214,8 @@ impl HighlightsTreeView {
                 if active_item.item_id() == cx.entity_id() {
                     return;
                 } else {
-                    match active_item.downcast::<Editor>() {
+                    // Superzent: `act_as` also finds the editor of a Markdown split view.
+                    match active_item.act_as::<Editor>(cx) {
                         Some(active_editor) => active_editor,
                         None => {
                             self.clear(cx);
