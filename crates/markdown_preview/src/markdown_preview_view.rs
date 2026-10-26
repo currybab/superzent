@@ -525,6 +525,13 @@ impl MarkdownPreviewView {
             };
             workspace
                 .update_in(cx, |workspace, window, cx| {
+                    // Opening a new editor can already have wrapped it in a split view.
+                    let item = item
+                        .act_as::<Editor>(cx)
+                        .and_then(|editor| {
+                            markdown_split_view::item_showing_editor(workspace, &editor, cx)
+                        })
+                        .unwrap_or(item);
                     markdown_split_view::switch_layout(
                         workspace,
                         item.as_ref(),
@@ -2243,7 +2250,7 @@ mod tests {
     use crate::markdown_preview_view::handle_url_click;
     use crate::markdown_preview_view::resolve_preview_image;
     use buffer_diff::BufferDiff;
-    use editor::Editor;
+    use editor::{Editor, MultiBufferOffset, SelectionEffects};
     use fs::FakeFs;
     use gpui::UpdateGlobal as _;
     use gpui::{App, AppContext as _, Entity, Focusable, TestAppContext, WindowHandle};
@@ -3963,7 +3970,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn split_view_restores_unsaved_edits_after_closing(cx: &mut TestAppContext) {
+    async fn split_view_restores_unsaved_edits_and_selections_after_closing(
+        cx: &mut TestAppContext,
+    ) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "- [ ] task\n" }), false).await;
         cx.update(|cx| set_auto_preview_enabled(cx, true));
@@ -3973,6 +3982,15 @@ mod tests {
         cx.update(|cx| {
             MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx)
         });
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                        s.select_ranges([MultiBufferOffset(6)..MultiBufferOffset(10)])
+                    })
+                })
+            })
+            .unwrap();
 
         let workspace_id = workspace.update(cx, |workspace, _| {
             workspace.set_random_database_id();
@@ -4032,6 +4050,20 @@ mod tests {
             );
             assert!(Item::is_dirty(restored, cx));
         });
+        let restored_editor = restored.read_with(cx, |restored, _| restored.editor().clone());
+        let restored_selections = restored_editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            editor
+                .selections
+                .all::<MultiBufferOffset>(&snapshot)
+                .into_iter()
+                .map(|selection| selection.range())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            restored_selections,
+            [MultiBufferOffset(6)..MultiBufferOffset(10)]
+        );
     }
 
     #[gpui::test]
@@ -4551,6 +4583,78 @@ mod tests {
                 assert!(editor.focus_handle(cx).contains_focused(window, cx));
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    async fn project_panel_preview_opens_preview_only_when_side_by_side_is_enabled(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        cx.update(|cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .open_markdown_files_side_by_side = Some(true);
+                });
+            });
+        });
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let project_path = test_project_path(&project, "note.md", cx);
+                    MarkdownPreviewView::open_for_project_path(project_path, workspace, window, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let split_view = active_split_view(cx, &workspace);
+        split_view.read_with(cx, |split_view, _| {
+            assert_eq!(split_view.layout(), MarkdownLayout::Preview);
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<MarkdownSplitView>(cx).count(), 1);
+            assert_eq!(workspace.items_of_type::<Editor>(cx).count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn switching_layouts_keeps_pinned_tabs_pinned(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) = markdown_workspace(
+            cx,
+            json!({ "first.md": "# First\n", "second.md": "# Second\n" }),
+            false,
+        )
+        .await;
+        let first = open_project_file(cx, &project, &multi_workspace, "first.md", None, true).await;
+        open_project_file(cx, &project, &multi_workspace, "second.md", None, true).await;
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.set_pinned_count(2);
+                    let index = pane.index_for_item(first.as_ref()).unwrap();
+                    pane.activate_item(index, true, true, window, cx);
+                });
+            })
+            .unwrap();
+
+        for layout in [MarkdownLayout::SideBySide, MarkdownLayout::Editor] {
+            switch_active_layout(cx, &multi_workspace, &workspace, layout);
+            pane.read_with(cx, |pane, cx| {
+                assert_eq!(pane.pinned_count(), 2);
+                assert_eq!(pane.active_item_index(), 0);
+                let active_item = pane.active_item().unwrap();
+                assert_eq!(
+                    MarkdownLayout::of_item(active_item.as_ref(), cx),
+                    Some(layout)
+                );
+            });
+        }
     }
 
     #[gpui::test]

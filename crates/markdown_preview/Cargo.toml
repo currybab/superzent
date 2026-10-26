@@ -24,6 +24,7 @@ language.workspace = true
 log.workspace = true
 markdown.workspace = true
 project.workspace = true
+serde_json.workspace = true
 settings.workspace = true
 theme.workspace = true
 ui.workspace = true
@@ -37,6 +38,5 @@ buffer_diff.workspace = true
 db = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
-serde_json.workspace = true
 tempfile.workspace = true
 workspace = { workspace = true, features = ["test-support"] }

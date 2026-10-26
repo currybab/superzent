@@ -34,15 +34,16 @@ Markdown tabs have three layouts, which the buttons at the right of the tab's to
 
 The tab keeps its unsaved edits when you switch layouts, and saving, closing, and restoring the tab work like an editor tab.
 
-To open Markdown files in one of the preview layouts automatically, add to your settings file:
+To open Markdown files in one of the preview layouts automatically, open the Settings Editor ({#kb zed::OpenSettings}) and go to **Languages & Tools > Miscellaneous**. Turn on **Open Markdown Files Side by Side** to open them with the editor and the preview side by side, or **Open Markdown Files in Preview** to open them in the preview only. When both are on, side by side wins.
+
+Or add this to your settings.json:
 
 ```json [settings]
+{
   "markdown_preview": {
-    // Open Markdown files with the editor and the preview side by side.
-    "open_markdown_files_side_by_side": true,
-    // Or open them in the preview only.
-    "open_markdown_files_in_preview": false
-  },
+    "open_markdown_files_side_by_side": true
+  }
+}
 ```
 
 ## Configuration

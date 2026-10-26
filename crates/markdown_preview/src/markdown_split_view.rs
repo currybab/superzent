@@ -2,7 +2,10 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use editor::{Editor, EditorEvent, MultiBuffer};
+use editor::scroll::Autoscroll;
+use editor::{
+    Bias, Editor, EditorEvent, MultiBuffer, MultiBufferOffset, SelectionEffects, ToOffset as _,
+};
 use fs::MTime;
 use gpui::{
     AnyElement, App, Context, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle,
@@ -439,6 +442,8 @@ fn replace_item_in_pane(
         let was_active = pane.active_item_index() == index;
         let active_item_id = pane.active_item().map(|item| item.item_id());
         let was_temporary = pane.is_active_preview_item(old_id);
+        // Pinning is positional, and removing a pinned item unpins the last pinned position.
+        let pinned_count = pane.pinned_count();
         // Remove first: the new item can report the same project entry, and adding it while the
         // old one is still there would just move the old one.
         pane.remove_item(old_id, false, false, window, cx);
@@ -451,6 +456,7 @@ fn replace_item_in_pane(
             window,
             cx,
         );
+        pane.set_pinned_count(pinned_count);
         if was_active {
             if was_temporary {
                 pane.replace_preview_item_id(new_id, window, cx);
@@ -815,8 +821,11 @@ impl SerializableItem for MarkdownSplitView {
 
             cx.update(|window, cx| {
                 let language_registry = project.read(cx).languages().clone();
-                let editor =
-                    cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+                let editor = cx.new(|cx| {
+                    let mut editor = Editor::for_buffer(buffer, Some(project.clone()), window, cx);
+                    restore_selections(&mut editor, &serialized.selections, window, cx);
+                    editor
+                });
                 let split_view = Self::new(
                     editor,
                     serialized.preview_only,
@@ -868,6 +877,19 @@ impl SerializableItem for MarkdownSplitView {
         let mtime = buffer.saved_mtime();
         let preview_only = self.preview_only;
         let editor_ratio = self.editor_ratio;
+        let editor = self.editor.read(cx);
+        let multi_buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+        let selections = editor
+            .selections
+            .disjoint_anchors()
+            .iter()
+            .map(|selection| {
+                (
+                    selection.start.to_offset(&multi_buffer_snapshot).0,
+                    selection.end.to_offset(&multi_buffer_snapshot).0,
+                )
+            })
+            .collect();
         Some(cx.background_spawn(async move {
             let (contents, language) = if save_contents {
                 (
@@ -886,6 +908,7 @@ impl SerializableItem for MarkdownSplitView {
                 mtime,
                 preview_only,
                 editor_ratio,
+                selections,
             };
             persistence::MARKDOWN_SPLIT_VIEW_DB
                 .save_split_view(item_id, workspace_id, serialized)
@@ -902,9 +925,33 @@ impl SerializableItem for MarkdownSplitView {
                     | EditorEvent::DirtyChanged
                     | EditorEvent::BufferEdited
                     | EditorEvent::FileHandleChanged
+                    | EditorEvent::SelectionsChanged { local: true }
             ),
         }
     }
+}
+
+fn restore_selections(
+    editor: &mut Editor,
+    selections: &[(usize, usize)],
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) {
+    if selections.is_empty() {
+        return;
+    }
+    let snapshot = editor.buffer().read(cx).snapshot(cx);
+    editor.change_selections(
+        SelectionEffects::scroll(Autoscroll::center()),
+        window,
+        cx,
+        |selections_collection| {
+            selections_collection.select_ranges(selections.iter().map(|&(start, end)| {
+                snapshot.clip_offset(MultiBufferOffset(start), Bias::Left)
+                    ..snapshot.clip_offset(MultiBufferOffset(end), Bias::Right)
+            }))
+        },
+    );
 }
 
 /// Puts unsaved contents back into a reopened buffer, keeping the saved mtime so that the buffer
@@ -950,6 +997,7 @@ mod persistence {
         sqlez_macros::sql,
     };
     use fs::MTime;
+    use util::ResultExt as _;
     use workspace::{ItemId, WorkspaceDb, WorkspaceId};
 
     pub(super) struct SerializedSplitView {
@@ -959,11 +1007,13 @@ mod persistence {
         pub(super) mtime: Option<MTime>,
         pub(super) preview_only: bool,
         pub(super) editor_ratio: f32,
+        /// The editor's selections as offsets into the buffer.
+        pub(super) selections: Vec<(usize, usize)>,
     }
 
     impl StaticColumnCount for SerializedSplitView {
         fn column_count() -> usize {
-            7
+            8
         }
     }
 
@@ -980,7 +1030,13 @@ mod persistence {
             let start_index = statement.bind(&mtime_seconds, start_index)?;
             let start_index = statement.bind(&mtime_nanos, start_index)?;
             let start_index = statement.bind(&self.preview_only, start_index)?;
-            statement.bind(&(self.editor_ratio as f64), start_index)
+            let start_index = statement.bind(&(self.editor_ratio as f64), start_index)?;
+            let selections = if self.selections.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&self.selections)?)
+            };
+            statement.bind(&selections, start_index)
         }
     }
 
@@ -998,6 +1054,11 @@ mod persistence {
                 Column::column(statement, start_index)?;
             let (preview_only, start_index): (bool, i32) = Column::column(statement, start_index)?;
             let (editor_ratio, start_index): (f64, i32) = Column::column(statement, start_index)?;
+            let (selections, start_index): (Option<String>, i32) =
+                Column::column(statement, start_index)?;
+            let selections = selections
+                .and_then(|selections| serde_json::from_str(&selections).log_err())
+                .unwrap_or_default();
             let mtime = mtime_seconds.zip(mtime_nanos).map(|(seconds, nanos)| {
                 MTime::from_seconds_and_nanos(seconds as u64, nanos as u32)
             });
@@ -1009,6 +1070,7 @@ mod persistence {
                     mtime,
                     preview_only,
                     editor_ratio: editor_ratio as f32,
+                    selections,
                 },
                 start_index,
             ))
@@ -1020,23 +1082,28 @@ mod persistence {
     impl Domain for MarkdownSplitViewDb {
         const NAME: &str = stringify!(MarkdownSplitViewDb);
 
-        const MIGRATIONS: &[&str] = &[sql!(
-            CREATE TABLE markdown_split_views (
-                workspace_id INTEGER,
-                item_id INTEGER,
-                abs_path BLOB,
-                contents TEXT,
-                language TEXT,
-                mtime_seconds INTEGER,
-                mtime_nanos INTEGER,
-                preview_only INTEGER NOT NULL DEFAULT 0,
-                editor_ratio REAL NOT NULL DEFAULT 0.5,
+        const MIGRATIONS: &[&str] = &[
+            sql!(
+                CREATE TABLE markdown_split_views (
+                    workspace_id INTEGER,
+                    item_id INTEGER,
+                    abs_path BLOB,
+                    contents TEXT,
+                    language TEXT,
+                    mtime_seconds INTEGER,
+                    mtime_nanos INTEGER,
+                    preview_only INTEGER NOT NULL DEFAULT 0,
+                    editor_ratio REAL NOT NULL DEFAULT 0.5,
 
-                PRIMARY KEY(workspace_id, item_id),
-                FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id)
-                ON DELETE CASCADE
-            ) STRICT;
-        )];
+                    PRIMARY KEY(workspace_id, item_id),
+                    FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id)
+                    ON DELETE CASCADE
+                ) STRICT;
+            ),
+            sql!(
+                ALTER TABLE markdown_split_views ADD COLUMN selections TEXT;
+            ),
+        ];
     }
 
     db::static_connection!(MARKDOWN_SPLIT_VIEW_DB, MarkdownSplitViewDb, [WorkspaceDb]);
@@ -1046,9 +1113,9 @@ mod persistence {
             pub(super) async fn save_split_view(item_id: ItemId, workspace_id: WorkspaceId, split_view: SerializedSplitView) -> Result<()> {
                 INSERT OR REPLACE INTO markdown_split_views(
                     item_id, workspace_id, abs_path, contents, language,
-                    mtime_seconds, mtime_nanos, preview_only, editor_ratio
+                    mtime_seconds, mtime_nanos, preview_only, editor_ratio, selections
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             }
         }
 
@@ -1061,7 +1128,7 @@ mod persistence {
 
         query! {
             pub(super) fn get_split_view(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<SerializedSplitView>> {
-                SELECT abs_path, contents, language, mtime_seconds, mtime_nanos, preview_only, editor_ratio
+                SELECT abs_path, contents, language, mtime_seconds, mtime_nanos, preview_only, editor_ratio, selections
                 FROM markdown_split_views
                 WHERE item_id = ? AND workspace_id = ?
             }
