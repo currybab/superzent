@@ -1514,8 +1514,11 @@ impl ProjectSearchView {
     fn open_buffers(&self, cx: &App, workspace: &Workspace) -> Vec<Entity<Buffer>> {
         let mut buffers = Vec::new();
         // Superzent: `act_as` also finds editors wrapped by other items, like Markdown split views.
+        // It reads the item, so skip project searches: this one is being updated, and their results
+        // aren't open files.
         for editor in workspace
             .items(cx)
+            .filter(|item| item.downcast::<ProjectSearchView>().is_none())
             .filter_map(|item| item.act_as::<Editor>(cx))
         {
             if let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton()
@@ -3403,13 +3406,30 @@ pub mod tests {
         });
         cx.run_until_parked();
 
-        let open_buffers = workspace.update(cx, |workspace, cx| {
-            let search_view = workspace
+        let search_view = workspace.read_with(cx, |workspace, cx| {
+            workspace
                 .active_item_as::<ProjectSearchView>(cx)
-                .expect("project search should be active");
+                .expect("project search should be active")
+        });
+        let open_buffers = workspace.update(cx, |workspace, cx| {
             search_view.read(cx).open_buffers(cx, workspace)
         });
         assert_eq!(open_buffers, [buffer]);
+
+        // Searching collects the open buffers while the search view is being updated.
+        search_view.update_in(cx, |search_view, window, cx| {
+            search_view.toggle_opened_only(window, cx);
+            search_view.query_editor.update(cx, |query_editor, cx| {
+                query_editor.set_text("ONE", window, cx)
+            });
+            search_view.search(cx);
+        });
+        cx.run_until_parked();
+        search_view.read_with(cx, |search_view, cx| {
+            let results = search_view.results_editor.read(cx).text(cx);
+            assert!(results.contains("ONE"), "{results:?}");
+            assert!(!results.contains("TWO"), "{results:?}");
+        });
     }
 
     #[perf]
