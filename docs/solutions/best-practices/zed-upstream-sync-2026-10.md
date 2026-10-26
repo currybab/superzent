@@ -110,10 +110,13 @@ tags:
   - #54514 buffer search active match change, #62490 remote images, #64978 code block scrollbar corners (needs the scrollbar rework). #56695 Mermaid UI font was ported later with `merman`.
 
 - On `superzent/merman-toolchain` (2026-10-26):
+
   - The Rust toolchain moves to 1.98.1 through upstream's bumps #51086, #55104, #62395 and #63010. Files that conflicted kept the fork's version, so a follow-up commit fixes the new lints in fork code, and `crates/eval_cli/Dockerfile` (fork-only) moves to 1.98.1 too.
   - Mermaid switches to `merman`: #56430 (markdown and gpui side only), #56695, #57644, #58325, #58341, #57967, #58419, #58473, #59140, #59360, #59704, #61260, #62115 (markdown and gpui side only), #62236, #62257, #62931, #63430. #56468 was already in the fork.
   - The agent panel still doesn't render Mermaid, so the `mermaid_font_family` setting text only mentions the markdown preview.
   - `Cargo.lock` pins the `merman` crates to upstream's `0.8.0-alpha.5`. A fresh resolve picks `merman-core` 0.8.0, which the alpha API doesn't build against.
+
+- On `superzent/ts-query-ls-gh-cli` (2026-10-26): #62900 `6e0a083575`. CI fetched `ts_query_ls` through the unauthenticated GitHub API, which the shared runners' rate limit sometimes refused, so `check_style` failed with "Could not find asset id". It now runs `gh release download` with `GITHUB_TOKEN`. The fork's `run_tests.rs` imports `vars` differently, so a follow-up commit adds the import.
 
 ## Local changes on top of ported code
 

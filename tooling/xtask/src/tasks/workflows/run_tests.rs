@@ -11,7 +11,7 @@ use crate::tasks::workflows::{
         CommonJobConditions, cache_rust_dependencies_namespace, repository_owner_guard_expression,
         use_clang,
     },
-    vars::PathCondition,
+    vars::{self, PathCondition},
 };
 
 use super::{
