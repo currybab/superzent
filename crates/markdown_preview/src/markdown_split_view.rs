@@ -404,6 +404,13 @@ fn switch_preview_layout(
     }
 }
 
+/// The editor `item` shows next to its preview, if `item` is a split view laid out side by side.
+pub fn side_by_side_editor(item: &dyn ItemHandle, cx: &App) -> Option<Entity<Editor>> {
+    let split_view = item.downcast::<MarkdownSplitView>()?;
+    let split_view = split_view.read(cx);
+    (split_view.layout() == MarkdownLayout::SideBySide).then(|| split_view.editor.clone())
+}
+
 /// The pane item that shows `editor` as its own content, either the editor's tab or a split view
 /// wrapping it. Previews only read the editor, so they don't count.
 pub(crate) fn item_showing_editor(
