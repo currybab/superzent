@@ -4723,6 +4723,24 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn split_views_toggle_their_editors_read_only_state(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::Preview);
+        let split_view = active_split_view(cx, &workspace);
+
+        for expected in [language::Capability::Read, language::Capability::ReadWrite] {
+            multi_workspace
+                .update(cx, |_, window, cx| {
+                    ItemHandle::toggle_read_only(&split_view, window, cx)
+                })
+                .unwrap();
+            cx.update(|cx| assert_eq!(ItemHandle::capability(&split_view, cx), expected));
+        }
+    }
+
+    #[gpui::test]
     async fn reopening_a_file_activates_its_split_view(cx: &mut TestAppContext) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "# Note\n", "other.txt": "" }), false).await;

@@ -669,6 +669,12 @@ impl Item for MarkdownSplitView {
         Item::capability(self.editor.read(cx), cx)
     }
 
+    fn toggle_read_only(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor
+            .update(cx, |editor, cx| Item::toggle_read_only(editor, window, cx));
+        cx.notify();
+    }
+
     fn has_deleted_file(&self, cx: &App) -> bool {
         Item::has_deleted_file(self.editor.read(cx), cx)
     }
