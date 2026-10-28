@@ -2425,6 +2425,7 @@ mod tests {
         MarkdownPreviewView, filter_non_rendered_matches, open_preview_url,
         reset_persisted_font_size,
     };
+    use crate::markdown_layout_toolbar::MarkdownLayoutToolbar;
     use crate::markdown_split_view::{MarkdownLayout, MarkdownSplitView, MarkdownSplitViewEvent};
 
     #[test]
@@ -4987,6 +4988,44 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(preview_scroll_top(cx, &split_view), px(-1500.));
+    }
+
+    #[gpui::test]
+    async fn split_view_fits_below_the_pane_toolbar(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": markdown_sections(150) }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let preview_bounds = |cx: &mut TestAppContext| {
+            split_view.read_with(cx, |split_view, cx| {
+                split_view.preview().read(cx).scroll_handle.bounds()
+            })
+        };
+        let bounds_without_toolbar = preview_bounds(cx);
+
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                let pane = workspace.read(cx).active_pane().clone();
+                let toolbar_item = cx.new(|_| MarkdownLayoutToolbar::new(workspace.downgrade()));
+                pane.update(cx, |pane, cx| {
+                    pane.toolbar()
+                        .update(cx, |toolbar, cx| toolbar.add_item(toolbar_item, window, cx))
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let bounds_with_toolbar = preview_bounds(cx);
+        assert!(
+            bounds_with_toolbar.top() > bounds_without_toolbar.top(),
+            "the toolbar should push the split view down"
+        );
+        assert_eq!(
+            bounds_with_toolbar.bottom(),
+            bounds_without_toolbar.bottom(),
+            "the split view should shrink to fit below the toolbar, not run past the pane"
+        );
     }
 
     #[gpui::test]

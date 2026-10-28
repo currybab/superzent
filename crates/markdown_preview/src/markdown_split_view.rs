@@ -685,6 +685,8 @@ impl Render for MarkdownSplitView {
             .key_context("MarkdownSplitView")
             .track_focus(&self.focus_handle)
             .size_full()
+            // The pane stacks its toolbar above this view, so the full height would run past it.
+            .min_h_0()
             .items_start()
             .on_action(cx.listener(Self::close_and_return_to_editor))
             .on_drag_move(cx.listener(Self::resize))
