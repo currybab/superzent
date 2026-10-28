@@ -9,6 +9,7 @@
 mod buffer;
 mod diagnostic_set;
 mod file_content;
+mod highlight_cache;
 mod highlight_map;
 mod language_registry;
 pub mod language_settings;
@@ -32,6 +33,7 @@ use futures::Future;
 use futures::future::LocalBoxFuture;
 use futures::lock::OwnedMutexGuard;
 use gpui::{App, AsyncApp, Entity, SharedString};
+use highlight_cache::{MAX_TEXT_HIGHLIGHT_ENTRY_BYTES, TextHighlightCache, TextHighlightKey};
 pub use highlight_map::HighlightMap;
 use http_client::HttpClient;
 pub use language_registry::{
@@ -54,7 +56,7 @@ use std::{
     ffi::OsStr,
     fmt::Debug,
     hash::Hash,
-    mem,
+    iter, mem,
     ops::{DerefMut, Range},
     path::{Path, PathBuf},
     str,
@@ -63,7 +65,8 @@ use std::{
         atomic::{AtomicUsize, Ordering::SeqCst},
     },
 };
-use syntax_map::{QueryCursorHandle, SyntaxSnapshot};
+use streaming_iterator::StreamingIterator as _;
+use syntax_map::{HighlightCaptureRef, QueryCursorHandle, TextProvider, flatten_capture_regions};
 use task::RunnableTag;
 pub use task_context::{ContextLocation, ContextProvider, RunnableRange};
 pub use text_diff::{
@@ -84,6 +87,7 @@ pub use buffer::Operation;
 pub use buffer::*;
 pub use diagnostic_set::{DiagnosticEntry, DiagnosticEntryRef, DiagnosticGroup};
 pub use file_content::{ByteContent, FILE_ANALYSIS_BYTES, analyze_byte_content};
+pub use highlight_cache::ResolvedHighlights;
 pub use language_registry::{
     AvailableLanguage, BinaryStatus, LanguageNotFound, LanguageQueries, LanguageRegistry,
     QUERY_FILENAME_PREFIXES,
@@ -1391,6 +1395,7 @@ pub struct Grammar {
 pub struct HighlightsConfig {
     pub query: Query,
     pub identifier_capture_indices: Vec<u32>,
+    pub text_highlight_cache: TextHighlightCache,
 }
 
 struct IndentConfig {
@@ -1678,6 +1683,7 @@ impl Language {
         grammar.highlights_config = Some(HighlightsConfig {
             query,
             identifier_capture_indices,
+            text_highlight_cache: TextHighlightCache::default(),
         });
 
         Ok(self)
@@ -2123,36 +2129,110 @@ impl Language {
         self.toolchain.clone()
     }
 
-    pub fn highlight_text<'a>(
-        self: &'a Arc<Self>,
-        text: &'a Rope,
+    pub fn highlight_text(
+        self: &Arc<Self>,
+        text: &Rope,
         range: Range<usize>,
     ) -> Vec<(Range<usize>, HighlightId)> {
-        let mut result = Vec::new();
-        if let Some(grammar) = &self.grammar {
-            let tree = grammar.parse_text(text, None);
-            let captures =
-                SyntaxSnapshot::single_tree_captures(range.clone(), text, &tree, self, |grammar| {
-                    grammar
-                        .highlights_config
-                        .as_ref()
-                        .map(|config| &config.query)
-                });
-            let highlight_maps = vec![grammar.highlight_map()];
-            let mut offset = 0;
-            for chunk in
-                BufferChunks::new(text, range, Some((captures, highlight_maps)), false, None)
+        self.highlight_text_resolved(text, 0..text.len())
+            .runs_in_range(range)
+            .collect()
+    }
+
+    /// Highlights the text, reusing the highlights of the same text resolved against the current
+    /// theme. Captures that the theme doesn't style fall back to the captures around them.
+    pub fn highlight_text_resolved(
+        self: &Arc<Self>,
+        text: &(impl HighlightSource + ?Sized),
+        range: Range<usize>,
+    ) -> ResolvedHighlights {
+        let Some(grammar) = &self.grammar else {
+            return ResolvedHighlights::default();
+        };
+        let Some(highlights_config) = &grammar.highlights_config else {
+            return ResolvedHighlights::default();
+        };
+        let text_len = text.source_len();
+        let highlights = if text_len > MAX_TEXT_HIGHLIGHT_ENTRY_BYTES {
+            Self::compute_resolved_highlights(grammar, &highlights_config.query, text)
+        } else {
+            let key = TextHighlightKey::new(text.source_chunks(), text_len);
+            match highlights_config
+                .text_highlight_cache
+                .get(&key, text.source_chunks())
             {
-                let end_offset = offset + chunk.text.len();
-                if let Some(highlight_id) = chunk.syntax_highlight_id
-                    && !highlight_id.is_default()
-                {
-                    result.push((offset..end_offset, highlight_id));
+                Some(highlights) => highlights,
+                None => {
+                    let mut cached_text = String::with_capacity(text_len);
+                    cached_text.extend(text.source_chunks());
+                    highlights_config.text_highlight_cache.insert(
+                        key,
+                        cached_text,
+                        Self::compute_resolved_highlights(grammar, &highlights_config.query, text),
+                    )
                 }
-                offset = end_offset;
+            }
+        };
+        if range.start == 0 && range.end >= text_len {
+            return highlights;
+        }
+        ResolvedHighlights {
+            sources: highlights.sources.clone(),
+            runs: highlights.runs_in_range(range).collect(),
+        }
+    }
+
+    fn compute_resolved_highlights(
+        grammar: &Arc<Grammar>,
+        query: &Query,
+        text: &(impl HighlightSource + ?Sized),
+    ) -> ResolvedHighlights {
+        let highlight_map = grammar.highlight_map();
+        let text_len = text.source_len();
+        let tree = text.parse(grammar);
+        let regions = with_query_cursor(|cursor| {
+            cursor.set_byte_range(0..text_len);
+            let mut captures = cursor.captures(query, tree.root_node(), text.text_provider());
+            let capture_refs = iter::from_fn(move || {
+                let (query_match, capture_index) = captures.next()?;
+                let capture = query_match.captures.get(*capture_index)?;
+                Some((
+                    capture.node.byte_range(),
+                    HighlightCaptureRef {
+                        grammar_index: 0,
+                        capture_id: capture.index,
+                    },
+                ))
+            });
+            flatten_capture_regions(0..text_len, capture_refs)
+        });
+        let mut runs = Vec::<(Range<usize>, HighlightId)>::new();
+        for region in regions {
+            let highlight_id = region
+                .stack
+                .iter()
+                .rev()
+                .map(|capture| highlight_map.get(capture.capture_id))
+                .find(|highlight_id| !highlight_id.is_default());
+            let Some(highlight_id) = highlight_id else {
+                continue;
+            };
+            match runs.last_mut() {
+                Some((last_range, last_highlight_id))
+                    if *last_highlight_id == highlight_id
+                        && last_range.end == region.range.start =>
+                {
+                    last_range.end = region.range.end;
+                }
+                _ => runs.push((region.range, highlight_id)),
             }
         }
-        result
+        ResolvedHighlights {
+            sources: [(Arc::downgrade(grammar), highlight_map)]
+                .into_iter()
+                .collect(),
+            runs: runs.into(),
+        }
     }
 
     pub fn path_suffixes(&self) -> &[String] {
@@ -2377,6 +2457,55 @@ impl Debug for Language {
     }
 }
 
+/// Text that [`Language::highlight_text_resolved`] can highlight without copying it into a rope.
+pub trait HighlightSource {
+    fn source_len(&self) -> usize;
+    fn source_chunks(&self) -> impl Iterator<Item = &str>;
+    fn parse(&self, grammar: &Grammar) -> Tree;
+    fn text_provider<'a>(&'a self) -> impl tree_sitter::TextProvider<&'a [u8]> + 'a;
+}
+
+impl HighlightSource for str {
+    fn source_len(&self) -> usize {
+        self.len()
+    }
+
+    fn source_chunks(&self) -> impl Iterator<Item = &str> {
+        iter::once(self)
+    }
+
+    fn parse(&self, grammar: &Grammar) -> Tree {
+        with_parser(|parser| {
+            parser
+                .set_language(&grammar.ts_language)
+                .expect("incompatible grammar");
+            parser.parse(self, None).expect("parsing without a timeout")
+        })
+    }
+
+    fn text_provider<'a>(&'a self) -> impl tree_sitter::TextProvider<&'a [u8]> + 'a {
+        self.as_bytes()
+    }
+}
+
+impl HighlightSource for Rope {
+    fn source_len(&self) -> usize {
+        self.len()
+    }
+
+    fn source_chunks(&self) -> impl Iterator<Item = &str> {
+        self.chunks()
+    }
+
+    fn parse(&self, grammar: &Grammar) -> Tree {
+        grammar.parse_text(self, None)
+    }
+
+    fn text_provider<'a>(&'a self) -> impl tree_sitter::TextProvider<&'a [u8]> + 'a {
+        TextProvider(self)
+    }
+}
+
 impl Grammar {
     pub fn id(&self) -> GrammarId {
         self.id
@@ -2403,6 +2532,10 @@ impl Grammar {
 
     pub fn highlight_map(&self) -> HighlightMap {
         self.highlight_map.lock().clone()
+    }
+
+    pub fn highlight_map_matches(&self, highlight_map: &HighlightMap) -> bool {
+        self.highlight_map.lock().same(highlight_map)
     }
 
     pub fn highlight_id_for_name(&self, name: &str) -> Option<HighlightId> {
@@ -3199,6 +3332,157 @@ mod tests {
             !tree.root_node().has_error(),
             "tree should be error-free, got: {}",
             tree.root_node().to_sexp()
+        );
+    }
+
+    fn highlight_test_theme(names: &[&str]) -> SyntaxTheme {
+        SyntaxTheme {
+            highlights: names
+                .iter()
+                .map(|name| (name.to_string(), gpui::HighlightStyle::default()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_highlight_text_resolves_nested_captures_with_theme_fallback() {
+        let language = Arc::new(
+            Language::new(
+                LanguageConfig {
+                    name: "Rust".into(),
+                    ..LanguageConfig::default()
+                },
+                Some(tree_sitter_rust::LANGUAGE.into()),
+            )
+            .with_highlights_query(
+                r#"
+                (function_item) @function.definition
+                (identifier) @variable
+                "fn" @keyword
+                "#,
+            )
+            .unwrap(),
+        );
+
+        let theme = highlight_test_theme(&["function", "keyword"]);
+        language.set_theme(&theme);
+
+        let code = "fn main() {}";
+        let highlights = language.highlight_text_resolved(code, 0..code.len());
+        assert!(highlights.is_current());
+        let named = highlights
+            .runs
+            .iter()
+            .map(|(range, highlight_id)| (range.clone(), highlight_id.name(&theme).unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            named,
+            vec![(0..2, "keyword"), (2..12, "function")],
+            "an inner capture missing from the theme must fall back to its outer capture"
+        );
+
+        let memoized = language.highlight_text_resolved(code, 0..code.len());
+        assert!(
+            Arc::ptr_eq(&highlights.runs, &memoized.runs),
+            "repeated highlighting of the same text must be memoized"
+        );
+        let partial = language.highlight_text_resolved(code, 0..2);
+        assert!(
+            !Arc::ptr_eq(&highlights.runs, &partial.runs),
+            "a different range must not reuse the memoized highlights"
+        );
+        assert_eq!(partial.runs.as_ref(), &[(0..2, highlights.runs[0].1)]);
+        assert_eq!(
+            language.highlight_text(&Rope::from(code), 0..code.len()),
+            highlights.runs.to_vec(),
+            "highlighting a rope must match highlighting the same string"
+        );
+
+        let richer_theme = highlight_test_theme(&["function", "keyword", "variable"]);
+        language.set_theme(&richer_theme);
+        assert!(
+            !highlights.is_current(),
+            "a theme change must invalidate previously resolved highlights"
+        );
+        let rethemed = language.highlight_text_resolved(code, 0..code.len());
+        assert!(rethemed.is_current());
+        let renamed = rethemed
+            .runs
+            .iter()
+            .map(|(range, highlight_id)| (range.clone(), highlight_id.name(&richer_theme).unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            renamed,
+            vec![
+                (0..2, "keyword"),
+                (2..3, "function"),
+                (3..7, "variable"),
+                (7..12, "function"),
+            ],
+            "a theme change must invalidate memoized highlights and resolve against the new theme"
+        );
+    }
+
+    #[test]
+    fn test_cached_highlights_dont_keep_their_grammar_alive() {
+        let language = Arc::new(
+            Language::new(
+                LanguageConfig {
+                    name: "Rust".into(),
+                    ..LanguageConfig::default()
+                },
+                Some(tree_sitter_rust::LANGUAGE.into()),
+            )
+            .with_highlights_query(r#""fn" @keyword"#)
+            .unwrap(),
+        );
+        language.set_theme(&highlight_test_theme(&["keyword"]));
+        let grammar = Arc::downgrade(language.grammar().unwrap());
+
+        let highlights = language.highlight_text_resolved("fn main() {}", 0..12);
+        assert!(!highlights.runs.is_empty());
+        drop(highlights);
+        drop(language);
+
+        assert!(
+            grammar.upgrade().is_none(),
+            "highlights cached by a grammar must not keep that grammar alive"
+        );
+    }
+
+    #[test]
+    fn test_oversized_text_is_highlighted_without_caching() {
+        let language = rust_lang();
+        let theme = highlight_test_theme(&["function", "keyword"]);
+        language.set_theme(&theme);
+
+        let small_code = "fn main() {}";
+        let small_highlights = language.highlight_text_resolved(small_code, 0..small_code.len());
+        assert!(
+            !small_highlights.runs.is_empty(),
+            "texts within the size cap must be highlighted"
+        );
+
+        let oversized_code = format!(
+            "fn main() {{}}{}",
+            " ".repeat(highlight_cache::MAX_TEXT_HIGHLIGHT_ENTRY_BYTES)
+        );
+        let first_highlights =
+            language.highlight_text_resolved(oversized_code.as_str(), 0..oversized_code.len());
+        assert_eq!(
+            first_highlights.runs.as_ref(),
+            small_highlights.runs.as_ref(),
+            "texts over the cache entry cap must still be highlighted"
+        );
+        let second_highlights =
+            language.highlight_text_resolved(oversized_code.as_str(), 0..oversized_code.len());
+        assert_eq!(
+            second_highlights.runs.as_ref(),
+            first_highlights.runs.as_ref()
+        );
+        assert!(
+            !Arc::ptr_eq(&first_highlights.runs, &second_highlights.runs),
+            "texts over the cache entry cap must not be memoized"
         );
     }
 }

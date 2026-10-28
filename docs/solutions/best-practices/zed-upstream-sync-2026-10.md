@@ -105,7 +105,7 @@ tags:
 
   - #61797 gpui div scrolling (needs `gestures.rs` and the `element/mouse.rs` split), so tables and code blocks scroll without `restrict_scroll_to_axis`.
   - #61773 table auto-sizing (needs taffy 0.13).
-  - #63138, #65409, #65398 parse-time highlight caching, its allocation follow-up, and a crash in that cache (needs `language_core`).
+  - #63138, #65409, #65398 parse-time highlight caching, its allocation follow-up, and a crash in that cache (needs `language_core`). Ported later on `superzent/markdown-highlight-cache`, see below.
   - #60864, #61784 opening links in the preview through `workspace::path_link`, which pulls in the terminal path-link rework (#57303, #52537, #61036, #61257).
   - #54514 buffer search active match change, #62490 remote images, #64978 code block scrollbar corners (needs the scrollbar rework). #56695 Mermaid UI font was ported later with `merman`.
 
@@ -117,6 +117,12 @@ tags:
   - `Cargo.lock` pins the `merman` crates to upstream's `0.8.0-alpha.5`. A fresh resolve picks `merman-core` 0.8.0, which the alpha API doesn't build against.
 
 - On `superzent/ts-query-ls-gh-cli` (2026-10-26): #62900 `6e0a083575`. CI fetched `ts_query_ls` through the unauthenticated GitHub API, which the shared runners' rate limit sometimes refused, so `check_style` failed with "Could not find asset id". It now runs `gh release download` with `GITHUB_TOKEN`. The fork's `run_tests.rs` imports `vars` differently, so a follow-up commit adds the import.
+
+- On `superzent/markdown-highlight-cache` (2026-10-28): #63138, #65409 and #65398, ported by hand as one commit in their final form. Code blocks are highlighted once in the background parse instead of on every frame, behind a per-grammar LRU of resolved highlights.
+  - The fork has no `language_core` crate, so `highlight_cache.rs` lives in `language`, next to the fork's `Grammar` and `HighlightMap`.
+  - The fork's `HighlightMap::get` returns a default id instead of `None`, so upstream's `CaptureId` newtype isn't ported, and the fallback to outer captures skips default ids.
+  - `highlight_text` keeps taking a `Rope` and returning a `Vec`, because the fork's callers convert into a rope with `.into()`. #65409's iterator return and the call-site changes in crates the fork lacks (`call_hierarchy`, `inline_input`, `benchmarks`) aren't ported. `highlight_text_resolved` takes a `str` as upstream does, so markdown code blocks aren't copied into a rope.
+  - The workspace pins `lru` at 0.12, which `Cargo.lock` already had, instead of upstream's 0.16.
 
 ## Local changes on top of ported code
 
@@ -130,6 +136,7 @@ These fork-only follow-ups sit on top of upstream code, so expect small conflict
 - `markdown/src/mermaid.rs`: the supported-diagram check skips YAML frontmatter, `%%{init}%%` directives and `%%` comments before reading the diagram type, and open previews re-render diagrams when `mermaid_font_family` (or the UI font it falls back to) changes. Upstream rejects diagrams with a preamble and only re-renders on theme changes.
 - `markdown/src/parser.rs` `extract_code_block_content_range`: a closing fence may be indented by its list item's indentation plus three spaces. Upstream's #62257 allows only three spaces, so fenced blocks in nested lists show the closing fence as code and their Mermaid diagrams are skipped.
 - `gpui/src/svg_renderer.rs` `render_parsed`: when the 8192px cap shrinks a raster, the image's `scale_factor` is lowered to match, so `RenderImage::render_size` (now public) stays at the requested logical size. `mermaid_base_size` uses it, so zoomed large diagrams keep their size. Upstream still shrinks them once the capped raster arrives.
+- `language/src/highlight_cache.rs` `ResolvedHighlights::sources` holds grammars weakly, since each grammar's cache holds the highlights. `markdown.rs` `highlight_code_block` keeps entries for code block texts without runs, so a theme change re-resolves them. Upstream holds an `Arc<Grammar>` (a reference cycle) and drops empty entries.
 - `markdown.rs` `MermaidViewState::unsnapped_zoom`: scroll zoom continues from the unsnapped zoom while the zoom is snapped to 1.0, so small trackpad deltas add up. Upstream recomputes each step from the snapped zoom, so trackpad zoom can't leave 100%.
 
 ## Pending for the next sync

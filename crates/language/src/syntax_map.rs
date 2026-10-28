@@ -7,6 +7,7 @@ use crate::{
 use collections::HashMap;
 use futures::FutureExt;
 use gpui::SharedString;
+use smallvec::SmallVec;
 use std::{
     borrow::Cow,
     cmp::{self, Ordering, Reverse},
@@ -80,6 +81,64 @@ pub struct SyntaxMapCapture<'a> {
     pub node: Node<'a>,
     pub index: u32,
     pub grammar_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HighlightCaptureRef {
+    pub grammar_index: usize,
+    pub capture_id: u32,
+}
+
+pub(crate) struct HighlightCaptureRegion {
+    pub range: Range<usize>,
+    pub stack: SmallVec<[HighlightCaptureRef; 4]>,
+}
+
+/// Splits the range at every capture boundary, listing the captures that enclose each region from
+/// the outermost to the innermost.
+pub(crate) fn flatten_capture_regions(
+    range: Range<usize>,
+    mut captures: impl Iterator<Item = (Range<usize>, HighlightCaptureRef)>,
+) -> Vec<HighlightCaptureRegion> {
+    let mut result = Vec::new();
+    let mut stack = Vec::<(Range<usize>, HighlightCaptureRef)>::new();
+    let mut offset = range.start;
+    let mut next_capture = captures.next();
+    loop {
+        stack.retain(|(capture_range, _)| capture_range.end > offset);
+        while let Some((capture_range, capture_ref)) = next_capture.take() {
+            if capture_range.start > offset {
+                next_capture = Some((capture_range, capture_ref));
+                break;
+            }
+            if capture_range.end > offset {
+                stack.push((capture_range, capture_ref));
+            }
+            next_capture = captures.next();
+        }
+        let mut next_boundary = range.end;
+        if let Some(min_end) = stack
+            .iter()
+            .map(|(capture_range, _)| capture_range.end)
+            .min()
+        {
+            next_boundary = next_boundary.min(min_end);
+        }
+        if let Some((capture_range, _)) = &next_capture {
+            next_boundary = next_boundary.min(capture_range.start);
+        }
+        if !stack.is_empty() && next_boundary > offset {
+            result.push(HighlightCaptureRegion {
+                range: offset..next_boundary,
+                stack: stack.iter().map(|(_, capture_ref)| *capture_ref).collect(),
+            });
+        }
+        if next_boundary >= range.end {
+            break;
+        }
+        offset = next_boundary;
+    }
+    result
 }
 
 #[derive(Debug)]
@@ -254,7 +313,7 @@ struct ChangedRegion {
 #[derive(Default)]
 struct ChangeRegionSet(Vec<ChangedRegion>);
 
-struct TextProvider<'a>(&'a Rope);
+pub(crate) struct TextProvider<'a>(pub(crate) &'a Rope);
 
 pub(crate) struct QueryCursorHandle(Option<QueryCursor>);
 
