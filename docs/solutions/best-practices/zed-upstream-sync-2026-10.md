@@ -105,7 +105,7 @@ tags:
 
   - #61797 gpui div scrolling (needs `gestures.rs` and the `element/mouse.rs` split), so tables and code blocks scroll without `restrict_scroll_to_axis`.
   - #61773 table auto-sizing (needs taffy 0.13).
-  - #63138, #65409, #65398 parse-time highlight caching, its allocation follow-up, and a crash in that cache (needs `language_core`).
+  - #63138, #65409, #65398 parse-time highlight caching, its allocation follow-up, and a crash in that cache (needs `language_core`). Ported later on `superzent/markdown-highlight-cache`, see below.
   - #60864, #61784 opening links in the preview through `workspace::path_link`, which pulls in the terminal path-link rework (#57303, #52537, #61036, #61257).
   - #54514 buffer search active match change, #62490 remote images, #64978 code block scrollbar corners (needs the scrollbar rework). #56695 Mermaid UI font was ported later with `merman`.
 
@@ -117,6 +117,12 @@ tags:
   - `Cargo.lock` pins the `merman` crates to upstream's `0.8.0-alpha.5`. A fresh resolve picks `merman-core` 0.8.0, which the alpha API doesn't build against.
 
 - On `superzent/ts-query-ls-gh-cli` (2026-10-26): #62900 `6e0a083575`. CI fetched `ts_query_ls` through the unauthenticated GitHub API, which the shared runners' rate limit sometimes refused, so `check_style` failed with "Could not find asset id". It now runs `gh release download` with `GITHUB_TOKEN`. The fork's `run_tests.rs` imports `vars` differently, so a follow-up commit adds the import.
+
+- On `superzent/markdown-highlight-cache` (2026-10-28): #63138, #65409 and #65398, ported by hand as one commit in their final form. Code blocks are highlighted once in the background parse instead of on every frame, behind a per-grammar LRU of resolved highlights.
+  - The fork has no `language_core` crate, so `highlight_cache.rs` lives in `language`, next to the fork's `Grammar` and `HighlightMap`.
+  - The fork's `HighlightMap::get` returns a default id instead of `None`, so upstream's `CaptureId` newtype isn't ported, and the fallback to outer captures skips default ids.
+  - `highlight_text` keeps taking a `Rope` and returning a `Vec`, because the fork's callers convert into a rope with `.into()`. #65409's iterator return and the call-site changes in crates the fork lacks (`call_hierarchy`, `inline_input`, `benchmarks`) aren't ported. `highlight_text_resolved` takes a `str` as upstream does, so markdown code blocks aren't copied into a rope.
+  - The workspace pins `lru` at 0.12, which `Cargo.lock` already had, instead of upstream's 0.16.
 
 ## Local changes on top of ported code
 

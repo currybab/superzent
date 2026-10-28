@@ -48,6 +48,12 @@ impl HighlightMap {
             .copied()
             .unwrap_or(DEFAULT_SYNTAX_HIGHLIGHT_ID)
     }
+
+    /// Whether both are the same map, which is replaced rather than changed when the theme changes.
+    #[inline]
+    pub fn same(&self, other: &HighlightMap) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl HighlightId {

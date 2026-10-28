@@ -9511,6 +9511,7 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "log",
+ "lru",
  "lsp",
  "parking_lot",
  "postage",
