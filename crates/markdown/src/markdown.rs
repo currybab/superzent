@@ -1629,12 +1629,13 @@ fn compute_code_block_highlights(parsed: &ParsedMarkdown) -> CodeBlockHighlights
 
 /// Highlights a code block's texts together, so a construct spanning several of them, like a
 /// multiline string, is highlighted as a whole, then splits the runs back up by text.
+///
+/// Texts without runs keep an entry too, so a theme that styles them makes the entry stale and
+/// rendering highlights them again.
 fn highlight_code_block(block: PendingCodeBlock, code_block_highlights: &mut CodeBlockHighlights) {
     if let [(event_index, text)] = block.texts.as_slice() {
         let resolved = block.language.highlight_text_resolved(*text, 0..text.len());
-        if !resolved.runs.is_empty() {
-            code_block_highlights.insert(*event_index, resolved);
-        }
+        code_block_highlights.insert(*event_index, resolved);
         return;
     }
     let mut combined = String::new();
@@ -1646,9 +1647,6 @@ fn highlight_code_block(block: PendingCodeBlock, code_block_highlights: &mut Cod
     let resolved = block
         .language
         .highlight_text_resolved(combined.as_str(), 0..combined.len());
-    if resolved.runs.is_empty() {
-        return;
-    }
     let mut runs = resolved.runs.iter().peekable();
     for ((event_index, text), text_offset) in block.texts.iter().zip(text_offsets) {
         let text_end = text_offset + text.len();
@@ -1667,15 +1665,13 @@ fn highlight_code_block(block: PendingCodeBlock, code_block_highlights: &mut Cod
             }
             runs.next();
         }
-        if !text_runs.is_empty() {
-            code_block_highlights.insert(
-                *event_index,
-                ResolvedHighlights {
-                    sources: resolved.sources.clone(),
-                    runs: text_runs.into(),
-                },
-            );
-        }
+        code_block_highlights.insert(
+            *event_index,
+            ResolvedHighlights {
+                sources: resolved.sources.clone(),
+                runs: text_runs.into(),
+            },
+        );
     }
 }
 
@@ -5767,6 +5763,37 @@ mod tests {
                 .as_ref(),
             "highlights of a changed code block must be recomputed"
         );
+    }
+
+    #[gpui::test]
+    fn test_code_blocks_unstyled_by_the_theme_are_highlighted_after_a_theme_change(
+        cx: &mut TestAppContext,
+    ) {
+        let unstyled_theme = SyntaxTheme {
+            highlights: vec![("unrelated".to_owned(), gpui::HighlightStyle::default())],
+        };
+        for source in [
+            "```rust\nfn main() {}\n```",
+            "- ```rust\n  fn main() {}\n  fn other() {}\n  ```",
+        ] {
+            let language = language::rust_lang();
+            language.set_theme(&unstyled_theme);
+            let language_registry = Arc::new(LanguageRegistry::test(cx.executor()));
+            language_registry.add(language.clone());
+            let markdown =
+                cx.new(|cx| Markdown::new(source.into(), Some(language_registry), None, cx));
+            cx.run_until_parked();
+
+            let code_start = source.find("fn main").unwrap();
+            let unstyled = cached_code_block_highlights(&markdown, code_start, cx);
+            assert!(unstyled.runs.is_empty(), "source: {source:?}");
+
+            language.set_theme(&rust_test_theme());
+            assert!(
+                !unstyled.is_current(),
+                "a theme change must invalidate highlights that styled nothing, source: {source:?}"
+            );
+        }
     }
 
     #[gpui::test]

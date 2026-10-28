@@ -2228,7 +2228,9 @@ impl Language {
             }
         }
         ResolvedHighlights {
-            sources: [(Arc::clone(grammar), highlight_map)].into_iter().collect(),
+            sources: [(Arc::downgrade(grammar), highlight_map)]
+                .into_iter()
+                .collect(),
             runs: runs.into(),
         }
     }
@@ -3418,6 +3420,33 @@ mod tests {
                 (7..12, "function"),
             ],
             "a theme change must invalidate memoized highlights and resolve against the new theme"
+        );
+    }
+
+    #[test]
+    fn test_cached_highlights_dont_keep_their_grammar_alive() {
+        let language = Arc::new(
+            Language::new(
+                LanguageConfig {
+                    name: "Rust".into(),
+                    ..LanguageConfig::default()
+                },
+                Some(tree_sitter_rust::LANGUAGE.into()),
+            )
+            .with_highlights_query(r#""fn" @keyword"#)
+            .unwrap(),
+        );
+        language.set_theme(&highlight_test_theme(&["keyword"]));
+        let grammar = Arc::downgrade(language.grammar().unwrap());
+
+        let highlights = language.highlight_text_resolved("fn main() {}", 0..12);
+        assert!(!highlights.runs.is_empty());
+        drop(highlights);
+        drop(language);
+
+        assert!(
+            grammar.upgrade().is_none(),
+            "highlights cached by a grammar must not keep that grammar alive"
         );
     }
 

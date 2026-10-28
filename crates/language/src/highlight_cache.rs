@@ -7,7 +7,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher as _},
     ops::Range,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 pub const MAX_TEXT_HIGHLIGHT_ENTRY_BYTES: usize = MAX_TEXT_HIGHLIGHT_CACHE_BYTES / 8;
@@ -36,7 +36,8 @@ impl TextHighlightKey {
 
 #[derive(Clone, Default)]
 pub struct ResolvedHighlights {
-    pub sources: SmallVec<[(Arc<Grammar>, HighlightMap); 2]>,
+    /// Weak, because the grammars' own caches hold these highlights.
+    pub sources: SmallVec<[(Weak<Grammar>, HighlightMap); 2]>,
     pub runs: Arc<[(Range<usize>, HighlightId)]>,
 }
 
@@ -44,13 +45,15 @@ impl ResolvedHighlights {
     /// Whether the highlights were resolved against the grammars' current highlight maps, which
     /// change along with the theme.
     pub fn is_current(&self) -> bool {
-        self.sources
-            .iter()
-            .all(|(grammar, highlight_map)| grammar.highlight_map_matches(highlight_map))
+        self.sources.iter().all(|(grammar, highlight_map)| {
+            grammar
+                .upgrade()
+                .is_some_and(|grammar| grammar.highlight_map_matches(highlight_map))
+        })
     }
 
     pub fn cost_bytes(&self) -> usize {
-        self.sources.len() * size_of::<(Arc<Grammar>, HighlightMap)>()
+        self.sources.len() * size_of::<(Weak<Grammar>, HighlightMap)>()
             + self.runs.len() * size_of::<(Range<usize>, HighlightId)>()
     }
 
