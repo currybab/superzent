@@ -3,6 +3,7 @@ mod mermaid;
 pub mod parser;
 mod path_range;
 mod selection;
+mod source_positions;
 
 use base64::Engine as _;
 
@@ -17,6 +18,7 @@ use mermaid::{
 pub use path_range::{LineCol, PathWithRange};
 use settings::Settings as _;
 use smallvec::SmallVec;
+pub use source_positions::SourcePositions;
 use theme::ThemeSettings;
 use util::maybe;
 
@@ -1591,6 +1593,7 @@ pub struct MarkdownElement {
     image_resolver: Option<Box<dyn Fn(&str) -> Option<ImageSource>>>,
     show_root_block_markers: bool,
     autoscroll: AutoscrollBehavior,
+    source_positions: Option<SourcePositions>,
     /// Test-only hook to observe the laid-out text when this element is
     /// rendered beneath a view, where the layout state isn't otherwise
     /// reachable.
@@ -1618,6 +1621,7 @@ impl MarkdownElement {
             image_resolver: None,
             show_root_block_markers: false,
             autoscroll: AutoscrollBehavior::Propagate,
+            source_positions: None,
             #[cfg(test)]
             on_render: None,
         }
@@ -1725,6 +1729,11 @@ impl MarkdownElement {
 
     pub fn scroll_handle(mut self, scroll_handle: ScrollHandle) -> Self {
         self.autoscroll = AutoscrollBehavior::Controlled(scroll_handle);
+        self
+    }
+
+    pub fn track_source_positions(mut self, source_positions: SourcePositions) -> Self {
+        self.source_positions = Some(source_positions);
         self
     }
 
@@ -3236,6 +3245,14 @@ impl Element for MarkdownElement {
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         rendered_markdown.element.prepaint(window, cx);
+        if let Some(source_positions) = &self.source_positions {
+            let scroll_handle = match &self.autoscroll {
+                AutoscrollBehavior::Controlled(scroll_handle) => Some(scroll_handle),
+                AutoscrollBehavior::Propagate => None,
+            };
+            let source_len = self.markdown.read(cx).parsed_markdown.source.len();
+            source_positions.record(&rendered_markdown.text, source_len, bounds, scroll_handle);
+        }
         self.autoscroll(&rendered_markdown.text, window, cx);
         hitbox
     }
@@ -4108,6 +4125,7 @@ impl MarkdownElementBuilder {
             text_align: TextAlign::Left,
             highlights: SmallVec::new(),
             code_chips: SmallVec::new(),
+            is_source_anchor: true,
         }));
         div()
             .absolute()
@@ -4143,6 +4161,7 @@ impl MarkdownElementBuilder {
             text_align,
             highlights,
             code_chips: line.code_chips.into_iter().collect(),
+            is_source_anchor: false,
         });
         self.rendered_lines.push(rendered_line.clone());
         self.append_child(
@@ -4251,6 +4270,9 @@ struct RenderedLine {
     highlights: SmallVec<[(Range<usize>, Hsla); 1]>,
     /// Inline code chip ranges intersecting this line, in rendered indices
     code_chips: SmallVec<[(Range<usize>, Hsla); 1]>,
+    /// Whether this is an invisible line standing in for an element rendered from its source,
+    /// like a Mermaid diagram.
+    is_source_anchor: bool,
 }
 
 impl RenderedLine {
@@ -8004,7 +8026,7 @@ mod tests {
         cx.run_until_parked();
     }
 
-    fn render_markdown(markdown: &str, cx: &mut TestAppContext) -> RenderedText {
+    pub(crate) fn render_markdown(markdown: &str, cx: &mut TestAppContext) -> RenderedText {
         render_markdown_with_language_registry(markdown, None, cx)
     }
 
