@@ -64,7 +64,7 @@ impl MarkdownLayoutToolbar {
             ),
             MarkdownLayout::SideBySide => (
                 "markdown-layout-side-by-side",
-                IconName::SplitAlt,
+                IconName::SplitView,
                 "Editor and Preview",
                 Box::new(SwitchToSideBySide),
             ),

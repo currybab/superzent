@@ -226,6 +226,7 @@ pub enum IconName {
     Sparkle,
     Split,
     SplitAlt,
+    SplitView,
     SquareDot,
     SquareMinus,
     SquarePlus,

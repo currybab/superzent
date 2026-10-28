@@ -2,9 +2,11 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use editor::scroll::{Autoscroll, ScrollAnchor};
+use editor::display_map::{DisplayRow, DisplaySnapshot, ToDisplayPoint as _};
+use editor::scroll::{Autoscroll, ScrollAnchor, ScrollOffset};
 use editor::{
-    Bias, Editor, EditorEvent, MultiBuffer, MultiBufferOffset, SelectionEffects, ToOffset as _,
+    Bias, DisplayPoint, Editor, EditorEvent, MultiBuffer, MultiBufferOffset, SelectionEffects,
+    ToOffset as _,
 };
 use fs::MTime;
 use gpui::{
@@ -33,6 +35,8 @@ use crate::markdown_preview_view::{MarkdownPreviewView, SuppressedAutoPreviews};
 const DEFAULT_EDITOR_RATIO: f32 = 0.5;
 const MIN_EDITOR_RATIO: f32 = 0.15;
 const MAX_EDITOR_RATIO: f32 = 0.85;
+/// Reading back a scroll position the editor was synced to can differ in the last bits.
+const SCROLL_SYNC_TOLERANCE: ScrollOffset = 1e-3;
 
 /// How a Markdown file is shown in its tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +76,9 @@ pub struct MarkdownSplitView {
     preview_only: bool,
     editor_ratio: f32,
     focus_handle: FocusHandle,
+    /// The editor's scroll top after it was last synced to the preview, so that the scroll event
+    /// this causes doesn't sync the preview back.
+    synced_editor_scroll_top: Option<ScrollOffset>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,7 +108,7 @@ impl MarkdownSplitView {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
-        cx.new(|cx| {
+        let split_view = cx.new(|cx| {
             let preview = MarkdownPreviewView::new_embedded(
                 editor.clone(),
                 workspace,
@@ -114,6 +121,13 @@ impl MarkdownSplitView {
             let subscriptions = vec![
                 cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
                     cx.emit(MarkdownSplitViewEvent::Editor(event.clone()));
+                }),
+                cx.subscribe_in(&editor, window, Self::sync_scroll_on_editor_event),
+                // Scrolling the preview notifies it.
+                cx.observe_in(&preview, window, |this: &mut Self, preview, window, cx| {
+                    if !this.preview_only && preview.read(cx).scrolled_since_sync() {
+                        this.sync_editor_scroll_to_preview(window, cx);
+                    }
                 }),
                 cx.on_focus(&focus_handle, window, |this: &mut Self, window, cx| {
                     this.focus_visible_side(window, cx);
@@ -135,9 +149,19 @@ impl MarkdownSplitView {
                 preview_only,
                 editor_ratio: DEFAULT_EDITOR_RATIO,
                 focus_handle,
+                synced_editor_scroll_top: None,
                 _subscriptions: subscriptions,
             }
-        })
+        });
+        split_view.update(cx, |split_view, cx| {
+            if !split_view.preview_only {
+                split_view
+                    .preview
+                    .update(cx, |preview, _| preview.set_follows_source_scroll(true));
+                split_view.sync_preview_scroll_to_editor(cx);
+            }
+        });
+        split_view
     }
 
     pub fn editor(&self) -> &Entity<Editor> {
@@ -172,11 +196,75 @@ impl MarkdownSplitView {
         }
         let was_focused = self.focus_handle.contains_focused(window, cx);
         self.preview_only = preview_only;
+        self.preview.update(cx, |preview, _| {
+            preview.set_follows_source_scroll(!preview_only)
+        });
+        if !preview_only {
+            // The editor was hidden, so it follows the preview the user was reading.
+            self.sync_editor_scroll_to_preview(window, cx);
+        }
         if was_focused {
             self.focus_visible_side(window, cx);
         }
         cx.emit(MarkdownSplitViewEvent::LayoutChanged);
         cx.notify();
+    }
+
+    fn sync_scroll_on_editor_event(
+        &mut self,
+        editor: &Entity<Editor>,
+        event: &EditorEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preview_only {
+            return;
+        }
+        match event {
+            EditorEvent::ScrollPositionChanged {
+                local: true,
+                autoscroll,
+            } => {
+                // Clicking the preview selects and reveals the block in the editor, which
+                // shouldn't scroll the preview away from where it was clicked.
+                if *autoscroll && !editor.focus_handle(cx).is_focused(window) {
+                    return;
+                }
+                let scroll_top = editor.update(cx, |editor, cx| editor.scroll_position(cx).y);
+                let synced_editor_scroll_top = self.synced_editor_scroll_top.take();
+                if synced_editor_scroll_top
+                    .is_some_and(|synced| (synced - scroll_top).abs() < SCROLL_SYNC_TOLERANCE)
+                {
+                    self.synced_editor_scroll_top = synced_editor_scroll_top;
+                    return;
+                }
+                self.sync_preview_scroll_to_editor(cx);
+            }
+            // Edits move the preview's blocks once they are parsed again.
+            EditorEvent::BufferEdited => self.sync_preview_scroll_to_editor(cx),
+            _ => {}
+        }
+    }
+
+    fn sync_preview_scroll_to_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(source_offset) = self.editor.update(cx, editor_source_offset_at_scroll_top) else {
+            return;
+        };
+        self.preview.update(cx, |preview, cx| {
+            preview.scroll_to_source_offset(source_offset, cx)
+        });
+    }
+
+    fn sync_editor_scroll_to_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source_offset) = self
+            .preview
+            .update(cx, |preview, _| preview.sync_from_scroll_top())
+        else {
+            return;
+        };
+        self.synced_editor_scroll_top = self.editor.update(cx, |editor, cx| {
+            scroll_editor_to_source_offset(editor, source_offset, window, cx)
+        });
     }
 
     fn focus_visible_side(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -260,6 +348,80 @@ impl MarkdownSplitView {
                     ),
             )
     }
+}
+
+/// The source offset at the top of the editor, between the starts of the rows around it so that
+/// scrolling by part of a row moves the preview smoothly.
+pub(crate) fn editor_source_offset_at_scroll_top(
+    editor: &mut Editor,
+    cx: &mut Context<Editor>,
+) -> Option<f64> {
+    let buffer = editor.buffer().read(cx).as_singleton()?;
+    let buffer_id = buffer.read(cx).remote_id();
+    let snapshot = editor.display_snapshot(cx);
+    let scroll_top = editor.scroll_position(cx).y.max(0.);
+    let row = scroll_top.floor();
+    let row_start = source_offset_of_display_row(&snapshot, buffer_id, row as u32)?;
+    let next_row_start = source_offset_of_display_row(&snapshot, buffer_id, row as u32 + 1)?;
+    let row_len = next_row_start.saturating_sub(row_start) as f64;
+    Some(row_start as f64 + (scroll_top - row) * row_len)
+}
+
+/// Scrolls the editor so the source offset is at its top, returning the scroll top it settled at.
+fn scroll_editor_to_source_offset(
+    editor: &mut Editor,
+    source_offset: f64,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) -> Option<ScrollOffset> {
+    let buffer = editor.buffer().read(cx).as_singleton()?;
+    let (buffer_id, text_anchor) = {
+        let buffer = buffer.read(cx);
+        // Interpolated offsets can land inside a multibyte character.
+        let buffer_offset = buffer.clip_offset(source_offset.max(0.) as usize, Bias::Left);
+        (buffer.remote_id(), buffer.anchor_before(buffer_offset))
+    };
+    let snapshot = editor.display_snapshot(cx);
+    let row = snapshot
+        .buffer_snapshot()
+        .as_singleton_anchor(text_anchor)?
+        .to_display_point(&snapshot)
+        .row()
+        .0;
+    let row_start = source_offset_of_display_row(&snapshot, buffer_id, row)?;
+    let next_row_start = source_offset_of_display_row(&snapshot, buffer_id, row + 1)?;
+    let row_len = next_row_start.saturating_sub(row_start) as f64;
+    let fraction = if row_len > 0. {
+        ((source_offset - row_start as f64) / row_len).clamp(0., 1.)
+    } else {
+        0.
+    };
+    let scroll_position = editor.scroll_position(cx);
+    editor.set_scroll_position(
+        gpui::point(scroll_position.x, ScrollOffset::from(row) + fraction),
+        window,
+        cx,
+    );
+    Some(editor.scroll_position(cx).y)
+}
+
+/// Where a display row starts in the editor's buffer, or where the buffer ends past the last
+/// row. Rows of deleted diff hunks belong to another buffer, which the preview doesn't show.
+fn source_offset_of_display_row(
+    snapshot: &DisplaySnapshot,
+    buffer_id: language::BufferId,
+    row: u32,
+) -> Option<usize> {
+    let max_point = snapshot.max_point();
+    let display_point = if row > max_point.row().0 {
+        max_point
+    } else {
+        DisplayPoint::new(DisplayRow(row), 0)
+    };
+    let point = snapshot.display_point_to_point(display_point, Bias::Left);
+    let (buffer_snapshot, buffer_offset) =
+        snapshot.buffer_snapshot().point_to_buffer_offset(point)?;
+    (buffer_snapshot.remote_id() == buffer_id).then_some(buffer_offset.0)
 }
 
 pub(crate) fn divider_selector(split_view_id: EntityId) -> String {
@@ -523,6 +685,8 @@ impl Render for MarkdownSplitView {
             .key_context("MarkdownSplitView")
             .track_focus(&self.focus_handle)
             .size_full()
+            // The pane stacks its toolbar above this view, so the full height would run past it.
+            .min_h_0()
             .items_start()
             .on_action(cx.listener(Self::close_and_return_to_editor))
             .on_drag_move(cx.listener(Self::resize))
