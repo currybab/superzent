@@ -119,10 +119,13 @@ tags:
 - On `superzent/ts-query-ls-gh-cli` (2026-10-26): #62900 `6e0a083575`. CI fetched `ts_query_ls` through the unauthenticated GitHub API, which the shared runners' rate limit sometimes refused, so `check_style` failed with "Could not find asset id". It now runs `gh release download` with `GITHUB_TOKEN`. The fork's `run_tests.rs` imports `vars` differently, so a follow-up commit adds the import.
 
 - On `superzent/markdown-highlight-cache` (2026-10-28): #63138, #65409 and #65398, ported by hand as one commit in their final form. Code blocks are highlighted once in the background parse instead of on every frame, behind a per-grammar LRU of resolved highlights.
+
   - The fork has no `language_core` crate, so `highlight_cache.rs` lives in `language`, next to the fork's `Grammar` and `HighlightMap`.
   - The fork's `HighlightMap::get` returns a default id instead of `None`, so upstream's `CaptureId` newtype isn't ported, and the fallback to outer captures skips default ids.
   - `highlight_text` keeps taking a `Rope` and returning a `Vec`, because the fork's callers convert into a rope with `.into()`. #65409's iterator return and the call-site changes in crates the fork lacks (`call_hierarchy`, `inline_input`, `benchmarks`) aren't ported. `highlight_text_resolved` takes a `str` as upstream does, so markdown code blocks aren't copied into a rope.
   - The workspace pins `lru` at 0.12, which `Cargo.lock` already had, instead of upstream's 0.16.
+
+- On `superzent/tab-double-click-crash` (2026-10-29): #65159 `ad4512a2e5`. The markdown preview port brought in #65081, whose tab menu actions read the pane, but missed this fix for it. Double-clicking any editor tab, such as a preview tab to keep it open, panicked with "cannot read workspace::pane::Pane while it is already being updated". `close_and_return_to_editor` keeps the fork's split view branch, and only the editor's fallback reopen moves to the preview's pane. The fork's tests for the removed active-tab checks are replaced with upstream's, plus one for double-clicking a preview tab.
 
 ## Local changes on top of ported code
 
