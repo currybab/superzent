@@ -51,7 +51,9 @@ use workspace::{
 use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize};
 
 use crate::markdown_preview_settings::MarkdownPreviewSettings;
-use crate::markdown_split_view::{self, MarkdownLayout, MarkdownSplitView};
+use crate::markdown_split_view::{
+    self, EditorScroll, MarkdownLayout, MarkdownSplitView, PreviewScroll,
+};
 use crate::{
     CloseAndReturnToEditor, OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, ScrollDown,
     ScrollDownByItem,
@@ -89,13 +91,16 @@ pub struct MarkdownPreviewView {
     /// Set while a split view keeps the preview scrolled along with the source editor, which
     /// then reveals the cursor in both.
     follows_source_scroll: bool,
-    /// A source offset to scroll to the top once the preview has laid out the current source.
+    /// A source offset at the editor's top to follow once the preview has laid out the current
+    /// source.
     pending_source_scroll: Option<f64>,
     /// The scroll top the preview last reported or was synced to, to tell the user's scrolling
     /// apart from syncing.
     synced_scroll_top: Pixels,
-    /// The source offset at the top when the preview was last synced, which reflowing moves.
-    synced_source_offset: Option<f64>,
+    /// The source offset at the editor's top when the preview was last synced, which reflowing
+    /// the preview moves away from. It's kept rather than read again from the editor, because
+    /// selecting from the preview scrolls the editor without scrolling the preview.
+    synced_editor_top: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -466,7 +471,7 @@ impl MarkdownPreviewView {
                 follows_source_scroll: false,
                 pending_source_scroll: None,
                 synced_scroll_top: Pixels::ZERO,
-                synced_source_offset: None,
+                synced_editor_top: None,
             };
 
             this.set_editor(active_editor, window, cx);
@@ -830,10 +835,10 @@ impl MarkdownPreviewView {
         self.follows_source_scroll = follows_source_scroll;
     }
 
-    /// Scrolls the source offset to the top as soon as the preview's layout reflects the
-    /// source, which lags behind edits while they are debounced and parsed.
-    pub(crate) fn scroll_to_source_offset(&mut self, source_offset: f64, cx: &mut Context<Self>) {
-        self.pending_source_scroll = Some(source_offset);
+    /// Scrolls along with the editor as soon as the preview's layout reflects the source, which
+    /// lags behind edits while they are debounced and parsed.
+    pub(crate) fn follow_editor_scroll(&mut self, editor_top: f64, cx: &mut Context<Self>) {
+        self.pending_source_scroll = Some(editor_top);
         self.apply_pending_source_scroll(cx);
     }
 
@@ -841,18 +846,38 @@ impl MarkdownPreviewView {
         if self.pending_update_task.is_some() || self.markdown_parse_pending {
             return;
         }
-        let Some(source_offset) = self.pending_source_scroll else {
+        let Some(editor_top) = self.pending_source_scroll else {
             return;
         };
-        let Some(top) = self.source_positions.top_for_source_offset(source_offset) else {
+        // Read when applied rather than when requested, because resizing the editor moves where
+        // its top stops at the end without scrolling it.
+        let Some(editor_scroll) = self
+            .active_editor
+            .as_ref()
+            .and_then(|state| state.editor.update(cx, markdown_split_view::editor_scroll))
+            .map(|editor_scroll| EditorScroll {
+                top: editor_top,
+                ..editor_scroll
+            })
+        else {
+            return;
+        };
+        let max_offset = self.scroll_handle.max_offset();
+        let Some(top) = self
+            .source_positions
+            .source_offset_for_top(max_offset.y)
+            .and_then(|top_at_end| {
+                let source_offset = editor_scroll.preview_top(top_at_end);
+                self.source_positions.top_for_source_offset(source_offset)
+            })
+        else {
             return;
         };
         self.pending_source_scroll = None;
         let offset = self.scroll_handle.offset();
-        let max_offset = self.scroll_handle.max_offset();
         let scroll_top = (-top).clamp(-max_offset.y, Pixels::ZERO);
         self.synced_scroll_top = scroll_top;
-        self.synced_source_offset = Some(source_offset);
+        self.synced_editor_top = Some(editor_top);
         if scroll_top != offset.y {
             self.scroll_handle.set_offset(point(offset.x, scroll_top));
             cx.notify();
@@ -876,10 +901,10 @@ impl MarkdownPreviewView {
         if self.scroll_handle.offset().y != self.synced_scroll_top {
             // Lets the split view observe scrolling that only layout applied.
             cx.notify();
-        } else if let Some(source_offset) = self.synced_source_offset {
-            // Changing the font size or the width reflows the preview, which moves the synced
-            // source offset away from the top.
-            self.scroll_to_source_offset(source_offset, cx);
+        } else if let Some(editor_top) = self.synced_editor_top {
+            // Changing the font size or the size of either side reflows it, which moves the
+            // synced source offset away from the top.
+            self.follow_editor_scroll(editor_top, cx);
         }
     }
 
@@ -889,15 +914,25 @@ impl MarkdownPreviewView {
             && self.scroll_handle.offset().y != self.synced_scroll_top
     }
 
-    /// The source offset at the top of the preview, which the caller syncs the source editor to.
-    pub(crate) fn sync_from_scroll_top(&mut self) -> Option<f64> {
+    /// Where the preview is scrolled, which the caller syncs the source editor to before telling
+    /// the preview where the editor settled with [`Self::remember_editor_top`].
+    pub(crate) fn sync_from_scroll_top(&mut self) -> Option<PreviewScroll> {
         if !self.source_positions_are_current() {
             return None;
         }
         let scroll_top = self.scroll_handle.offset().y;
         self.synced_scroll_top = scroll_top;
-        self.synced_source_offset = self.source_positions.source_offset_for_top(-scroll_top);
-        self.synced_source_offset
+        self.synced_editor_top = None;
+        Some(PreviewScroll {
+            top: self.source_positions.source_offset_for_top(-scroll_top)?,
+            top_at_end: self
+                .source_positions
+                .source_offset_for_top(self.scroll_handle.max_offset().y)?,
+        })
+    }
+
+    pub(crate) fn remember_editor_top(&mut self, editor_top: f64) {
+        self.synced_editor_top = Some(editor_top);
     }
 
     fn sync_active_root_block(&mut self, cx: &mut Context<Self>) {
@@ -2402,7 +2437,7 @@ mod tests {
     use gpui::UpdateGlobal as _;
     use gpui::{
         App, AppContext as _, Entity, Focusable, Modifiers, MouseButton, Pixels, TestAppContext,
-        VisualTestContext, WindowHandle, point, px,
+        VisualTestContext, WindowHandle, point, px, size,
     };
     use language::Point;
     use project::{Project, ProjectPath};
@@ -4899,11 +4934,9 @@ mod tests {
             (split_view.editor().clone(), split_view.preview().clone())
         });
         let editor_top = editor
-            .update(
-                cx,
-                crate::markdown_split_view::editor_source_offset_at_scroll_top,
-            )
-            .unwrap();
+            .update(cx, crate::markdown_split_view::editor_scroll)
+            .unwrap()
+            .top;
         let preview_top = preview
             .read_with(cx, |preview, _| {
                 preview
@@ -5028,8 +5061,53 @@ mod tests {
         );
     }
 
+    /// The editor's scroll top, and the scroll top at which the end of the source reaches its
+    /// bottom.
+    fn editor_scroll_tops(
+        cx: &mut TestAppContext,
+        split_view: &Entity<MarkdownSplitView>,
+    ) -> (f64, f64) {
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        editor.update(cx, |editor, cx| {
+            let row_count = f64::from(editor.display_snapshot(cx).max_point().row().0) + 1.;
+            let visible_line_count = editor.visible_line_count().unwrap();
+            (
+                editor.scroll_position(cx).y,
+                (row_count - visible_line_count).max(0.),
+            )
+        })
+    }
+
+    fn preview_max_scroll_top(
+        cx: &mut TestAppContext,
+        split_view: &Entity<MarkdownSplitView>,
+    ) -> Pixels {
+        split_view.read_with(cx, |split_view, cx| {
+            -split_view.preview().read(cx).scroll_handle.max_offset().y
+        })
+    }
+
+    fn scroll_editor(
+        cx: &mut TestAppContext,
+        multi_workspace: &WindowHandle<MultiWorkspace>,
+        split_view: &Entity<MarkdownSplitView>,
+        scroll_top: f64,
+    ) {
+        let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.set_scroll_position(point(0., scroll_top), window, cx);
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+    }
+
     #[gpui::test]
-    async fn scrolling_the_preview_to_the_bottom_scrolls_the_editor_too(cx: &mut TestAppContext) {
+    async fn scrolling_the_preview_to_the_bottom_scrolls_the_editor_to_its_end(
+        cx: &mut TestAppContext,
+    ) {
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": markdown_sections(150) }), false).await;
         open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
@@ -5047,15 +5125,116 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
 
-        assert!(preview_scroll_top(cx, &split_view) < px(0.));
-        let editor_top = assert_scrolled_together(cx, &split_view);
-        assert!(editor_top > markdown_sections(100).len() as f64);
-        let max_scroll_top =
-            preview.read_with(cx, |preview, _| preview.scroll_handle.max_offset().y);
+        let (editor_scroll_top, editor_scroll_top_at_end) = editor_scroll_tops(cx, &split_view);
+        assert!(
+            (editor_scroll_top - editor_scroll_top_at_end).abs() < 0.01,
+            "the editor should show the end of the source at its bottom, \
+             but it's scrolled to {editor_scroll_top} instead of {editor_scroll_top_at_end}"
+        );
         assert_eq!(
             preview_scroll_top(cx, &split_view),
-            -max_scroll_top,
+            preview_max_scroll_top(cx, &split_view),
             "the editor following the preview should leave the preview at its bottom"
+        );
+    }
+
+    #[gpui::test]
+    async fn scrolling_the_editor_to_its_end_scrolls_the_preview_to_the_bottom(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": markdown_sections(150) }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let (_, editor_scroll_top_at_end) = editor_scroll_tops(cx, &split_view);
+        let preview_max_scroll_top = preview_max_scroll_top(cx, &split_view);
+
+        scroll_editor(
+            cx,
+            &multi_workspace,
+            &split_view,
+            editor_scroll_top_at_end - 3.,
+        );
+        let preview_top_before_end = preview_scroll_top(cx, &split_view);
+        assert!(
+            preview_top_before_end > preview_max_scroll_top,
+            "the preview shouldn't reach its bottom before the editor reaches its end"
+        );
+
+        scroll_editor(cx, &multi_workspace, &split_view, editor_scroll_top_at_end);
+        assert_eq!(preview_scroll_top(cx, &split_view), preview_max_scroll_top);
+
+        // Scrolling past the end of the source leaves the preview at its bottom.
+        scroll_editor(
+            cx,
+            &multi_workspace,
+            &split_view,
+            editor_scroll_top_at_end + 10.,
+        );
+        assert_eq!(preview_scroll_top(cx, &split_view), preview_max_scroll_top);
+    }
+
+    #[gpui::test]
+    async fn resizing_the_window_at_the_end_keeps_the_sides_together(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": markdown_sections(150) }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let (_, editor_scroll_top_at_end) = editor_scroll_tops(cx, &split_view);
+        scroll_editor(cx, &multi_workspace, &split_view, editor_scroll_top_at_end);
+        assert_eq!(
+            preview_scroll_top(cx, &split_view),
+            preview_max_scroll_top(cx, &split_view)
+        );
+
+        // Shrinking the window shows less of the editor without scrolling it, so the end of the
+        // source drops out of its view.
+        let viewport_size = multi_workspace
+            .update(cx, |_, window, _| window.viewport_size())
+            .unwrap();
+        cx.simulate_window_resize(
+            multi_workspace.into(),
+            size(viewport_size.width, viewport_size.height * 0.6),
+        );
+        cx.run_until_parked();
+
+        let (editor_scroll_top, editor_scroll_top_at_end) = editor_scroll_tops(cx, &split_view);
+        assert!(editor_scroll_top < editor_scroll_top_at_end);
+        assert!(
+            preview_scroll_top(cx, &split_view) > preview_max_scroll_top(cx, &split_view),
+            "the preview shouldn't stay at its bottom once the editor no longer shows the end"
+        );
+    }
+
+    #[gpui::test]
+    async fn the_preview_keeps_moving_while_the_editor_scrolls_to_its_end(cx: &mut TestAppContext) {
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": markdown_sections(150) }), false).await;
+        open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        switch_active_layout(cx, &multi_workspace, &workspace, MarkdownLayout::SideBySide);
+        let split_view = active_split_view(cx, &workspace);
+        let (_, editor_scroll_top_at_end) = editor_scroll_tops(cx, &split_view);
+        let rows = 80;
+        let start = editor_scroll_top_at_end - f64::from(rows);
+        scroll_editor(cx, &multi_workspace, &split_view, start);
+
+        let mut previous_preview_top = preview_scroll_top(cx, &split_view);
+        for row in 1..=rows {
+            let editor_scroll_top = start + f64::from(row);
+            scroll_editor(cx, &multi_workspace, &split_view, editor_scroll_top);
+            let preview_top = preview_scroll_top(cx, &split_view);
+            assert!(
+                preview_top < previous_preview_top,
+                "the preview stopped at {preview_top:?} while the editor scrolled to \
+                 {editor_scroll_top} of {editor_scroll_top_at_end}"
+            );
+            previous_preview_top = preview_top;
+        }
+        assert_eq!(
+            previous_preview_top,
+            preview_max_scroll_top(cx, &split_view)
         );
     }
 
@@ -5080,11 +5259,9 @@ mod tests {
         let section_len = text.len() as f64 / 150.;
         let editor = split_view.read_with(cx, |split_view, _| split_view.editor().clone());
         let editor_top = editor
-            .update(
-                cx,
-                crate::markdown_split_view::editor_source_offset_at_scroll_top,
-            )
-            .unwrap();
+            .update(cx, crate::markdown_split_view::editor_scroll)
+            .unwrap()
+            .top;
         assert!(editor_top > section_len);
     }
 

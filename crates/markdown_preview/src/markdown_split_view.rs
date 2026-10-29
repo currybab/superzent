@@ -247,24 +247,31 @@ impl MarkdownSplitView {
     }
 
     fn sync_preview_scroll_to_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(source_offset) = self.editor.update(cx, editor_source_offset_at_scroll_top) else {
+        let Some(editor_scroll) = self.editor.update(cx, editor_scroll) else {
             return;
         };
         self.preview.update(cx, |preview, cx| {
-            preview.scroll_to_source_offset(source_offset, cx)
+            preview.follow_editor_scroll(editor_scroll.top, cx)
         });
     }
 
     fn sync_editor_scroll_to_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(source_offset) = self
+        let Some(preview_scroll) = self
             .preview
             .update(cx, |preview, _| preview.sync_from_scroll_top())
         else {
             return;
         };
-        self.synced_editor_scroll_top = self.editor.update(cx, |editor, cx| {
-            scroll_editor_to_source_offset(editor, source_offset, window, cx)
+        let synced = self.editor.update(cx, |editor, cx| {
+            let source_offset = editor_scroll(editor, cx)?.top_for_preview(preview_scroll);
+            let scroll_top = scroll_editor_to_source_offset(editor, source_offset, window, cx)?;
+            Some((scroll_top, editor_scroll(editor, cx)?.top))
         });
+        self.synced_editor_scroll_top = synced.map(|(scroll_top, _)| scroll_top);
+        if let Some((_, editor_top)) = synced {
+            self.preview
+                .update(cx, |preview, _| preview.remember_editor_top(editor_top));
+        }
     }
 
     fn focus_visible_side(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -350,19 +357,102 @@ impl MarkdownSplitView {
     }
 }
 
-/// The source offset at the top of the editor, between the starts of the rows around it so that
-/// scrolling by part of a row moves the preview smoothly.
-pub(crate) fn editor_source_offset_at_scroll_top(
-    editor: &mut Editor,
-    cx: &mut Context<Editor>,
-) -> Option<f64> {
+/// Where the source editor is scrolled, as source offsets the preview can line up with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EditorScroll {
+    /// The source offset at the editor's top.
+    pub(crate) top: f64,
+    /// The source offset at the editor's top once the end of the source reaches its bottom, which
+    /// is unknown until the editor is laid out.
+    pub(crate) top_at_end: Option<f64>,
+    pub(crate) source_len: f64,
+}
+
+/// Where the preview is scrolled, as source offsets the editor can line up with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PreviewScroll {
+    /// The source offset at the preview's top.
+    pub(crate) top: f64,
+    /// The source offset at the preview's top once it is scrolled to its bottom.
+    pub(crate) top_at_end: f64,
+}
+
+impl EditorScroll {
+    /// The source offset the preview shows at its top to follow the editor.
+    pub(crate) fn preview_top(&self, preview_top_at_end: f64) -> f64 {
+        match self.top_at_end {
+            Some(top_at_end) => {
+                converge_tops(self.top, top_at_end, preview_top_at_end, self.source_len)
+            }
+            None => self.top,
+        }
+    }
+
+    /// The source offset the editor shows at its top to follow the preview.
+    fn top_for_preview(&self, preview: PreviewScroll) -> f64 {
+        match self.top_at_end {
+            Some(top_at_end) => {
+                converge_tops(preview.top, preview.top_at_end, top_at_end, self.source_len)
+            }
+            None => preview.top,
+        }
+    }
+}
+
+/// Maps the source offset at one side's top to the other side's. The editor and the preview stop
+/// scrolling at different source offsets, so lining up their tops all the way leaves one of them
+/// stuck at its end while the other still scrolls. Instead, the tops line up until either side
+/// nears the end, and from there the sides converge so they reach their ends together.
+pub(crate) fn converge_tops(
+    top: f64,
+    top_at_end: f64,
+    other_top_at_end: f64,
+    source_len: f64,
+) -> f64 {
+    // Converging over twice the source that the longer end shows keeps either side from scrolling
+    // more than twice as fast as the other.
+    let end_len = (source_len - top_at_end).max(source_len - other_top_at_end);
+    let start = (source_len - 2. * end_len).max(0.);
+    // A side whose whole source fits in view has nothing to converge over.
+    if top <= start || top_at_end - start < 1. || other_top_at_end - start < 1. {
+        return top;
+    }
+    let progress = ((top - start) / (top_at_end - start)).min(1.);
+    start + progress * (other_top_at_end - start)
+}
+
+pub(crate) fn editor_scroll(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<EditorScroll> {
     let buffer = editor.buffer().read(cx).as_singleton()?;
-    let buffer_id = buffer.read(cx).remote_id();
+    let (buffer_id, source_len) = {
+        let buffer = buffer.read(cx);
+        (buffer.remote_id(), buffer.len())
+    };
     let snapshot = editor.display_snapshot(cx);
-    let scroll_top = editor.scroll_position(cx).y.max(0.);
+    let scroll_top = editor.scroll_position(cx).y;
+    let top = source_offset_at_scroll_top(&snapshot, buffer_id, scroll_top)?;
+    let top_at_end = editor.visible_line_count().and_then(|visible_line_count| {
+        let row_count = f64::from(snapshot.max_point().row().0) + 1.;
+        let scroll_top_at_end = (row_count - visible_line_count).max(0.);
+        source_offset_at_scroll_top(&snapshot, buffer_id, scroll_top_at_end)
+    });
+    Some(EditorScroll {
+        top,
+        top_at_end,
+        source_len: source_len as f64,
+    })
+}
+
+/// The source offset at a scroll top, between the starts of the rows around it so that scrolling
+/// by part of a row moves the preview smoothly.
+fn source_offset_at_scroll_top(
+    snapshot: &DisplaySnapshot,
+    buffer_id: language::BufferId,
+    scroll_top: ScrollOffset,
+) -> Option<f64> {
+    let scroll_top = scroll_top.max(0.);
     let row = scroll_top.floor();
-    let row_start = source_offset_of_display_row(&snapshot, buffer_id, row as u32)?;
-    let next_row_start = source_offset_of_display_row(&snapshot, buffer_id, row as u32 + 1)?;
+    let row_start = source_offset_of_display_row(snapshot, buffer_id, row as u32)?;
+    let next_row_start = source_offset_of_display_row(snapshot, buffer_id, row as u32 + 1)?;
     let row_len = next_row_start.saturating_sub(row_start) as f64;
     Some(row_start as f64 + (scroll_top - row) * row_len)
 }
@@ -1424,5 +1514,39 @@ mod persistence {
                 WHERE item_id = ? AND workspace_id = ?
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::converge_tops;
+
+    #[test]
+    fn tops_line_up_until_either_side_nears_the_end() {
+        // The editor's top stops 300 bytes before the end and the preview's 100 before.
+        let source_len = 10_000.;
+        assert_eq!(converge_tops(0., 9_700., 9_900., source_len), 0.);
+        assert_eq!(converge_tops(9_400., 9_700., 9_900., source_len), 9_400.);
+        assert_eq!(converge_tops(9_700., 9_700., 9_900., source_len), 9_900.);
+        assert_eq!(converge_tops(9_900., 9_900., 9_700., source_len), 9_700.);
+        // Scrolling past the end, as the editor can, leaves the other side at its end.
+        assert_eq!(converge_tops(9_990., 9_700., 9_900., source_len), 9_900.);
+    }
+
+    #[test]
+    fn converging_tops_maps_back_to_where_it_started() {
+        let source_len = 10_000.;
+        for top in [9_450., 9_500., 9_600., 9_700.] {
+            let other_top = converge_tops(top, 9_700., 9_900., source_len);
+            assert!(other_top > top);
+            let round_trip = converge_tops(other_top, 9_900., 9_700., source_len);
+            assert!((round_trip - top).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn tops_line_up_when_a_side_shows_the_whole_source() {
+        assert_eq!(converge_tops(50., 0., 900., 1_000.), 50.);
+        assert_eq!(converge_tops(50., 900., 0., 1_000.), 50.);
     }
 }
