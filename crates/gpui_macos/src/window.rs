@@ -327,6 +327,10 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
             window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(windowDidFailToEnterFullScreen:),
+            window_did_fail_to_enter_fullscreen as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(windowDidMove:),
             window_did_move as extern "C" fn(&Object, Sel, id),
         );
@@ -2045,6 +2049,23 @@ extern "C" fn window_will_enter_fullscreen(this: &Object, _: Sel, _: id) {
 extern "C" fn window_will_exit_fullscreen(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let lock = window_state.as_ref().lock();
+
+    let min_version = NSOperatingSystemVersion::new(15, 3, 0);
+
+    if is_macos_version_at_least(min_version) && lock.transparent_titlebar {
+        unsafe {
+            lock.native_window.setTitlebarAppearsTransparent_(YES);
+        }
+    }
+}
+
+// AppKit sends no `windowWillExitFullScreen:` when entering fails (e.g. restoring a
+// fullscreen window while the app isn't active), so the opaque titlebar set in
+// `window_will_enter_fullscreen` would otherwise stay on the windowed window.
+extern "C" fn window_did_fail_to_enter_fullscreen(this: &Object, _: Sel, _: id) {
+    let window_state = unsafe { get_window_state(this) };
+    let lock = window_state.as_ref().lock();
+    log::warn!("window failed to enter fullscreen");
 
     let min_version = NSOperatingSystemVersion::new(15, 3, 0);
 
